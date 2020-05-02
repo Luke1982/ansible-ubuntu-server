@@ -1,0 +1,14 @@
+all:
+  children:
+    test:
+      hosts:
+        192.168.178.221
+    webservers:
+      hosts:
+        192.168.178.221
+    mailservers:
+    dbservers:
+      hosts:
+        192.168.178.221
+  vars:
+    ansible_python_interpreter: /usr/bin/python3

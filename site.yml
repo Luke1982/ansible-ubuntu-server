@@ -1,0 +1,7 @@
+---
+# Main playbook
+
+- name: Deploy and configure webservers
+  hosts: webservers
+  roles:
+    - web

@@ -1,0 +1,9 @@
+---
+# Main DB tasks
+
+- name: Install MariaDB
+  become: yes
+  apt:
+    pkg:
+      - mariadb-server
+    state: present

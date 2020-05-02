@@ -1,0 +1,46 @@
+---
+# Web role tasks
+
+- name: Install Apache
+  become: yes
+  apt:
+    pkg:
+      - apache2
+    state: present
+
+- name: Install PHP and some PHP modules
+  become: yes
+  apt:
+    pkg:
+      - php-fpm
+      - php-curl
+      - php-date
+      - php-imagick
+      - php-imap
+      - php-mysql
+      - php-zip
+    state: present
+
+- name: Disable apache MPM prefork
+  become: yes
+  apache2_module:
+    name: mpm_prefork
+    state: absent
+
+- name: Enable MPM event module
+  become: yes
+  apache2_module:
+    name: mpm_event
+    state: present
+
+- name: Enable FCGI Proxy module
+  become: yes
+  apache2_module:
+    name: proxy_fcgi
+    state: present
+
+- name: Restart Apache to make changes take effect
+  become: yes
+  service:
+    name: apache2
+    state: restarted
