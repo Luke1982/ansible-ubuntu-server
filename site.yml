@@ -5,3 +5,8 @@
   hosts: webservers
   roles:
     - web
+
+- name: Deploy database servers
+  hosts: dbservers
+  roles:
+    - db

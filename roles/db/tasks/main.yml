@@ -1,9 +1,10 @@
 ---
 # Main DB tasks
 
-- name: Install MariaDB
+- name: Install MariaDB and Phpmyadmin
   become: yes
   apt:
     pkg:
       - mariadb-server
+      - phpmyadmin
     state: present
