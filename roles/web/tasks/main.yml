@@ -49,3 +49,9 @@
     owner: root
     group: root
   notify: setup iptables dns
+
+- name: Install fail2ban
+  apt:
+    pkg: 
+      - fail2ban
+    state: present
