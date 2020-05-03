@@ -2,9 +2,17 @@
 # Main DB tasks
 
 - name: Install MariaDB and Phpmyadmin
-  become: yes
   apt:
     pkg:
       - mariadb-server
       - phpmyadmin
     state: present
+
+- name: Ensure phpMyAdmin config file is included in Apache config.
+  lineinfile:
+    dest: /etc/apache2/apache2.conf
+    state: present
+    regexp: "^Include.+phpmyadmin.+$"
+    line: "Include /etc/phpmyadmin/apache.conf"
+    insertafter: "EOF"
+  notify: reload apache

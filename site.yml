@@ -2,11 +2,13 @@
 # Main playbook
 
 - name: Deploy and configure webservers
+  become: yes
   hosts: webservers
   roles:
     - web
 
 - name: Deploy database servers
+  become: yes
   hosts: dbservers
   roles:
     - db
