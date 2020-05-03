@@ -20,21 +20,7 @@
       - php-zip
     state: present
 
-- name: Disable apache MPM prefork
-  apache2_module:
-    name: mpm_prefork
-    state: absent
-
-- name: Enable MPM event module
-  apache2_module:
-    name: mpm_event
-    state: present
-
-- name: Enable FCGI Proxy module
-  apache2_module:
-    name: proxy_fcgi
-    state: present
-  notify: restart apache
+- include: setup-php-fpm.yml
 
 - name: Copy IPtables setup script over
   copy:

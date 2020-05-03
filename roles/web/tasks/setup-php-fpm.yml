@@ -1,0 +1,18 @@
+---
+# Setup PHP and Apache to use PHP FPM in stead of mod_php
+
+- name: Disable apache MPM prefork
+  apache2_module:
+    name: mpm_prefork
+    state: absent
+
+- name: Enable MPM event module
+  apache2_module:
+    name: mpm_event
+    state: present
+
+- name: Enable FCGI Proxy module
+  apache2_module:
+    name: proxy_fcgi
+    state: present
+  notify: restart apache
