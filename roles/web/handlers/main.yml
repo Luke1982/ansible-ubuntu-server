@@ -5,3 +5,9 @@
   service:
     name: apache2
     state: restarted
+
+- name: setup iptables dns
+  replace:
+    path: /usr/local/bin/start_firewall.sh
+    regexp: "PUT_DNS_SERVERS_HERE"
+    replace: "{{ dns_servers }}"

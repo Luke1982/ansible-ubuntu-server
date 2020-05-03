@@ -5,7 +5,8 @@ all:
         192.168.178.221
     webservers:
       hosts:
-        192.168.178.221
+        192.168.178.221:
+          dns_servers: 127.0.0.53
     mailservers:
     dbservers:
       hosts:
