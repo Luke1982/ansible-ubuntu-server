@@ -9,5 +9,5 @@
 
 ## To deploy
 
-Remember the username you created on the remote machine, and the password of that user. Now execute `ansible-playbook -i inventory.yml -u USER -K site.yml`. 
+Remember the username you created on the remote machine, and the password of that user. Now execute `ansible-playbook -u USER -K site.yml`. 
 You'll be asked for a SUDO password, that should be the password of the user on the remote machine. After that you may be asked for your own SSH key password, if you've set that.
