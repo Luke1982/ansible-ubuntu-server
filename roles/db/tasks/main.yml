@@ -17,6 +17,16 @@
     insertafter: "EOF"
   notify: restart apache
 
+- name: Ensure PHPMyAdmin is configured to proxy to php-fpm
+  blockinfile:
+    block: |
+      <FilesMatch \.php$>
+        SetHandler "proxy:unix:/var/run/php/php7.4-fpm.sock|fcgi://localhost/"
+      </FilesMatch>
+    insertafter: "Alias /phpmyadmin /usr/share/phpmyadmin"
+    path: /etc/phpmyadmin/apache.conf
+  notify: restart apache
+
 - name: Copy custom mysql config file over
   copy:
     src: roles/db/files/my.cnf
