@@ -11,3 +11,8 @@
     path: /usr/local/bin/start_firewall.sh
     regexp: "PUT_DNS_SERVERS_HERE"
     replace: "{{ dns_servers }}"
+  notify: start firewall
+
+- name: start firewall
+  command:
+    cmd: bash /usr/local/bin/start_firewall.sh
