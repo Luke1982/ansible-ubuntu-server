@@ -19,6 +19,12 @@
       - php-zip
     state: present
 
+- name: Install certbot
+  apt:
+    pkg: 
+      - certbot
+    state: present
+
 - name: Disable apache MPM prefork
   apache2_module:
     name: mpm_prefork
