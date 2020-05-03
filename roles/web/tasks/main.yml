@@ -1,10 +1,11 @@
 ---
 # Web role tasks
 
-- name: Install Apache
+- name: Install Apache and certbot
   apt:
     pkg:
       - apache2
+      - certbot
     state: present
 
 - name: Install PHP and some PHP modules
@@ -17,12 +18,6 @@
       - php-imap
       - php-mysql
       - php-zip
-    state: present
-
-- name: Install certbot
-  apt:
-    pkg: 
-      - certbot
     state: present
 
 - name: Disable apache MPM prefork
