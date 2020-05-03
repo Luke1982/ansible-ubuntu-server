@@ -17,6 +17,5 @@ You'll be asked for a SUDO password, that should be the password of the user on 
 ## TODO
 
 ### Web
-- Setup IDS
 - Setup virtual hosts
 - Setup FTP
