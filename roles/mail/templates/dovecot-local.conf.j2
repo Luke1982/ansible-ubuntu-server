@@ -1,0 +1,67 @@
+## Overrides conf.d/10-master.conf
+service auth {
+  # Postfix smtp-auth
+  unix_listener /var/spool/postfix/private/auth {
+    mode = 0660
+    user = postfix
+    group = postfix
+ }
+}
+service lmtp {
+  unix_listener /var/spool/postfix/private/dovecot-lmtp {
+    group = postfix
+    mode = 0666
+    user = postfix
+  }
+}
+
+
+## Overrides conf.d/10-mail.conf
+mail_location = maildir:/var/vmail/%d/%n/Maildir
+
+
+## Overrides conf.d/10-ssl.conf
+ssl = yes
+ssl_cert = </etc/letsencrypt/live/{{hostname}}/fullchain.pem
+ssl_key = </etc/letsencrypt/live/{{hostname}}/privkey.pem
+
+
+## Overrides conf.d/15-mailboxes.conf
+namespace inbox {
+  mailbox "Verzonden items" {
+    auto = create
+    special_use = \Sent
+  }
+  mailbox "Verzonden Items" {
+    auto = create
+    special_use = \Sent
+  }
+  mailbox "Verzonden" {
+    auto = create
+    special_use = \Sent
+  }
+  mailbox "Deleted Messages" {
+    auto = create
+    special_use = \Trash
+  }
+}
+
+plugin {
+  mailbox_alias_new = Sent Messages
+  mailbox_alias_new2 = Verzonden items
+  mailbox_alias_new3 = Sent Items
+  mailbox_alias_new4 = Deleted Messages
+  mailbox_alias_new5 = Verzonden
+  mailbox_alias_old = Sent
+  mailbox_alias_old2 = Sent
+  mailbox_alias_old3 = Sent
+  mailbox_alias_old4 = Trash
+  mailbox_alias_old5 = Sent
+  sieve = file:~/sieve;active=~/.dovecot.sieve
+  sieve_after = /etc/dovecot/sieve-after
+}
+
+## Overrides conf.d/20-lmtpd.conf
+protocol lmtp {
+  mail_plugins = " mailbox_alias sieve"
+}

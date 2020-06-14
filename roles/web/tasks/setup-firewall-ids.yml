@@ -12,6 +12,6 @@
 
 - name: Install fail2ban
   apt:
-    pkg: 
+    pkg:
       - fail2ban
     state: present

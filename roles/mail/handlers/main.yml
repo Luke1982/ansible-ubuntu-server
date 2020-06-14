@@ -1,0 +1,12 @@
+---
+# Mail role handlers
+
+- name: restart dovecot
+  service:
+    name: dovecot
+    state: restarted
+
+- name: restart postfix
+  service:
+    name: postfix
+    state: restarted

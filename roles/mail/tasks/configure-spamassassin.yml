@@ -1,0 +1,32 @@
+---
+# Configuration file for SpamAssassin
+
+- name: Configure postfix to connect to SpamAssassin
+  shell:
+    cmd: |
+     postconf smtpd_milters=unix:/spamass/spamass.sock
+     postconf milter_connect_macros="i j {daemon_name} v {if_name} _"
+
+- name: Configure SpamAssassin to use the vmail's home folder for Bayes
+  lineinfile:
+    path: /etc/default/spamassassin
+    regexp: OPTIONS="[\w\-\s]+"
+    line: OPTIONS="--create-prefs --max-children 5 --helper-home-dir -x -u vmail"
+
+- name: Enable the SpamAssassin update cron
+  lineinfile:
+    path: /etc/default/spamassassin
+    regexp: CRON\s?=\s?0
+    line: CRON=1
+
+- name: Enable the SpamAssassin service
+  systemd:
+    enabled: yes
+    name: spamassassin
+    state: started
+
+- name: Add the SpamAssassin milter user to the spamd group
+  user:
+    append: yes
+    groups: debian-spamd
+    name: spamass-milter

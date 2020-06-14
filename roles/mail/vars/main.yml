@@ -1,0 +1,4 @@
+---
+# Mailserver variables
+
+mailuser_db_pass: CHANGEME

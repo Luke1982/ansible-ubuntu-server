@@ -1,15 +1,16 @@
 all:
   children:
-    test:
-      hosts:
-        192.168.178.221
     webservers:
       hosts:
-        192.168.178.221:
+        192.168.178.36:
           dns_servers: 127.0.0.53
-    mailservers:
+          hostname: "web01.domain.nl"
     dbservers:
       hosts:
-        192.168.178.221
+        192.168.178.36
+    mailservers:
+      hosts:
+        192.168.178.36:
+          hostname: "web01.domain.nl"
   vars:
     ansible_python_interpreter: /usr/bin/python3

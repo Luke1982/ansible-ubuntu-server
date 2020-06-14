@@ -1,0 +1,73 @@
+---
+# Main mailserver tasks file
+
+- name: Install mailserver packages
+  apt:
+    pkg:
+      - postfix
+      - postfix-mysql
+      - dovecot-mysql
+      - dovecot-imapd
+      - dovecot-lmtpd
+      - dovecot-managesieved
+      - spamassassin
+      - spamass-milter
+      - roundcube
+      - roundcube-plugins
+      - opendkim
+      - opendkim-tools
+      - mariadb-server
+      - python3-pymysql
+    state: present
+
+- name: Setup mailserver database
+  mysql_db:
+    encoding: "utf8"
+    name: mailserver
+    state: present
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+
+- name: Setup the mailserver user
+  mysql_user:
+    host: localhost
+    name: mailuser
+    password: "{{ mailuser_db_pass }}"
+    priv: "mailserver.*:SELECT,INSERT,UPDATE,DELETE"
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+
+- name: Copy over mailserver setup SQL
+  copy:
+    src: roles/mail/files/setup_mailserver_tables.sql
+    dest: /tmp/setup_mailserver_tables.sql
+    mode: 0644
+    owner: root
+    group: root
+
+- name: Create mailserver database schema
+  mysql_db:
+    state: import
+    name: mailserver
+    target: /tmp/setup_mailserver_tables.sql
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+
+- include: configure-postfix.yml
+
+- name: Add a group for the virtual mail handling
+  group:
+    gid: 5000
+    name: vmail
+    state: present
+
+- name: Add a user for the virtual mailbox handling
+  user:
+    groups:
+      - vmail
+    create_home: yes
+    home: /var/vmail
+    name: vmail
+    state: present
+    uid: 5000
+
+- include: configure-dovecot.yml
+- include: configure-roundcube.yml
+- include: configure-spamassassin.yml

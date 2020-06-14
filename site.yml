@@ -12,3 +12,9 @@
   hosts: dbservers
   roles:
     - db
+
+- name: Deploy mailservers
+  become: yes
+  hosts: mailservers
+  roles:
+    - mail

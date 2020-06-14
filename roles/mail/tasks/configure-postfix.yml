@@ -1,0 +1,84 @@
+---
+# Postfix configuration file
+
+- name: Prevent postfix from connecting with outdated encryption
+  shell:
+    cmd: "postconf 'smtpd_tls_mandatory_protocols=!SSLv2,!SSLv3'"
+
+- name: Configure postfix to use lookup domains in MySQL
+  template:
+    src: "virtual-mailbox-domains.cf.j2"
+    dest: "/etc/postfix/virtual-mailbox-domains.cf"
+
+- name: Configure postfix to use lookup mailbox maps in MySQL
+  template:
+    src: "virtual-mailbox-maps.cf.j2"
+    dest: "/etc/postfix/virtual-mailbox-maps.cf"
+
+- name: Configure postfix to use lookup alias maps in MySQL
+  template:
+    src: "virtual-alias-maps.cf.j2"
+    dest: "/etc/postfix/virtual-alias-maps.cf"
+
+- name: Activate SQL mapping files in postfix
+  shell:
+    cmd: |
+      postconf virtual_mailbox_domains=mysql:/etc/postfix/virtual-mailbox-domains.cf
+      postconf virtual_mailbox_maps=mysql:/etc/postfix/virtual-mailbox-maps.cf
+      postconf virtual_alias_maps=mysql:/etc/postfix/virtual-alias-maps.cf
+
+- name: Make postfix deliver mail to dovecot's LMTP socket
+  shell:
+    cmd: "postconf virtual_transport=lmtp:unix:private/dovecot-lmtp"
+
+- name: Make postfix use the FQDN hostname
+  shell:
+    cmd: "postconf myhostname={{hostname}}"
+
+- name: Make postfix authenticate SMTP requests through Dovecot's SASL mechanism
+  shell:
+    cmd: |
+      postconf smtpd_sasl_type=dovecot
+      postconf smtpd_sasl_path=private/auth
+      postconf smtpd_sasl_auth_enable=yes
+
+- name: Enable postfix SMTP encryption
+  shell:
+    cmd: |
+      postconf smtpd_tls_security_level=may
+      postconf smtpd_tls_auth_only=yes
+      postconf smtpd_tls_cert_file=/etc/letsencrypt/live/{{hostname}}/fullchain.pem
+      postconf smtpd_tls_key_file=/etc/letsencrypt/live/{{hostname}}/privkey.pem
+
+- name: Install e-mail to e-mail mapping in postfix for e-mail submission authentication
+  copy:
+    backup: yes
+    src: roles/mail/files/postfix-mysql-email2email.cf
+    dest: /etc/postfix/mysql-email2email.cf
+    owner: root
+    group: root
+
+- name: Place a marker for custom postfix configuration in master.cf
+  lineinfile:
+    path: /etc/postfix/master.cf
+    insertafter: EOF
+    line: "## From here configuration is controlled by Ansible"
+
+- name: Setup Postfix submission port
+  blockinfile:
+    path: /etc/postfix/master.cf
+    insertafter: \#\# From here configuration is controlled by Ansible
+    block: |
+      submission inet n - - - - smtpd
+      -o syslog_name=postfix/submission
+      -o smtpd_tls_security_level=encrypt
+      -o smtpd_sasl_auth_enable=yes
+      -o smtpd_sasl_type=dovecot
+      -o smtpd_sasl_path=private/auth
+      -o smtpd_sasl_security_options=noanonymous
+      -o smtpd_sender_login_maps=mysql:/etc/postfix/mysql-email2email.cf
+      -o smtpd_sender_restrictions=reject_sender_login_mismatch
+      -o smtpd_sasl_local_domain=$myhostname
+      -o smtpd_client_restrictions=permit_sasl_authenticated,reject
+      -o smtpd_recipient_restrictions=reject_non_fqdn_recipient,reject_unknown_recipient_domain,permit_sasl_authenticated,reject
+  notify: restart postfix

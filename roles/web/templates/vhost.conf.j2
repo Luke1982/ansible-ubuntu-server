@@ -1,0 +1,38 @@
+# {{ ansible_managed }}
+
+{# Set up VirtualHosts #}
+{% set vhost = item.value %}
+<VirtualHost *:80>
+
+  <FilesMatch \.php$>
+    SetHandler "proxy:unix:/var/run/php/php7.4-fpm.sock|fcgi://localhost/"
+  </FilesMatch>
+
+{% if vhost.servername is defined %}
+  ServerName {{ vhost.servername }}
+{% endif %}
+{% if vhost.serveralias is defined %}
+  ServerAlias {{ vhost.serveralias }}
+{% endif %}
+{% if vhost.documentroot is defined %}
+  DocumentRoot {{ vhost.documentroot }}
+{% endif %}
+
+  ErrorLog ${APACHE_LOG_DIR}/{{ item.key }}_error.log
+  CustomLog ${APACHE_LOG_DIR}/{{ item.key }}_access.log combined
+
+{% if vhost.serveradmin is defined %}
+  ServerAdmin {{ vhost.serveradmin }}
+{% endif %}
+
+{% if vhost.documentroot is defined %}
+  <Directory "{{ vhost.documentroot }}">
+    AllowOverride {{ vhost.allow_override | default(apache_allow_override) }}
+    Options {{ vhost.options | default(apache_options) }}
+  </Directory>
+{% endif %}
+{% if vhost.extra_parameters is defined %}
+  {{ vhost.extra_parameters }}
+{% endif %}
+
+</VirtualHost>

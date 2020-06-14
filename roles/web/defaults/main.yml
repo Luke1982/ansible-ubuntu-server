@@ -1,0 +1,6 @@
+---
+# Web default variables
+
+apache_vhosts_template: "vhost.conf.j2"
+apache_allow_override: "All"
+apache_options: "-Indexes +FollowSymLinks"

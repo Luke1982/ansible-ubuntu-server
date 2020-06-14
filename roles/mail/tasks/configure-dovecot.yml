@@ -1,0 +1,52 @@
+---
+# Special file for configuring dovecot
+
+- name: Disable regular authentication in dovecot
+  replace:
+    path: /etc/dovecot/conf.d/10-auth.conf
+    regexp: ^!include auth-system.conf.ext
+    replace: "#!include auth-system.conf.ext"
+
+- name: Enable SQL authentication in dovecot
+  replace:
+    path: /etc/dovecot/conf.d/10-auth.conf
+    regexp: \#(!include auth-sql.conf.ext)
+    replace: \g<1>
+
+- name: Setup Dovecot SQL configuration file
+  template:
+    src: dovecot-sql.conf.ext.j2
+    dest: /etc/dovecot/dovecot-sql.conf.ext
+    owner: root
+    group: root
+    backup: yes
+
+- name: Replace Dovecot SQL authentication file
+  copy:
+    backup: yes
+    src: roles/mail/files/dovecot-auth-sql.conf.ext
+    dest: /etc/dovecot/conf.d/auth-sql.conf.ext
+    owner: root
+    group: root
+
+- name: Copy over local Dovecot conf file
+  template:
+    src: dovecot-local.conf.j2
+    dest: /etc/dovecot/local.conf
+  notify: restart dovecot
+
+- name: Enable sieve_after in Dovecot
+  lineinfile:
+    path: /etc/dovecot/conf.d/90-sieve.conf
+    regexp: \s{0,4}#sieve_after\s?=\s?\w*
+    line: sieve_after = /etc/dovecot/sieve-after
+
+- name: Copy over sieve config file for general spam handling
+  copy:
+    src: roles/mail/files/spam-to-folder.sieve
+    dest: /etc/dovecot/sieve-after/
+
+- name: Compile sieve spamrule for Dovecot
+  shell:
+    cmd: sievec /etc/dovecot/sieve-after/spam-to-folder.sieve
+  notify: restart dovecot

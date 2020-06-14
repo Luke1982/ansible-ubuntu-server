@@ -1,6 +1,10 @@
 ---
 # Web role tasks
 
+- name: Set the hostname
+  hostname:
+    name: "{{ hostname }}"
+
 - name: Install Apache and certbot
   apt:
     pkg:
@@ -22,3 +26,14 @@
 
 - include: setup-php-fpm.yml
 - include: setup-firewall-ids.yml
+- include: manage-users.yml
+
+- name: Create site configurations
+  template:
+    src: "{{ item.value.template | default(apache_vhosts_template) }}"
+    dest: "/etc/apache2/sites-available/{{ item.value.servername }}.conf"
+  with_dict: "{{ apache_vhosts }}"
+  notify:
+    - create documentroots
+    - load apache vhosts
+    - restart apache

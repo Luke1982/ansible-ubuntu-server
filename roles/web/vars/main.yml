@@ -1,0 +1,23 @@
+--- 
+# Variables for the web role
+
+linux_groups:
+  - name: "webusers"
+    state: "present"
+
+linux_users: 
+  - create_home: yes
+    group: "webusers"
+    password: "$6$C6u7dfOf$OtkMTtZRYQinT2cJcoMZlIpMN5gpAYpRtqSlFxalouftyEhXQKICZhGCgiVD8I3drPX7bhli9WhwmDHDP4.H91"
+    name: "testuser"
+    state: "present"
+
+apache_vhosts:
+  testhost:
+    serveradmin: "admin@testhost.nl"
+    servername: "testhost.nl"
+    serveralias: "www.testhost.nl"
+    documentroot: "/home/testuser/public_html/www"
+    docroot_owner: "testuser"
+    docroot_owngroup: "testuser"
+    ssl: "yes"

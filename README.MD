@@ -14,8 +14,18 @@ First edit the inventory file. Mainly: add the DNS servers for your hosts, or ho
 Remember the username you created on the remote machine, and the password of that user. Now execute `ansible-playbook -u USER -K site.yml`. 
 You'll be asked for a SUDO password, that should be the password of the user on the remote machine. After that you may be asked for your own SSH key password, if you've set that.
 
+### How to create password hashes
+
+You never store the actual password in a variable file. In stead you store the hash as saved in `/etc/shadow`. To make these passwords run `mkpasswd --method=sha-512`
+
 ## TODO
 
 ### Web
 - Setup virtual hosts
 - Setup FTP
+- Disable SSH for regular users
+- Setup opendkim
+  - Take configuration file from live server
+- Setup SOGO
+- Setup 'update' cronjobs
+- Configure systemd exec of spamass-milter to make sure the q option is set

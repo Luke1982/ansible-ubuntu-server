@@ -8,6 +8,15 @@
       - phpmyadmin
     state: present
 
+- name: Copy custom mysql config file over
+  copy:
+    src: roles/db/files/my.cnf
+    dest: /etc/my.cnf
+    mode: 0644
+    owner: root
+    group: root
+  notify: restart mysql
+
 - name: Ensure phpMyAdmin config file is included in Apache config.
   lineinfile:
     dest: /etc/apache2/apache2.conf
@@ -26,12 +35,3 @@
     insertafter: "Alias /phpmyadmin /usr/share/phpmyadmin"
     path: /etc/phpmyadmin/apache.conf
   notify: restart apache
-
-- name: Copy custom mysql config file over
-  copy:
-    src: roles/db/files/my.cnf
-    dest: /etc/my.cnf
-    mode: 0644
-    owner: root
-    group: root
-  notify: restart mysql

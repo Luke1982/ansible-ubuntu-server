@@ -1,0 +1,54 @@
+---
+# Configuration tasks for roundcube
+
+- name: Set the default host for roundcube
+  lineinfile:
+    path: /etc/roundcube/config.inc.php
+    regexp: \$config\['default_host'\]\s?=\s?[\w\(\)',\s\[\]]+;
+    line: config['default_host'] = array("localhost");
+
+- name: Set the STMP host for roundcube
+  lineinfile:
+    path: /etc/roundcube/config.inc.php
+    regexp: \$config\['smtp_server'\]\s?=\s?[\w\(\)',\s\[\]]+;
+    line: $config['smtp_server'] = 'tls://{{hostname}}';
+
+- name: Add managesieve and password plugins to roundcube
+  replace:
+    path: /etc/roundcube/config.inc.php
+    regexp: \$config\['plugins'\]\s?=\s?array\(([\n\s\w',]+)\);
+    replace: |
+      $config['plugins'] = array(
+        'archive',
+        'zipdownload',
+        'managesieve',
+        'password',
+      );
+
+- name: Configure roundcube to manage sieve
+  shell:
+    cmd: cp /usr/share/roundcube/plugins/managesieve/config.inc.php.dist /etc/roundcube/plugins/managesieve/config.inc.php
+
+- name: Configure roundcube password plugin
+  shell:
+    cmd: cp /usr/share/roundcube/plugins/password/config.inc.php.dist /etc/roundcube/plugins/password/config.inc.php
+
+- name: Allow users to save the same password as they had
+  lineinfile:
+    path: /etc/roundcube/plugins/password/config.inc.php
+    regexp: \$config\['password_force_save'\]\s?=\s?[\w\(\)',\s\[\]]+;
+    line: $config['password_force_save'] = true;
+
+- name: Give the roundcube password plugin access to the database
+  lineinfile:
+    path: /etc/roundcube/plugins/password/config.inc.php
+    regexp: \$config\['password_db_dsn'\]\s?=\s?[\w\(\)',\s\[\]]+;
+    line: $config['password_db_dsn'] = 'mysql://mailuser:{{mailuser_db_pass}}@127.0.0.1/mailserver';
+
+- name: Tell roundcube how to write passwords to the database
+  lineinfile:
+    path: /etc/roundcube/plugins/password/config.inc.php
+    regexp: \$config\['password_query'\]\s?=\s?["\w\s=\('{}\-,%\$\)]+;?["'];
+    line: >
+      $config['password_query'] = "UPDATE virtual_users SET password=CONCAT('{SHA256-CRYPT}', 
+      ENCRYPT (%p, CONCAT('$5$', SUBSTRING(SHA(RAND()), -16)))) WHERE email=%u;";

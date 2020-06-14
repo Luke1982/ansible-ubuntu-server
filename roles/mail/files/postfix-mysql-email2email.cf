@@ -1,0 +1,1 @@
+SELECT email FROM virtual_users WHERE email='%s'

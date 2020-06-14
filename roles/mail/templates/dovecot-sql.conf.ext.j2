@@ -1,0 +1,6 @@
+driver = mysql
+connect = host=127.0.0.1 dbname=mailserver user=mailuser password={{mailuser_db_pass}}
+default_pass_scheme = SHA256-CRYPT
+iterate_query = SELECT email AS user FROM virtual_users;
+password_query = SELECT email as user, password FROM virtual_users WHERE email='%u';
+user_query = SELECT CONCAT('/var/vmail/',(SELECT name FROM virtual_domains WHERE id=domain_id),'/',REPLACE('%u',CONCAT('@',(SELECT name FROM virtual_domains WHERE id=domain_id)),'')) AS home, 5000 AS uid, 5000 AS gid FROM virtual_users WHERE email ='%u';
