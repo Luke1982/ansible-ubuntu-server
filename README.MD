@@ -28,4 +28,5 @@ You never store the actual password in a variable file. In stead you store the h
   - Take configuration file from live server
 - Setup SOGO
 - Setup 'update' cronjobs
-- Configure systemd exec of spamass-milter to make sure the q option is set
+- Configure systemd exec of spamassassin to make sure the q option is set
+- Setup Spamassassin user preference database

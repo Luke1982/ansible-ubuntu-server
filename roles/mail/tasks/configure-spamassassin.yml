@@ -30,3 +30,28 @@
     append: yes
     groups: debian-spamd
     name: spamass-milter
+
+- name: Create SpamAssassin systemd override directory
+  file:
+    path: /etc/systemd/system/spamassassin.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: 0755
+
+- name: Copy SpamAssassin systemd override configuration over
+  file:
+    path: /etc/systemd/system/spamassassin.service.d/override.conf
+    src: roles/mail/files/override/spamassassin-systemd.conf
+    owner: root
+    group: root
+    mode: 0644
+  notify: restart spamassassin
+
+- name: Configure Spamass-milter to pass entire e-mail address to spamc
+  lineinfile:
+    path: /etc/default/spamass-milter
+    regexp: OPTIONS\s?=\s?"[\w\.\-\s]+"
+    line: OPTIONS="-u spamass-milter -i 127.0.0.1 -e {{ defaultdomain }}"
+  notify: restart spamass-milter
+
