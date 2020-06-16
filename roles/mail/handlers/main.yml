@@ -13,10 +13,16 @@
 
 - name: restart spamass-milter
   service:
-    name: spamass-filter
+    name: spamass-milter
     state: restarted
 
 - name: restart spamassassin
   service:
     name: spamassassin
+    state: restarted
+
+- name: Restart spamassassin with daemon reload
+  systemd:
+    name: spamassassin
+    daemon_reload: yes
     state: restarted

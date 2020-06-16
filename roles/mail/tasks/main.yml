@@ -68,6 +68,27 @@
     state: present
     uid: 5000
 
+- name: Create empty certificate files for the host so dovecot can restart without errors
+  file:
+    path: /etc/letsencrypt/live/{{hostname}}
+    state: directory
+    group: root
+    owner: root
+
+- name: Create empty certificate files for the host so dovecot can restart without errors
+  file:
+    path: /etc/letsencrypt/live/{{hostname}}/privkey.pem
+    state: touch
+    group: root
+    owner: root
+
+- name: Create empty certificate files for the host so dovecot can restart without errors
+  file:
+    path: /etc/letsencrypt/live/{{hostname}}/fullchain.pem
+    state: touch
+    group: root
+    owner: root
+
 - include: configure-dovecot.yml
 - include: configure-roundcube.yml
 - include: configure-spamassassin.yml

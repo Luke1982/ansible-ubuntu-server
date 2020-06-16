@@ -24,6 +24,7 @@
     enabled: yes
     name: spamassassin
     state: started
+  notify: restart spamassassin
 
 - name: Add the SpamAssassin milter user to the spamd group
   user:
@@ -40,13 +41,13 @@
     mode: 0755
 
 - name: Copy SpamAssassin systemd override configuration over
-  file:
-    path: /etc/systemd/system/spamassassin.service.d/override.conf
-    src: roles/mail/files/override/spamassassin-systemd.conf
+  copy:
+    dest: /etc/systemd/system/spamassassin.service.d/override.conf
+    src: roles/mail/files/override-spamassassin-systemd.conf
     owner: root
     group: root
     mode: 0644
-  notify: restart spamassassin
+  notify: Restart spamassassin with daemon reload
 
 - name: Configure Spamass-milter to pass entire e-mail address to spamc
   lineinfile:
