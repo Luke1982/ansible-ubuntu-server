@@ -1,0 +1,67 @@
+---
+# Configuration tasks for OpenDKIM
+
+- name: Copy OpenDKIM configuration file
+  copy:
+    backup: yes
+    dest: /etc/opendkim.conf
+    group: root
+    owner: root
+    src: roles/mail/files/opendkim.conf
+
+- name: Set the correct run directory for opendkim
+  lineinfile:
+    path: /etc/default/opendkim
+    regexp: RUNDIR\s?=\s?[\w\/]+
+    line: RUNDIR=/var/run/opendkim
+
+- name: Enable opendkim miltering in Postfix
+  shell:
+    cmd: |
+      postconf milter_protocol = 2
+      postconf milter_default_action = accept
+      postconf smtpd_milters = unix:/spamass/spamass.sock,unix:/var/run/opendkim/opendkim.sock
+      postconf non_smtpd_milters = unix:/spamass/spamass.sock,unix:/var/run/opendkim/opendkim.sock
+
+- name: Create directories for OpenDKIM files and tables
+  file:
+    path: /etc/opendkim/keys
+    state: directory
+    owner: root
+    group: root
+    mode: 0755
+
+- name: Copy OpenDKIM domain setup file
+  copy:
+    dest: /usr/local/bin/setup_dkim_for_domain.sh
+    group: root
+    owner: root
+    src: roles/mail/files/setup_dkim_for_domain.sh
+
+- name: Setup OpenDKIM TrustedHosts
+  template:
+    dest: /etc/opendkim/TrustedHosts
+    mode: 0644
+    owner: root
+    group: root
+    src: opendkim_TrustedHosts.j2
+
+- name: Setup OpenDKIM KeyTable
+  template:
+    dest: /etc/opendkim/KeyTable
+    mode: 0644
+    owner: root
+    group: root
+    src: opendkim_KeyTable.j2
+
+- name: Setup OpenDKIM SigningTable
+  template:
+    dest: /etc/opendkim/SigningTable
+    mode: 0644
+    owner: root
+    group: root
+    src: opendkim_SigningTable.j2
+
+- name: Setup the host's default domain
+  shell:
+    cmd: bash /usr/local/bin/setup_dkim_for_domain.sh {{ defaultdomain }}
