@@ -23,8 +23,5 @@ You never store the actual password in a variable file. In stead you store the h
 ### Web
 - Setup virtual hosts
 - Setup FTP
-- Disable SSH for regular users
-- Setup 'update' cronjobs
 ### Mail
-- Setup certbot deploy hook to reload dovecot when main certificate is renewed
 - Setup Z-push

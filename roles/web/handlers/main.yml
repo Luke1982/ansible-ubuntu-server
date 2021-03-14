@@ -6,6 +6,11 @@
     name: apache2
     state: restarted
 
+- name: restart ssh
+  service:
+    name: sshd
+    state: restarted
+
 - name: setup iptables dns
   replace:
     path: /usr/local/bin/start_firewall.sh

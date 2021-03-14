@@ -49,3 +49,28 @@
     day: "*"
     job: "(apt-get update && apt-get -y upgrade) > /dev/null"
     state: present
+
+- name: Don't allow SSH access for root
+  lineinfile:
+    insertafter: "EOF"
+    line: "PermitRootLogin no"
+    path: /etc/ssh/sshd_config
+    state: present
+  notify: restart ssh
+
+- name: Allow ansible user to SSH
+  lineinfile:
+    insertafter: "EOF"
+    line: "AllowUsers ansible"
+    path: /etc/ssh/sshd_config
+    state: present
+  notify: restart ssh
+
+- name: Only allow ssh for set users
+  replace:
+    path: /etc/ssh/sshd_config
+    regexp: '^AllowUsers\s([\s\w][^#\n]+)'
+    replace: AllowUsers \1 {{ item.name }}
+  loop: "{{linux_users}}"
+  when: item.ssh_access == true
+  notify: restart ssh
