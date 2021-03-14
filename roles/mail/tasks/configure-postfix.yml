@@ -64,7 +64,7 @@
     insertafter: EOF
     line: "## From here configuration is controlled by Ansible"
 
-- name: Setup Postfix submission port
+- name: Setup Postfix submission ports
   blockinfile:
     path: /etc/postfix/master.cf
     insertafter: \#\# From here configuration is controlled by Ansible
@@ -72,6 +72,20 @@
       submission inet n - - - - smtpd
        -o syslog_name=postfix/submission
        -o smtpd_tls_security_level=encrypt
+       -o smtpd_sasl_auth_enable=yes
+       -o smtpd_sasl_type=dovecot
+       -o smtpd_sasl_path=private/auth
+       -o smtpd_sasl_security_options=noanonymous
+       -o smtpd_sender_login_maps=mysql:/etc/postfix/mysql-email2email.cf
+       -o smtpd_sender_restrictions=reject_sender_login_mismatch
+       -o smtpd_sasl_local_domain=$myhostname
+       -o smtpd_client_restrictions=permit_sasl_authenticated,reject
+       -o smtpd_recipient_restrictions=reject_non_fqdn_recipient,reject_unknown_recipient_domain,permit_sasl_authenticated,reject
+
+      smtps inet n - y - - smtpd
+       -o syslog_name=postfix/smtps
+       -o smtpd_tls_security_level=encrypt
+       -o smtpd_tls_wrappermode=yes
        -o smtpd_sasl_auth_enable=yes
        -o smtpd_sasl_type=dovecot
        -o smtpd_sasl_path=private/auth
