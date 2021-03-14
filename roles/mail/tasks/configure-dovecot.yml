@@ -50,3 +50,15 @@
   shell:
     cmd: sievec /etc/dovecot/sieve-after/spam-to-folder.sieve
   notify: restart dovecot
+
+- name: Create Letsencrypt hooks directory
+  file:
+    path: /etc/letsencrypt/renewal-hooks/deploy
+    state: directory
+    owner: root
+    group: root
+
+- name: Install post-deploy hook in Letsencrypt to reload dovecot
+  template:
+    src: "1-post-deploy-hook-letsencrypt.sh.j2"
+    dest: /etc/letsencrypt/renewal-hooks/deploy/1-post-deploy-hook.sh

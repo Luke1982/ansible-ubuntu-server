@@ -1,0 +1,8 @@
+#!/bin/bash
+for domain in $RENEWED_DOMAINS
+do
+        if [ "$domain" = {{hostname}} ]
+        then
+                doveadm reload >/dev/null
+        fi
+done
