@@ -37,3 +37,15 @@
     - create documentroots
     - load apache vhosts
     - restart apache
+
+- name: Create weekly update cron
+  cron:
+    name: "Update system every Tuesday night at 23:00"
+    user: root
+    weekday: "2"
+    month: "*"
+    minute: "*"
+    hour: "23"
+    day: "*"
+    job: "(apt-get update && apt-get -y upgrade) > /dev/null"
+    state: present
