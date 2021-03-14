@@ -24,9 +24,7 @@ You never store the actual password in a variable file. In stead you store the h
 - Setup virtual hosts
 - Setup FTP
 - Disable SSH for regular users
-- Setup opendkim
-  - Take configuration file from live server
-- Setup SOGO
 - Setup 'update' cronjobs
-- Configure systemd exec of spamassassin to make sure the q option is set
-- Setup Spamassassin user preference database
+### Mail
+- Setup certbot deploy hook to reload dovecot when main certificate is renewed
+- Setup Z-push
