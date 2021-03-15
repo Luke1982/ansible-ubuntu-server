@@ -76,7 +76,7 @@
        -o smtpd_sasl_type=dovecot
        -o smtpd_sasl_path=private/auth
        -o smtpd_sasl_security_options=noanonymous
-       -o smtpd_sender_login_maps=mysql:/etc/postfix/mysql-email2email.cf
+       #-o smtpd_sender_login_maps=mysql:/etc/postfix/mysql-email2email.cf
        -o smtpd_sender_restrictions=reject_sender_login_mismatch
        -o smtpd_sasl_local_domain=$myhostname
        -o smtpd_client_restrictions=permit_sasl_authenticated,reject
@@ -90,7 +90,7 @@
        -o smtpd_sasl_type=dovecot
        -o smtpd_sasl_path=private/auth
        -o smtpd_sasl_security_options=noanonymous
-       -o smtpd_sender_login_maps=mysql:/etc/postfix/mysql-email2email.cf
+       #-o smtpd_sender_login_maps=mysql:/etc/postfix/mysql-email2email.cf
        -o smtpd_sender_restrictions=reject_sender_login_mismatch
        -o smtpd_sasl_local_domain=$myhostname
        -o smtpd_client_restrictions=permit_sasl_authenticated,reject
