@@ -22,6 +22,5 @@ You never store the actual password in a variable file. In stead you store the h
 
 ### Web
 - Setup virtual hosts
-- Setup FTP
 ### Mail
 - Setup Z-push

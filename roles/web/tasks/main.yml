@@ -10,6 +10,7 @@
     pkg:
       - apache2
       - certbot
+      - vsftpd
     state: present
 
 - name: Install PHP and some PHP modules
@@ -27,6 +28,7 @@
 - include: setup-php-fpm.yml
 - include: setup-firewall-ids.yml
 - include: manage-users.yml
+- include: setup-vsftp.yml
 
 - name: Create site configurations
   template:
