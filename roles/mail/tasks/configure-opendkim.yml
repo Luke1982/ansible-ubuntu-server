@@ -15,13 +15,29 @@
     regexp: RUNDIR\s?=\s?[\w\/]+
     line: RUNDIR=/var/run/opendkim
 
+- name: Create OpenDKIM socket directory
+  file:
+    path: /var/spool/postfix/opendkim/
+    state: directory
+    owner: opendkim
+    group: opendkim
+    mode: 0760
+
+- name: Add postfix user to the opendkim group
+  user:
+    append: yes
+    name: postfix
+    groups: opendkim
+    remove: no
+    state: present
+
 - name: Enable opendkim miltering in Postfix
   shell:
     cmd: |
       postconf milter_protocol = 2
       postconf milter_default_action = accept
-      postconf smtpd_milters = unix:/spamass/spamass.sock,unix:/var/run/opendkim/opendkim.sock
-      postconf non_smtpd_milters = unix:/spamass/spamass.sock,unix:/var/run/opendkim/opendkim.sock
+      postconf smtpd_milters = unix:/spamass/spamass.sock,unix:/opendkim/opendkim.sock
+      postconf non_smtpd_milters = unix:/spamass/spamass.sock,unix:/opendkim/opendkim.sock
 
 - name: Create directories for OpenDKIM files and tables
   file:
