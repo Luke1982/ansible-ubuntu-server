@@ -26,3 +26,13 @@
     name: spamassassin
     daemon_reload: yes
     state: restarted
+
+- name: restart apache
+  service:
+    name: apache2
+    state: restarted
+
+- name: "restart php 7.4"
+  service:
+    name: php7.4-fpm
+    state: restarted

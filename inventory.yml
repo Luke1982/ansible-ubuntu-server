@@ -13,5 +13,7 @@ all:
         192.168.178.165:
           hostname: "web01.domein.nl"
           defaultdomain: domein.nl
+          emaildomains:
+            - domein.nl
   vars:
     ansible_python_interpreter: /usr/bin/python3

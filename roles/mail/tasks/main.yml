@@ -93,3 +93,4 @@
 - include: configure-roundcube.yml
 - include: configure-spamassassin.yml
 - include: configure-opendkim.yml
+- include: configure-zpush.yml

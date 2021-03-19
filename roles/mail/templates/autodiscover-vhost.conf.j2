@@ -1,0 +1,19 @@
+# {{ ansible_managed }}
+{# Set up Autodiscover virtualHosts for Z-push #}
+<VirtualHost *:80>
+
+	DocumentRoot /usr/share/z-push/
+
+	<FilesMatch \.php$>
+		SetHandler "proxy:unix:/var/run/php/php7.4-fpm-zpush.sock|fcgi://localhost/"
+	</FilesMatch>
+
+	ServerName autodiscover.{{ item }}
+	AliasMatch (?i)/Autodiscover/Autodiscover.xml "/usr/share/z-push/{{ item }}/autodiscover/autodiscover.php"
+	Alias /Microsoft-Server-ActiveSync /usr/share/z-push/{{ item }}/src/index.php
+
+	<Directory /usr/share/z-push/{{ item }}/src>
+		AllowOverride all
+	</Directory>
+
+</VirtualHost>

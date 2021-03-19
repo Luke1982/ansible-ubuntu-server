@@ -16,3 +16,10 @@
     name: proxy_fcgi
     state: present
   notify: restart apache
+
+- name: Create separate PHP FPM pool for each vhost
+  template:
+    src: "php-pool.conf.j2"
+    dest: "/etc/php/7.4/fpm/pool.d/{{ item.value.docroot_owner }}.conf"
+  with_dict: "{{ apache_vhosts }}"
+  notify: "restart php 7.4"
