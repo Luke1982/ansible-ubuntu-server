@@ -6,6 +6,8 @@
   hosts: webservers
   roles:
     - web
+  vars_files:
+  - roles/web/vars/private/linuxusers.yml
 
 - name: Deploy database servers
   become: yes

@@ -5,22 +5,6 @@ linux_groups:
   - name: "webusers"
     state: "present"
 
-linux_users: 
-  - create_home: yes
-    group: "webusers"
-    password: "$6$C6u7dfOf$OtkMTtZRYQinT2cJcoMZlIpMN5gpAYpRtqSlFxalouftyEhXQKICZhGCgiVD8I3drPX7bhli9WhwmDHDP4.H91"
-    name: "testuser"
-    state: "present"
-    ssh_access: true
-    ftp_access: true
-  - create_home: yes
-    group: "webusers"
-    password: "$6$C6u7dfOf$OtkMTtZRYQinT2cJcoMZlIpMN5gpAYpRtqSlFxalouftyEhXQKICZhGCgiVD8I3drPX7bhli9WhwmDHDP4.H91"
-    name: "testuser_nossh"
-    state: "present"
-    ssh_access: false
-    ftp_access: true
-
 apache_vhosts:
   testhost:
     serveradmin: "admin@testhost.nl"
