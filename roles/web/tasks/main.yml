@@ -13,6 +13,11 @@
       - vsftpd
     state: present
 
+- name: Enable mod-rewrite
+  shell:
+    cmd: a2enmod rewrite
+  notify: restart apache
+
 - name: Install PHP and some PHP modules
   apt:
     pkg:
