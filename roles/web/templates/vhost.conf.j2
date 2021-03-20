@@ -29,6 +29,9 @@
   <Directory "{{ vhost.documentroot }}">
     AllowOverride {{ vhost.allow_override | default(apache_allow_override) }}
     Options {{ vhost.options | default(apache_options) }}
+    Require all granted
+    Order allow,deny
+    Allow from all
   </Directory>
 {% endif %}
 {% if vhost.extra_parameters is defined %}
