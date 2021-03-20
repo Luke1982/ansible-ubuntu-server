@@ -5,16 +5,6 @@ linux_groups:
   - name: "webusers"
     state: "present"
 
-apache_vhosts:
-  testhost:
-    serveradmin: "admin@testhost.nl"
-    servername: "testhost.nl"
-    serveralias: "www.testhost.nl"
-    documentroot: "/home/testuser/public_html/www"
-    docroot_owner: "testuser"
-    docroot_owngroup: "testuser"
-    ssl: "yes"
-
 certvars:
   key_size: 4096
   passphrase:

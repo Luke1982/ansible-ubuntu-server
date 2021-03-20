@@ -2,6 +2,7 @@
 Should be the files
 
 - linuxusers.yml
+- apachevhosts.yml
 
 ## linuxusers.yml
 Need the following structure:
@@ -24,3 +25,27 @@ Where:
 - `state` 'present' for users that should be present, 'absent' for users that should be deleted
 - `ssh_access` true or false
 - `ftp_access` true or false
+
+## apachevhosts.yml
+Needs the following structure:
+
+```yaml
+apache_vhosts:
+  testhost:
+    serveradmin: "admin@testhost.nl"
+    servername: "testhost.nl"
+    serveralias: "www.testhost.nl"
+    documentroot: "/home/testuser/public_html/www"
+    docroot_owner: "testuser"
+    docroot_owngroup: "testuser"
+    ssl: "yes"
+```
+Where
+
+- `serveradmin` is the server admin e-mail address
+- `servername` is the main server name
+- `serveralias` is the space-separated list of aliasses
+- `documentroot` will be used as the DocumentRoot
+- `docroot_owner`: The owner, will be used in the PHP-FPM poolname
+- `docroot_owngroup` The owning group of the DocumentRoot
+- `ssl` SSL enabled for this host (not yet implemented)
