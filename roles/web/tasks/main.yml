@@ -18,6 +18,16 @@
     cmd: a2enmod rewrite
   notify: restart apache
 
+- name: Enable SSL
+  shell:
+    cmd: a2enmod ssl
+  notify: restart apache
+
+- name: Enable Headers module
+  shell:
+    cmd: a2enmod headers
+  notify: restart apache
+
 - name: Install PHP and some PHP modules
   apt:
     pkg:
