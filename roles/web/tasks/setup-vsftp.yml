@@ -54,4 +54,5 @@
       rsa_cert_file=/etc/ssl/private/vsftpd_cert.pem
       rsa_private_key_file=/etc/ssl/private/vsftpd.pem
       ssl_enable=YES
+      force_dot_files=YES
   notify: restart vsftp
