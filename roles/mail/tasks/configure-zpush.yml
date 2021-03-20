@@ -61,6 +61,7 @@
 
 - name: Create Z-push directories for all the e-mail domains and clone Z-push in there
   shell:
+    chdir: /usr/share/z-push
     cmd: bash /usr/local/bin/clone-z-push.sh {{ item }}
   loop: "{{ emaildomains }}"
 
