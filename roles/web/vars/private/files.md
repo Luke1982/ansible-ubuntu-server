@@ -15,3 +15,12 @@ linux_users:
     ssh_access: true
     ftp_access: true
 ```
+Where:
+
+- `create_home` decides whether there should be a home directory for the user, 'yes' or 'no'
+- `group` determines the group for the user
+- `password` is the password you got from running `mkpasswd --method=sha-512`
+- `name` is obviously the username
+- `state` 'present' for users that should be present, 'absent' for users that should be deleted
+- `ssh_access` true or false
+- `ftp_access` true or false
