@@ -1,3 +1,4 @@
 private/*.yml
 roles/web/vars/private/*.yml
+roles/mail/vars/private/*.yml
 *.retry

@@ -19,7 +19,8 @@
 ### To configure DB servers
 No special configuration needed. Remember that MariaDB will allow `sudo mysql` as a user in the 'sudoers' group to allow you to do administrative stuff like create users and databases.
 
-
+### To configure mailservers
+- Create a file called `mailvars.yml` in `roles/mail/vars/private` according to the example you can find in the README in that directory.
 
 Remember the username you created on the remote machine, and the password of that user. Now execute `ansible-playbook -u USER -K site.yml`. 
 You'll be asked for a SUDO password, that should be the password of the user on the remote machine. After that you may be asked for your own SSH key password, if you've set that.

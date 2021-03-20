@@ -21,3 +21,5 @@
   hosts: mailservers
   roles:
     - mail
+  vars_files:
+    - roles/mail/vars/private/mailvars.yml
