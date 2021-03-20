@@ -16,6 +16,11 @@
 - Create a file called `linuxusers.yml` in `roles/web/vars/private/` and populate that like documented in the README file in that directory.
 - Do the same for `apachevhosts.yml` in the `roles/web/vars/private/` folder.
 
+### To configure DB servers
+No special configuration needed. Remember that MariaDB will allow `sudo mysql` as a user in the 'sudoers' group to allow you to do administrative stuff like create users and databases.
+
+
+
 Remember the username you created on the remote machine, and the password of that user. Now execute `ansible-playbook -u USER -K site.yml`. 
 You'll be asked for a SUDO password, that should be the password of the user on the remote machine. After that you may be asked for your own SSH key password, if you've set that.
 
