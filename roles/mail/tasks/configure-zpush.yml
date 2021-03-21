@@ -78,4 +78,5 @@
     dest: "/etc/apache2/sites-available/autodiscover.{{ item }}.conf"
   loop: "{{ emaildomains }}"
   notify:
+    - load apache vhosts
     - restart apache

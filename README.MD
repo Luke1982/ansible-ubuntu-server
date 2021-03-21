@@ -34,7 +34,7 @@ You never store the actual password in a variable file. In stead you store the h
 ## TODO
 
 ### Web
-- Setup virtual hosts
 - Setup Zabbix
 ### Mail
-- Setup Z-push
+- Setup Z-push (90% done)
+- Setup webmail subdomains	

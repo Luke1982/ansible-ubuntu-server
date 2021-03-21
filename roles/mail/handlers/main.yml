@@ -36,3 +36,8 @@
   service:
     name: php7.4-fpm
     state: restarted
+
+- name: load apache vhosts
+  shell:
+    chdir: /etc/apache2/sites-available
+    cmd: a2ensite *.conf
