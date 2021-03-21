@@ -5,7 +5,7 @@
   lineinfile:
     path: /etc/roundcube/config.inc.php
     regexp: \$config\['default_host'\]\s?=\s?[\w\(\)',\s\[\]]+;
-    line: config['default_host'] = array("localhost");
+    line: $config['default_host'] = array("localhost");
 
 - name: Set the STMP host for roundcube
   lineinfile:
