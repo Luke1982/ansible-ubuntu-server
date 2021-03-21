@@ -22,8 +22,8 @@ mail_location = maildir:/var/vmail/%d/%n/Maildir
 
 ## Overrides conf.d/10-ssl.conf
 ssl = yes
-ssl_cert = </etc/letsencrypt/live/{{hostname}}/fullchain.pem
-ssl_key = </etc/letsencrypt/live/{{hostname}}/privkey.pem
+ssl_cert = </etc/letsencrypt/live/{{defaultdomain}}/fullchain.pem
+ssl_key = </etc/letsencrypt/live/{{defaultdomain}}/privkey.pem
 
 
 ## Overrides conf.d/15-mailboxes.conf
