@@ -5,13 +5,13 @@
 
 user = {{ user }}
 group = www-data
-listen = /run/php/php7.4-fpm-{{ user }}.sock
+listen = /run/php/php{{ item.value.phpver }}-fpm-{{ user }}.sock
 
 listen.owner = {{ user }}
 listen.group = www-data
 
 pm = dynamic
-pm.max_children = 5
+pm.max_children = 7
 pm.start_servers = 2
 pm.min_spare_servers = 1
 pm.max_spare_servers = 3

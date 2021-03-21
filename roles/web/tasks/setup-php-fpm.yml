@@ -20,6 +20,8 @@
 - name: Create separate PHP FPM pool for each vhost
   template:
     src: "php-pool.conf.j2"
-    dest: "/etc/php/7.4/fpm/pool.d/{{ item.value.docroot_owner }}.conf"
+    dest: "/etc/php/{{ item.value.phpver }}/fpm/pool.d/{{ item.value.docroot_owner }}.conf"
   with_dict: "{{ apache_vhosts }}"
-  notify: "restart php 7.4"
+  notify:
+    - "restart php 7.4"
+    - "restart php 7.3"

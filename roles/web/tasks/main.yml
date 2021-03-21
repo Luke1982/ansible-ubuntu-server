@@ -28,6 +28,11 @@
     cmd: a2enmod headers
   notify: restart apache
 
+- name: Enable Ondrej PHP PPA
+  apt_repository:
+    repo: ppa:ondrej/php
+    state: present
+
 - name: Install PHP and some PHP modules
   apt:
     pkg:
@@ -38,6 +43,17 @@
       - php-imap
       - php-mysql
       - php-zip
+      - php7.3
+      - php7.3-fpm
+      - php7.3-cli
+      - php7.3-mysql
+      - php7.3-gd
+      - php7.3-imagick
+      - php7.3-xml
+      - php7.3-zip
+      - php7.3-intl
+      - php7.3-mbstring
+      - php7.3-curl
     state: present
 
 - include: setup-php-fpm.yml
