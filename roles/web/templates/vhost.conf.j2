@@ -5,7 +5,7 @@
 <VirtualHost *:80>
 
   <FilesMatch \.php$>
-    SetHandler "proxy:unix:/var/run/php/php7.4-fpm-{{ vhost.docroot_owner }}.sock|fcgi://localhost/"
+    SetHandler "proxy:unix:/var/run/php/php{{ vhost.phpver }}-fpm-{{ vhost.docroot_owner }}.sock|fcgi://localhost/"
   </FilesMatch>
 
 {% if vhost.servername is defined %}
@@ -38,4 +38,49 @@
   {{ vhost.extra_parameters }}
 {% endif %}
 
+{%if vhost.ssl is defined %}
+  RewriteEngine On
+  RewriteCond %{HTTPS} off
+  RewriteRule .* https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+{% endif %}
+
 </VirtualHost>
+
+{%if vhost.ssl is defined %}
+<VirtualHost *:443>
+  {% if vhost.serveradmin is defined %}
+    ServerAdmin {{ vhost.serveradmin }}
+  {% endif %}
+
+  <FilesMatch \.php$>
+    SetHandler "proxy:unix:/var/run/php/php{{ vhost.phpver }}-fpm-{{ vhost.docroot_owner }}.sock|fcgi://localhost/"
+  </FilesMatch>
+
+  {% if vhost.servername is defined %}
+    ServerName {{ vhost.servername }}
+  {% endif %}
+  {% if vhost.serveralias is defined %}
+    ServerAlias {{ vhost.serveralias }}
+  {% endif %}
+  {% if vhost.documentroot is defined %}
+    DocumentRoot {{ vhost.documentroot }}
+  {% endif %}
+
+  ErrorLog ${APACHE_LOG_DIR}/{{ item.key }}_error.log
+  CustomLog ${APACHE_LOG_DIR}/{{ item.key }}_access.log combined
+
+{% if vhost.documentroot is defined %}
+  <Directory "{{ vhost.documentroot }}">
+    AllowOverride {{ vhost.allow_override | default(apache_allow_override) }}
+    Options {{ vhost.options | default(apache_options) }}
+    Require all granted
+    Order allow,deny
+    Allow from all
+  </Directory>
+{% endif %}
+
+    SSLEngine on
+    SSLCertificateFile /etc/letsencrypt/live/{{ vhost.ssldir }}/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/{{ vhost.ssldir }}/privkey.pem
+</VirtualHost>
+{% endif %}
