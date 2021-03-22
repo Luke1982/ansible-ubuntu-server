@@ -26,6 +26,7 @@
       postconf virtual_mailbox_domains=mysql:/etc/postfix/virtual-mailbox-domains.cf
       postconf virtual_mailbox_maps=mysql:/etc/postfix/virtual-mailbox-maps.cf
       postconf virtual_alias_maps=mysql:/etc/postfix/virtual-alias-maps.cf
+      postconf smtpd_sender_login_maps = mysql:/etc/postfix/virtual-mailbox-maps.cf
 
 - name: Make postfix deliver mail to dovecot's LMTP socket
   shell:

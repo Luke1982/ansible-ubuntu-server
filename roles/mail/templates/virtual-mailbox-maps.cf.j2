@@ -2,4 +2,4 @@ user = mailuser
 password = {{mailuser_db_pass}}
 hosts = 127.0.0.1
 dbname = mailserver
-query = SELECT 1 FROM virtual_users WHERE email='%s'
+query = SELECT email FROM virtual_users WHERE email='%s'
