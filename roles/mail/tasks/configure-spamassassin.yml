@@ -5,6 +5,7 @@
   shell:
     cmd: |
      postconf smtpd_milters=unix:/spamass/spamass.sock
+     postconf non_smtpd_milters=unix:/spamass/spamass.sock
      postconf milter_connect_macros="i j {daemon_name} v {if_name} _"
 
 - name: Configure SpamAssassin to use the vmail's home folder for Bayes
