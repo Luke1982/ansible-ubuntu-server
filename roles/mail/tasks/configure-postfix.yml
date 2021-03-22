@@ -48,8 +48,8 @@
     cmd: |
       postconf smtpd_tls_security_level=may
       postconf smtpd_tls_auth_only=yes
-      postconf smtpd_tls_cert_file=/etc/letsencrypt/live/{{hostname}}/fullchain.pem
-      postconf smtpd_tls_key_file=/etc/letsencrypt/live/{{hostname}}/privkey.pem
+      postconf smtpd_tls_cert_file=/etc/letsencrypt/live/{{defaultdomain}}/fullchain.pem
+      postconf smtpd_tls_key_file=/etc/letsencrypt/live/{{defaultdomain}}/privkey.pem
 
 - name: Install e-mail to e-mail mapping in postfix for e-mail submission authentication
   copy:
