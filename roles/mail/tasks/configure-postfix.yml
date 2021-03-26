@@ -97,3 +97,7 @@
        -o smtpd_client_restrictions=permit_sasl_authenticated,reject
        -o smtpd_recipient_restrictions=reject_non_fqdn_recipient,reject_unknown_recipient_domain,permit_sasl_authenticated,reject
   notify: restart postfix
+
+- name: Rebuild postfix alias tables
+  shell:
+    cmd: newaliases
