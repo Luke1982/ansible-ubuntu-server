@@ -20,13 +20,18 @@
     src: "virtual-alias-maps.cf.j2"
     dest: "/etc/postfix/virtual-alias-maps.cf"
 
+- name: Install postfix DB lookup file for sender aliases
+  template:
+    src: "virtual-sender-maps.cf.j2"
+    dest: "/etc/postfix/virtual-sender-maps.cf"
+
 - name: Activate SQL mapping files in postfix
   shell:
     cmd: |
       postconf virtual_mailbox_domains=mysql:/etc/postfix/virtual-mailbox-domains.cf
       postconf virtual_mailbox_maps=mysql:/etc/postfix/virtual-mailbox-maps.cf
       postconf virtual_alias_maps=mysql:/etc/postfix/virtual-alias-maps.cf
-      postconf smtpd_sender_login_maps = mysql:/etc/postfix/virtual-mailbox-maps.cf
+      postconf smtpd_sender_login_maps=mysql:/etc/postfix/virtual-sender-maps.cf
 
 - name: Make postfix deliver mail to dovecot's LMTP socket
   shell:
@@ -51,14 +56,6 @@
       postconf smtpd_tls_cert_file=/etc/letsencrypt/live/{{defaultdomain}}/fullchain.pem
       postconf smtpd_tls_key_file=/etc/letsencrypt/live/{{defaultdomain}}/privkey.pem
 
-- name: Install e-mail to e-mail mapping in postfix for e-mail submission authentication
-  copy:
-    backup: yes
-    src: roles/mail/files/postfix-mysql-email2email.cf
-    dest: /etc/postfix/mysql-email2email.cf
-    owner: root
-    group: root
-
 - name: Place a marker for custom postfix configuration in master.cf
   lineinfile:
     path: /etc/postfix/master.cf
@@ -77,7 +74,6 @@
        -o smtpd_sasl_type=dovecot
        -o smtpd_sasl_path=private/auth
        -o smtpd_sasl_security_options=noanonymous
-       #-o smtpd_sender_login_maps=mysql:/etc/postfix/mysql-email2email.cf
        -o smtpd_sender_restrictions=reject_sender_login_mismatch
        -o smtpd_sasl_local_domain=$myhostname
        -o smtpd_client_restrictions=permit_sasl_authenticated,reject
@@ -91,7 +87,6 @@
        -o smtpd_sasl_type=dovecot
        -o smtpd_sasl_path=private/auth
        -o smtpd_sasl_security_options=noanonymous
-       #-o smtpd_sender_login_maps=mysql:/etc/postfix/mysql-email2email.cf
        -o smtpd_sender_restrictions=reject_sender_login_mismatch
        -o smtpd_sasl_local_domain=$myhostname
        -o smtpd_client_restrictions=permit_sasl_authenticated,reject

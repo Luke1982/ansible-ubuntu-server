@@ -1,0 +1,5 @@
+user = mailuser
+password = {{mailuser_db_pass}}
+hosts = 127.0.0.1
+dbname = mailserver
+query = SELECT users FROM virtual_sender_aliases WHERE alias='%s'
