@@ -21,7 +21,7 @@
     state: directory
     owner: zpush
     group: zpush
-    mode: 0644
+    mode: 0755
 
 - name: Create a directory for Z-push logs
   file:
@@ -29,7 +29,7 @@
     state: directory
     owner: zpush
     group: zpush
-    mode: 0644
+    mode: 0755
 
 - name: Create a directory for Z-push libraries
   file:
@@ -37,7 +37,7 @@
     state: directory
     owner: zpush
     group: zpush
-    mode: 0644
+    mode: 0755
 
 - name: Copy over Z-push clone script
   copy:

@@ -9,7 +9,7 @@
 	</FilesMatch>
 
 	ServerName autodiscover.{{ item }}
-	AliasMatch (?i)/Autodiscover/Autodiscover.xml "/usr/share/z-push/{{ item }}/autodiscover/autodiscover.php"
+	AliasMatch (?i)/Autodiscover/Autodiscover.xml "/usr/share/z-push/{{ item }}/src/autodiscover/autodiscover.php"
 	Alias /Microsoft-Server-ActiveSync /usr/share/z-push/{{ item }}/src/index.php
 
 	<Directory /usr/share/z-push/{{ item }}/src>
