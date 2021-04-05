@@ -21,7 +21,7 @@
     state: directory
     owner: opendkim
     group: opendkim
-    mode: 0760
+    mode: 0755
 
 - name: Add postfix user to the opendkim group
   user:
@@ -31,13 +31,17 @@
     remove: no
     state: present
 
-- name: Enable opendkim miltering in Postfix
-  shell:
-    cmd: |
-      postconf milter_protocol = 2
-      postconf milter_default_action = accept
-      postconf smtpd_milters = unix:/spamass/spamass.sock,unix:/opendkim/opendkim.sock
-      postconf non_smtpd_milters = unix:/spamass/spamass.sock,unix:/opendkim/opendkim.sock
+- name: Enable opendkim smtpd miltering in Postfix
+  replace:
+    path: /etc/postfix/main.cf
+    regexp: ^smtpd_milters\s?=\s?(unix:\/spamass\/spamass.sock)
+    replace: smtpd_milters=\1,unix:/opendkim/opendkim.sock
+
+- name: Enable opendkim non-smtpd miltering in Postfix
+  replace:
+    path: /etc/postfix/main.cf
+    regexp: ^non_smtpd_milters\s?=\s?(unix:\/spamass\/spamass.sock)
+    replace: non_smtpd_milters=\1,unix:/opendkim/opendkim.sock
 
 - name: Create directories for OpenDKIM files and tables
   file:
