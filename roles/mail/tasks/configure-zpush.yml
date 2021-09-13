@@ -5,6 +5,7 @@
   apt:
     pkg:
       - php-mapi
+      - libawl-php
     state: present
 
 - name: Create a special z-push user

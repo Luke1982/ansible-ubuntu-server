@@ -1,6 +1,12 @@
 ---
 # Setup PHP and Apache to use PHP FPM in stead of mod_php
 
+- name: Create directory for each host
+  file:
+    path: "{{ item.value.documentroot }}"
+    state: directory
+  with_dict: "{{ apache_vhosts }}"
+
 - name: Disable apache MPM prefork
   apache2_module:
     name: mpm_prefork
@@ -16,6 +22,16 @@
     name: proxy_fcgi
     state: present
   notify: restart apache
+
+- name: Make sure pool directories exist for PHP 7.4
+  file:
+    path: /etc/php/7.4/fpm/pool.d
+    state: directory
+
+- name: Make sure pool directories exist for PHP 7.3
+  file:
+    path: /etc/php/7.3/fpm/pool.d
+    state: directory
 
 - name: Create separate PHP FPM pool for each vhost
   template:

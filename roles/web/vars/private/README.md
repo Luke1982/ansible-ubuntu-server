@@ -39,6 +39,13 @@ apache_vhosts:
     docroot_owner: "testuser"
     docroot_owngroup: "testuser"
     ssl: "yes"
+    phpver: "7.4"
+    ssldir: testhost.nl
+    phppool:
+      max_children: 200
+      start_servers: 64
+      min_spare_servers: 40
+      max_spare_servers: 80
 ```
 Where
 

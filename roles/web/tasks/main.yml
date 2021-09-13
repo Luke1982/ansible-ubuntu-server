@@ -36,13 +36,6 @@
 - name: Install PHP and some PHP modules
   apt:
     pkg:
-      - php-fpm
-      - php-curl
-      - php-date
-      - php-imagick
-      - php-imap
-      - php-mysql
-      - php-zip
       - php7.3
       - php7.3-fpm
       - php7.3-cli
@@ -54,6 +47,19 @@
       - php7.3-intl
       - php7.3-mbstring
       - php7.3-curl
+      - php7.3-imap
+      - php7.4
+      - php7.4-fpm
+      - php7.4-cli
+      - php7.4-mysql
+      - php7.4-gd
+      - php7.4-imagick
+      - php7.4-xml
+      - php7.4-zip
+      - php7.4-intl
+      - php7.4-mbstring
+      - php7.4-curl
+      - php7.4-imap
     state: present
 
 - include: setup-php-fpm.yml

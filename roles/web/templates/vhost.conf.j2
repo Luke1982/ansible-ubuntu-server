@@ -79,8 +79,10 @@
   </Directory>
 {% endif %}
 
+    {% if vhost.ssl == "yes" %}
     SSLEngine on
     SSLCertificateFile /etc/letsencrypt/live/{{ vhost.ssldir }}/fullchain.pem
     SSLCertificateKeyFile /etc/letsencrypt/live/{{ vhost.ssldir }}/privkey.pem
+    {% endif %}
 </VirtualHost>
 {% endif %}

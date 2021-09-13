@@ -37,4 +37,18 @@ You never store the actual password in a variable file. In stead you store the h
 - Setup Zabbix
 ### Mail
 - Setup Z-push (90% done)
+  - src/config.php SYNC_MAX_ITEMS to 100
+  - src/config.php BACKEND_PROVIDER BackendCombined
+  - src/backends/combined: backends
+  - src/backends/imap/config.php IMAP_FOLDER_SPAM = JUNK
+  - src/backends/caldav/config.php CALDAV_SERVER (nextcloud URL)
+  - src/backends/caldav/config.php CALDAV_PATH `/remote.php/dav/calendars/%u/'`
+  - src/backends/caldav/config.php CALDAV_PERSONAL `Persoonlijk`?
+  - src/backends/caldav/config.php CALDAV_SUPPORTS_SYNC `true`
+  - src/backends/carddav/config.php CARDDAV_SERVER (nextcloud URL)
+  - src/backends/carddav/config.php CARDDAV_PATH `/remote.php/dav/addressbooks/users/%u/contacts/`
+  - src/backends/carddav/config.php CARDDAV_DEFAULT_PATH `/remote.php/dav/addressbooks/users/%u/contacts/`
+  - src/backends/carddav/config.php CARDDAV_CONTACTS_FOLDER_NAME `%u Contactpersonen`
+  - src/backends/carddav/config.php CARDDAV_SUPPORTS_SYNC `true`
+  - https://forum.kopano.io/topic/1634/centos7-no-matter-what-i-get-access-denied-please-send-authorisation-information/5?_=1631478031707
 - Setup webmail subdomains	

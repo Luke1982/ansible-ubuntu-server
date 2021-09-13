@@ -10,8 +10,8 @@ listen = /run/php/php{{ item.value.phpver }}-fpm-{{ user }}.sock
 listen.owner = {{ user }}
 listen.group = www-data
 
-pm = dynamic
-pm.max_children = 7
-pm.start_servers = 2
-pm.min_spare_servers = 1
-pm.max_spare_servers = 3
+pm = ondemand
+pm.max_children = {{ item.value.phppool.max_children }}
+pm.start_servers = {{ item.value.phppool.start_servers }}
+pm.min_spare_servers = {{ item.value.phppool.min_spare_servers }}
+pm.max_spare_servers = {{ item.value.phppool.max_spare_servers }}
