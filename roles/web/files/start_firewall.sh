@@ -3,7 +3,7 @@
 IPT="/sbin/iptables"
 
 # Your DNS servers you use: cat /etc/resolv.conf
-DNS_SERVER="PUT_DNS_SERVERS_HERE"
+DNS_SERVER="127.0.0.53"
 
 # FLush all iptables rules
 iptables --flush
@@ -51,4 +51,4 @@ iptables -A INPUT -p tcp --dport 22 -s 0/0 -j ACCEPT
 iptables -A INPUT -p tcp -m tcp --dport 21 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
 iptables -A INPUT -p tcp -m tcp --dport 20 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
 # Following rules opens everything above port 5000 for FTP traffic after connection is established
-iptables -A INPUT -p tcp -m tcp --sport 5000: --dport 5000: -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+iptables -A INPUT -p tcp -m tcp --sport 5000: --dport 5000: -m conntrack --ctstate ESTABLISHED -j ACCEPT
