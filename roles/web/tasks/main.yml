@@ -62,11 +62,6 @@
       - php7.4-imap
     state: present
 
-- include: setup-php-fpm.yml
-- include: setup-firewall-ids.yml
-- include: manage-users.yml
-- include: setup-vsftp.yml
-
 - name: Create site configurations
   template:
     src: "{{ item.value.template | default(apache_vhosts_template) }}"
@@ -76,6 +71,48 @@
     - create documentroots
     - load apache vhosts
     - restart apache
+
+- name: Create Let's Encrypt's live directory
+  file:
+    path: /etc/letsencrypt/live
+    state: directory
+    owner: root
+    group: root
+    mode: 0600
+
+- name: Create certificate directories per vhost
+  file:
+    path: /etc/letsencrypt/live/{{ item.value.ssldir }}
+    state: directory
+    owner: root
+    group: root
+    mode: 0600
+  with_dict: "{{ apache_vhosts }}"
+
+- name: Create stub key file per vhost
+  template:
+    dest: /etc/letsencrypt/live/{{ item.value.ssldir }}/privkey.pem
+    src: snakeoil.key
+    force: no
+    owner: root
+    group: root
+    mode: 0600
+  with_dict: "{{ apache_vhosts }}"
+
+- name: Create stub certificate file per vhost
+  template:
+    dest: /etc/letsencrypt/live/{{ item.value.ssldir }}/fullchain.pem
+    src: snakeoil.pem
+    force: no
+    owner: root
+    group: root
+    mode: 0600
+  with_dict: "{{ apache_vhosts }}"
+
+- include: setup-php-fpm.yml
+- include: setup-firewall-ids.yml
+- include: manage-users.yml
+- include: setup-vsftp.yml
 
 - name: Create weekly update cron
   cron:
