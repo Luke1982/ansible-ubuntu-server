@@ -126,25 +126,25 @@
     job: "(apt-get update && apt-get -y upgrade) > /dev/null"
     state: present
 
-- name: Don't allow SSH access for root
-  lineinfile:
-    insertafter: "EOF"
-    line: "PermitRootLogin no"
-    path: /etc/ssh/sshd_config
-    state: present
-  notify: restart ssh
+- name: Copy custom SSH config file over
+  copy:
+    src: roles/web/files/sshd_custom.conf
+    dest: /etc/ssh/sshd_config.d/custom.conf
+    mode: 0644
+    owner: root
+    group: root
 
-- name: Allow ansible user to SSH
+- name: Make sure SSH uses custom config file
   lineinfile:
     insertafter: "EOF"
-    line: "AllowUsers ansible"
+    line: "Include sshd_config.d/custom.conf"
     path: /etc/ssh/sshd_config
     state: present
   notify: restart ssh
 
 - name: Only allow ssh for set users
   replace:
-    path: /etc/ssh/sshd_config
+    path: /etc/ssh/sshd_config.d/custom.conf
     regexp: '^AllowUsers\s([\s\w][^#\n]+)'
     replace: AllowUsers \1 {{ item.name }}
   loop: "{{linux_users}}"
