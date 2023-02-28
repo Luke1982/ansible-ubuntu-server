@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS `bayes_global_vars` (
   PRIMARY KEY  (variable)
 );
 
+DELETE FROM `bayes_global_vars` WHERE `bayes_global_vars`.`variable` = 'VERSION';
 INSERT INTO bayes_global_vars VALUES ('VERSION','3');
 
 CREATE TABLE IF NOT EXISTS `bayes_seen` (
