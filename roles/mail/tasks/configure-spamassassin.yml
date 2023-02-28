@@ -14,6 +14,16 @@
     regexp: OPTIONS="[\w\-\s]+"
     line: OPTIONS="--create-prefs --max-children 5 --helper-home-dir -x -u vmail"
 
+- name: Configure Spamassassin to get user preferences from MySQL
+  template:
+    src: "spamassassin-sql.cf.j2"
+    dest: "/etc/spamassassin/sql.cf"
+
+- name: Configure Bayes to use MySQL
+  template:
+    src: "bayes-sql.cf.j2"
+    dest: "/etc/spamassassin/bayes.cf"
+
 - name: Enable the SpamAssassin update cron
   lineinfile:
     path: /etc/default/spamassassin

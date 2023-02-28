@@ -27,12 +27,26 @@
     state: present
     login_unix_socket: /var/run/mysqld/mysqld.sock
 
+- name: Setup spamassassin database
+  mysql_db:
+    encoding: "utf8"
+    name: spamassassin
+    state: present
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+
+- name: Setup bayes database
+  mysql_db:
+    encoding: "utf8"
+    name: bayes
+    state: present
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+
 - name: Setup the mailserver user
   mysql_user:
     host: localhost
     name: mailuser
     password: "{{ mailuser_db_pass }}"
-    priv: "mailserver.*:SELECT,INSERT,UPDATE,DELETE"
+    priv: "mailserver.*:SELECT,INSERT,UPDATE,DELETE/spamassassin.*:SELECT,INSERT,UPDATE,DELETE/bayes.*:SELECT,INSERT,UPDATE,DELETE"
     login_unix_socket: /var/run/mysqld/mysqld.sock
 
 - name: Copy over mailserver setup SQL
@@ -43,11 +57,41 @@
     owner: root
     group: root
 
+- name: Copy over spamassassin setup SQL
+  copy:
+    src: roles/mail/files/setup_spamassassin_tables.sql
+    dest: /tmp/setup_spamassassin_tables.sql
+    mode: 0644
+    owner: root
+    group: root
+
+- name: Copy over bayes setup SQL
+  copy:
+    src: roles/mail/files/setup_bayes_tables.sql
+    dest: /tmp/setup_bayes_tables.sql
+    mode: 0644
+    owner: root
+    group: root
+
 - name: Create mailserver database schema
   mysql_db:
     state: import
     name: mailserver
     target: /tmp/setup_mailserver_tables.sql
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+
+- name: Create spamassassin database schema
+  mysql_db:
+    state: import
+    name: spamassassin
+    target: /tmp/setup_spamassassin_tables.sql
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+
+- name: Create bayes database schema
+  mysql_db:
+    state: import
+    name: bayes
+    target: /tmp/setup_bayes_tables.sql
     login_unix_socket: /var/run/mysqld/mysqld.sock
 
 - include: configure-postfix.yml
