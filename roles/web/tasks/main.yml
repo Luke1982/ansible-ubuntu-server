@@ -10,6 +10,7 @@
     pkg:
       - apache2
       - certbot
+      - python3-certbot-apache
       - vsftpd
     state: present
 
