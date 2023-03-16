@@ -28,9 +28,9 @@
     path: /etc/php/7.4/fpm/pool.d
     state: directory
 
-- name: Make sure pool directories exist for PHP 7.3
+- name: Make sure pool directories exist for PHP 8.2
   file:
-    path: /etc/php/7.3/fpm/pool.d
+    path: /etc/php/8.2/fpm/pool.d
     state: directory
 
 - name: Create separate PHP FPM pool for each vhost
@@ -40,4 +40,4 @@
   with_dict: "{{ apache_vhosts }}"
   notify:
     - "restart php 7.4"
-    - "restart php 7.3"
+    - "restart php 8.2"
