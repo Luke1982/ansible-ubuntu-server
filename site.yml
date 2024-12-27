@@ -8,7 +8,6 @@
     - web
   vars_files:
   - roles/web/vars/private/linuxusers.yml
-  - roles/web/vars/private/apachevhosts.yml
 
 - name: Deploy database servers
   become: yes
