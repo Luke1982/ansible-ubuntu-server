@@ -1,19 +1,9 @@
 ---
 # Main webserver handler tasks
 
-- name: restart apache
-  service:
-    name: apache2
-    state: restarted
-
 - name: restart ssh
   service:
     name: sshd
-    state: restarted
-
-- name: restart vsftp
-  service:
-    name: vsftpd
     state: restarted
 
 - name: "restart php 7.4"
@@ -36,16 +26,3 @@
 - name: start firewall
   command:
     cmd: bash /usr/local/bin/start_firewall.sh
-
-- name: create documentroots
-  file:
-    path: "{{ item.value.documentroot }}"
-    owner: "{{ item.value.docroot_owner }}"
-    group: "{{ item.value.docroot_owngroup }}"
-    state: directory
-  with_dict: "{{ apache_vhosts }}"
-
-- name: load apache vhosts
-  shell:
-    chdir: /etc/apache2/sites-available
-    cmd: a2ensite *.conf

@@ -5,29 +5,11 @@
   hostname:
     name: "{{ hostname }}"
 
-- name: Install Apache and certbot
+- name: Install Certbot
   apt:
     pkg:
-      - apache2
       - certbot
-      - python3-certbot-apache
-      - vsftpd
     state: present
-
-- name: Enable mod-rewrite
-  shell:
-    cmd: a2enmod rewrite
-  notify: restart apache
-
-- name: Enable SSL
-  shell:
-    cmd: a2enmod ssl
-  notify: restart apache
-
-- name: Enable Headers module
-  shell:
-    cmd: a2enmod headers
-  notify: restart apache
 
 - name: Enable Ondrej PHP PPA
   apt_repository:
@@ -51,16 +33,6 @@
       - php8.3-imap
     state: present
 
-- name: Create site configurations
-  template:
-    src: "{{ item.value.template | default(apache_vhosts_template) }}"
-    dest: "/etc/apache2/sites-available/{{ item.value.servername }}.conf"
-  with_dict: "{{ apache_vhosts }}"
-  notify:
-    - create documentroots
-    - load apache vhosts
-    - restart apache
-
 - name: Create Let's Encrypt's live directory
   file:
     path: /etc/letsencrypt/live
@@ -69,39 +41,9 @@
     group: root
     mode: 0600
 
-- name: Create certificate directories per vhost
-  file:
-    path: /etc/letsencrypt/live/{{ item.value.ssldir }}
-    state: directory
-    owner: root
-    group: root
-    mode: 0600
-  with_dict: "{{ apache_vhosts }}"
-
-- name: Create stub key file per vhost
-  template:
-    dest: /etc/letsencrypt/live/{{ item.value.ssldir }}/privkey.pem
-    src: snakeoil.key
-    force: no
-    owner: root
-    group: root
-    mode: 0600
-  with_dict: "{{ apache_vhosts }}"
-
-- name: Create stub certificate file per vhost
-  template:
-    dest: /etc/letsencrypt/live/{{ item.value.ssldir }}/fullchain.pem
-    src: snakeoil.pem
-    force: no
-    owner: root
-    group: root
-    mode: 0600
-  with_dict: "{{ apache_vhosts }}"
-
 - include: setup-php-fpm.yml
 - include: setup-firewall-ids.yml
 - include: manage-users.yml
-- include: setup-vsftp.yml
 
 - name: Create weekly update cron
   cron:

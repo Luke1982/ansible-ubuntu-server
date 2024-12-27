@@ -1,43 +1,7 @@
 ---
-# Setup PHP and Apache to use PHP FPM in stead of mod_php
+# Setup PHP
 
-- name: Create directory for each host
+- name: Make sure pool directories exist for PHP 8.3
   file:
-    path: "{{ item.value.documentroot }}"
+    path: /etc/php/8.3/fpm/pool.d
     state: directory
-  with_dict: "{{ apache_vhosts }}"
-
-- name: Disable apache MPM prefork
-  apache2_module:
-    name: mpm_prefork
-    state: absent
-
-- name: Enable MPM event module
-  apache2_module:
-    name: mpm_event
-    state: present
-
-- name: Enable FCGI Proxy module
-  apache2_module:
-    name: proxy_fcgi
-    state: present
-  notify: restart apache
-
-- name: Make sure pool directories exist for PHP 7.4
-  file:
-    path: /etc/php/7.4/fpm/pool.d
-    state: directory
-
-- name: Make sure pool directories exist for PHP 8.2
-  file:
-    path: /etc/php/8.2/fpm/pool.d
-    state: directory
-
-- name: Create separate PHP FPM pool for each vhost
-  template:
-    src: "php-pool.conf.j2"
-    dest: "/etc/php/{{ item.value.phpver }}/fpm/pool.d/{{ item.value.docroot_owner }}.conf"
-  with_dict: "{{ apache_vhosts }}"
-  notify:
-    - "restart php 7.4"
-    - "restart php 8.2"
