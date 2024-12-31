@@ -10,7 +10,7 @@
 
 - name: Configure SpamAssassin to use the vmail's home folder for Bayes
   lineinfile:
-    path: /etc/default/spamassassin
+    path: /etc/default/spamd
     regexp: OPTIONS="[\w\-\s]+"
     line: OPTIONS="--create-prefs --max-children 5 --helper-home-dir -x -u vmail"
 
@@ -26,14 +26,14 @@
 
 - name: Enable the SpamAssassin update cron
   lineinfile:
-    path: /etc/default/spamassassin
+    path: /etc/default/spamd
     regexp: CRON\s?=\s?0
     line: CRON=1
 
 - name: Enable the SpamAssassin service
   systemd:
     enabled: yes
-    name: spamassassin
+    name: spamd
     state: started
   notify: restart spamassassin
 
@@ -45,7 +45,7 @@
 
 - name: Create SpamAssassin systemd override directory
   file:
-    path: /etc/systemd/system/spamassassin.service.d
+    path: /etc/systemd/system/spamd.service.d
     state: directory
     owner: root
     group: root
@@ -53,7 +53,7 @@
 
 - name: Copy SpamAssassin systemd override configuration over
   copy:
-    dest: /etc/systemd/system/spamassassin.service.d/override.conf
+    dest: /etc/systemd/system/spamd.service.d/override.conf
     src: roles/mail/files/override-spamassassin-systemd.conf
     owner: root
     group: root

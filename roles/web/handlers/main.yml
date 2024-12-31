@@ -3,17 +3,7 @@
 
 - name: restart ssh
   service:
-    name: sshd
-    state: restarted
-
-- name: "restart php 7.4"
-  service:
-    name: php7.4-fpm
-    state: restarted
-
-- name: "restart php 7.3"
-  service:
-    name: php7.3-fpm
+    name: ssh
     state: restarted
 
 - name: setup iptables dns

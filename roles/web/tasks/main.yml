@@ -11,6 +11,8 @@
       - certbot
     state: present
 
+- include_tasks: setup-openlitespeed.yml
+
 - name: Enable Ondrej PHP PPA
   apt_repository:
     repo: ppa:ondrej/php
@@ -41,9 +43,9 @@
     group: root
     mode: 0600
 
-- include: setup-php-fpm.yml
-- include: setup-firewall-ids.yml
-- include: manage-users.yml
+- include_tasks: setup-php-fpm.yml
+- include_tasks: setup-firewall-ids.yml
+- include_tasks: manage-users.yml
 
 - name: Create weekly update cron
   cron:

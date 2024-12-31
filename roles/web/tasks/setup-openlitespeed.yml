@@ -1,0 +1,24 @@
+---
+# Setup Openlitespeed
+# http://rpms.litespeedtech.com/debian/dists/noble/main/binary-amd64/Packages
+
+- name: Setup openlitespeed repository
+  shell: sudo wget -O - https://repo.litespeed.sh | sudo bash
+
+- name: Install openlitespeed
+  apt:
+    pkg:
+      - openlitespeed
+      - lsphp83
+      - lsphp83-mysql
+      - lsphp83-common
+      - lsphp83-curl
+      - lsphp83-imap
+      - lsphp83-imagick
+      - lsphp83-memcached
+      - lsphp83-opcache
+      - lsphp83-redis
+      - lsphp83-tidy
+      - lsphp83-intl
+    state: present
+  

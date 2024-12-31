@@ -94,7 +94,7 @@
     target: /tmp/setup_bayes_tables.sql
     login_unix_socket: /var/run/mysqld/mysqld.sock
 
-- include: configure-postfix.yml
+- include_tasks: configure-postfix.yml
 
 - name: Add a group for the virtual mail handling
   group:
@@ -133,8 +133,7 @@
     group: root
     owner: root
 
-- include: configure-dovecot.yml
-- include: configure-roundcube.yml
-- include: configure-spamassassin.yml
-- include: configure-opendkim.yml
-- include: configure-zpush.yml
+- include_tasks: configure-dovecot.yml
+- include_tasks: configure-roundcube.yml
+- include_tasks: configure-spamassassin.yml
+- include_tasks: configure-opendkim.yml

@@ -16,22 +16,3 @@
     owner: root
     group: root
   notify: restart mysql
-
-- name: Ensure phpMyAdmin config file is included in Apache config.
-  lineinfile:
-    dest: /etc/apache2/apache2.conf
-    state: present
-    regexp: "^Include.+phpmyadmin.+$"
-    line: "Include /etc/phpmyadmin/apache.conf"
-    insertafter: "EOF"
-  notify: restart apache
-
-- name: Ensure PHPMyAdmin is configured to proxy to php-fpm
-  blockinfile:
-    block: |
-      <FilesMatch \.php$>
-        SetHandler "proxy:unix:/var/run/php/php8.2-fpm.sock|fcgi://localhost/"
-      </FilesMatch>
-    insertafter: "Alias /phpmyadmin /usr/share/phpmyadmin"
-    path: /etc/phpmyadmin/apache.conf
-  notify: restart apache
