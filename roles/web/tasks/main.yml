@@ -5,10 +5,11 @@
   hostname:
     name: "{{ hostname }}"
 
-- name: Install Certbot
+- name: Install default packages
   apt:
     pkg:
       - certbot
+      - unzip
     state: present
 
 - include_tasks: setup-openlitespeed.yml

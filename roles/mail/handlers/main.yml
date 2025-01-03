@@ -18,26 +18,11 @@
 
 - name: restart spamassassin
   service:
-    name: spamassassin
+    name: spamd
     state: restarted
 
 - name: Restart spamassassin with daemon reload
   systemd:
-    name: spamassassin
+    name: spamd
     daemon_reload: yes
     state: restarted
-
-- name: restart apache
-  service:
-    name: apache2
-    state: restarted
-
-- name: "restart php 7.4"
-  service:
-    name: php7.4-fpm
-    state: restarted
-
-- name: load apache vhosts
-  shell:
-    chdir: /etc/apache2/sites-available
-    cmd: a2ensite *.conf

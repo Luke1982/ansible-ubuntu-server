@@ -5,8 +5,18 @@
   apt:
     pkg:
       - mariadb-server
-      - phpmyadmin
     state: present
+
+- name: Copy over phpmyadmin installation script
+  copy:
+    src: roles/db/files/install-phpmyadmin-openlitespeed.sh
+    dest: /tmp/install-phpmyadmin-openlitespeed.sh
+    mode: 0755
+    owner: root
+    group: root
+
+- name: Run phpmyadmin installation script
+  command: /tmp/install-phpmyadmin-openlitespeed.sh
 
 - name: Copy custom mysql config file over
   copy:
