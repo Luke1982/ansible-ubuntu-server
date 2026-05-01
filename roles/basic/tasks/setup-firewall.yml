@@ -4,7 +4,7 @@
   copy:
     src: start_firewall.sh
     dest: /usr/local/bin/start_firewall.sh
-    mode: 0644
+    mode: 0755
     owner: root
     group: root
   notify: setup iptables dns

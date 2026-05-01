@@ -19,7 +19,7 @@
 - name: Only allow ssh for set users
   replace:
     path: /etc/ssh/sshd_config.d/custom.conf
-    regexp: '^AllowUsers\s([\s\w][^#\n]+)'
+    regexp: '(?m)^AllowUsers\s([\s\w][^#\n]+)'
     replace: AllowUsers \1 {{ item.name }}
   loop: "{{ linux_users }}"
   when: item.ssh_access == true
