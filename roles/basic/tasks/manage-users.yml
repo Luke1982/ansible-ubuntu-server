@@ -1,0 +1,25 @@
+---
+
+- name: Setup groups
+  group:
+    name: "{{ item.name }}"
+    state: "{{ item.state }}"
+  loop: "{{ linux_groups }}"
+
+- name: Manage regular linux users
+  user:
+    name: "{{ item.name }}"
+    state: "{{ item.state }}"
+    groups: "{{ item.groups }}"
+    password: "{{ item.password }}"
+    create_home: "{{ item.create_home }}"
+  loop: "{{ linux_users }}"
+
+- name: Manage sudoers entry for sudo users
+  community.general.sudoers:
+    name: "{{ item.name }}"
+    user: "{{ item.name }}"
+    commands: /bin/su
+    nopassword: true
+    state: "{{ 'present' if item.state == 'present' and 'sudo' in (item.groups.split(',') | map('trim') | list) else 'absent' }}"
+  loop: "{{ linux_users }}"
