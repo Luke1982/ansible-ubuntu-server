@@ -5,9 +5,10 @@
   become: yes
   hosts: webservers
   roles:
+    - basic
     - web
   vars_files:
-  - roles/web/vars/private/linuxusers.yml
+    - roles/basic/vars/private/linuxusers.yml
 
 - name: Deploy database servers
   become: yes
