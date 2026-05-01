@@ -1,15 +1,10 @@
 ---
 # Web role tasks
 
-- name: Set the hostname
-  hostname:
-    name: "{{ hostname }}"
-
-- name: Install default packages
+- name: Install certbot
   apt:
     pkg:
       - certbot
-      - unzip
     state: present
 
 - include_tasks: setup-openlitespeed.yml
@@ -45,42 +40,3 @@
     mode: 0600
 
 - include_tasks: setup-php-fpm.yml
-- include_tasks: setup-firewall-ids.yml
-- include_tasks: manage-users.yml
-
-- name: Create weekly update cron
-  cron:
-    name: "Update system every Tuesday night at 23:00"
-    user: root
-    weekday: "2"
-    month: "*"
-    minute: "*"
-    hour: "23"
-    day: "*"
-    job: "(apt-get update && apt-get -y upgrade) > /dev/null"
-    state: present
-
-- name: Copy custom SSH config file over
-  copy:
-    src: roles/web/files/sshd_custom.conf
-    dest: /etc/ssh/sshd_config.d/custom.conf
-    mode: 0644
-    owner: root
-    group: root
-
-- name: Make sure SSH uses custom config file
-  lineinfile:
-    insertafter: "EOF"
-    line: "Include sshd_config.d/custom.conf"
-    path: /etc/ssh/sshd_config
-    state: present
-  notify: restart ssh
-
-- name: Only allow ssh for set users
-  replace:
-    path: /etc/ssh/sshd_config.d/custom.conf
-    regexp: '^AllowUsers\s([\s\w][^#\n]+)'
-    replace: AllowUsers \1 {{ item.name }}
-  loop: "{{linux_users}}"
-  when: item.ssh_access == true
-  notify: restart ssh
