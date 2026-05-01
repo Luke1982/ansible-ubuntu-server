@@ -131,6 +131,10 @@ collections:
 
 ## Variables
 
-`linux_users` and `linux_groups` remain in `roles/web/vars/` and `roles/web/vars/private/`. They are loaded via `vars_files` in `site.yml` at the play level, so `basic` role tasks can reference them.
+`linux_groups` moves from `roles/web/vars/main.yml` to `roles/basic/vars/main.yml`.
 
-No new variables needed.
+`linux_users` moves from `roles/web/vars/private/linuxusers.yml` to `roles/basic/vars/private/linuxusers.yml`. The `private/` directory in the basic role gets its own `README.md` (copied from the web role's private README).
+
+`site.yml` `vars_files` updated to point to `roles/basic/vars/private/linuxusers.yml`.
+
+`roles/web/vars/main.yml` retains only the non-user variables (`certvars`, and the now-unused `apache_*` defaults can be cleaned from `roles/web/defaults/main.yml` too).
