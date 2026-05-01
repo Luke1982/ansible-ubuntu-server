@@ -1,0 +1,24 @@
+---
+
+- name: Set the hostname
+  hostname:
+    name: "{{ hostname }}"
+
+- name: Install base packages
+  apt:
+    pkg:
+      - unzip
+      - unattended-upgrades
+    state: present
+
+- name: Configure unattended-upgrades
+  copy:
+    src: 20auto-upgrades
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    mode: 0644
+    owner: root
+    group: root
+
+- include_tasks: manage-users.yml
+- include_tasks: setup-ssh.yml
+- include_tasks: setup-firewall.yml
