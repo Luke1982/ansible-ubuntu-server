@@ -1,9 +1,5 @@
---- 
+---
 # Variables for the web role
-
-linux_groups:
-  - name: "webusers"
-    state: "present"
 
 certvars:
   key_size: 4096
