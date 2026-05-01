@@ -1,5 +1,6 @@
 private/*.yml
 roles/web/vars/private/*.yml
+roles/basic/vars/private/*.yml
 roles/mail/vars/private/*.yml
 *.retry
 .env
