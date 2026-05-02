@@ -1,0 +1,10 @@
+---
+
+- name: Install postfix fail2ban jail
+  copy:
+    src: jail-postfix.conf
+    dest: /etc/fail2ban/jail.d/postfix.conf
+    mode: 0644
+    owner: root
+    group: root
+  notify: restart fail2ban

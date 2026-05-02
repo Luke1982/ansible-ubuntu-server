@@ -95,6 +95,7 @@
     login_unix_socket: /var/run/mysqld/mysqld.sock
 
 - include_tasks: configure-postfix.yml
+- include_tasks: configure-fail2ban.yml
 
 - name: Add a group for the virtual mail handling
   group:
