@@ -9,11 +9,6 @@
 
 - include_tasks: setup-openlitespeed.yml
 
-- name: Enable Ondrej PHP PPA
-  apt_repository:
-    repo: ppa:ondrej/php
-    state: present
-
 - name: Install PHP and some PHP modules
   apt:
     pkg:
