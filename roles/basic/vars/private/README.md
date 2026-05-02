@@ -13,6 +13,7 @@ linux_users:
     name: "username"
     state: "present"
     ssh_access: true
+    public_key: "ssh-rsa AAAA... user@host"
 ```
 Where:
 - `create_home` — whether to create a home directory, yes or no
@@ -21,3 +22,4 @@ Where:
 - `name` — username
 - `state` — present or absent
 - `ssh_access` — true or false, controls AllowUsers in sshd
+- `public_key` — SSH public key to install in authorized_keys (optional)

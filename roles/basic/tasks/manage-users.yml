@@ -15,6 +15,14 @@
     create_home: "{{ item.create_home }}"
   loop: "{{ linux_users }}"
 
+- name: Install authorized SSH keys
+  authorized_key:
+    user: "{{ item.name }}"
+    key: "{{ item.public_key }}"
+    state: present
+  loop: "{{ linux_users }}"
+  when: item.state == "present" and item.public_key is defined and item.public_key
+
 - name: Manage sudoers entry for sudo users
   community.general.sudoers:
     name: "{{ item.name }}"
