@@ -13,6 +13,7 @@
     groups: "{{ item.groups }}"
     password: "{{ item.password }}"
     create_home: "{{ item.create_home }}"
+    shell: /bin/bash
   loop: "{{ linux_users }}"
 
 - name: Install authorized SSH keys
