@@ -1,40 +1,79 @@
 # Ansible server setup
 
-## Steps to setup
-- Create a VM, local or remote
-- Install ubuntu
-- Create a (ansible) user with a password and home directory
-- Copy your public key to the authorized_keys file in the `.ssh` directory of that user's home directory (create that if it doesn't exist) (or use ssh-copy-id)
+## Prerequisites
 
-## To deploy
+- A fresh Ubuntu server (local VM or remote)
+- An `ansible` user created on the server with a home directory
+- Your SSH public key copied to that user's `~/.ssh/authorized_keys` (use `ssh-copy-id ansible@<ip>`)
+- The `ansible` user has passwordless sudo (add to `/etc/sudoers.d/ansible`: `ansible ALL=(ALL) NOPASSWD: ALL`)
+- `community.general` collection installed locally: `ansible-galaxy collection install -r requirements.yml`
 
-- Create a file called `inventory.yml` in the `private` directory. You can use `inventory-example.yml` in the root directory as a starting point.
-- Add the DNS servers for your hosts, or host groups als a var with the name `dns_servers` followed by one or more space-separated DNS records.
+## Project structure
 
-### To configure webservers
+Each server has its own playbook (e.g. `web01.whservice.nl.yml`) and each domain has its own private inventory file in `private/`. Neither is committed to git.
 
-- Create a file called `linuxusers.yml` in `roles/web/vars/private/` and populate that like documented in the README file in that directory.
-- Do the same for `apachevhosts.yml` in the `roles/web/vars/private/` folder.
+## Setting up a new server
 
-### To configure DB servers
-No special configuration needed. Remember that MariaDB will allow `sudo mysql` as a user in the 'sudoers' group to allow you to do administrative stuff like create users and databases.
+### 1. Create a private inventory file
 
-### To configure mailservers
-- Create a file called `mailvars.yml` in `roles/mail/vars/private` according to the example you can find in the README in that directory.
+Copy `inventory-example.yml` to `private/<hostname>.yml` and fill in the IP, hostname, dns_servers, and adjust `ansible_ssh_private_key_file` to point to the key you use to reach the `ansible` user.
 
-### To start the deployment
+### 2. Create a playbook
 
-Remember the username you created on the remote machine, and the password of that user. Now execute `ansible-playbook -u USER -K site.yml`. 
-You'll be asked for a SUDO password, that should be the password of the user on the remote machine. After that you may be asked for your own SSH key password, if you've set that.
+Create `<hostname>.yml` in the project root. Include only the plays that apply:
 
-### How to create password hashes
+```yaml
+---
+- name: Deploy <hostname>
+  become: yes
+  hosts: webservers
+  roles:
+    - basic
+    - web
+  vars_files:
+    - roles/basic/vars/private/linuxusers.yml
+```
 
-You never store the actual password in a variable file. In stead you store the hash as saved in `/etc/shadow`. To make these passwords run `mkpasswd --method=sha-512`
+### 3. Create private var files
+
+**`roles/basic/vars/private/linuxusers.yml`** — Linux users. See the README in that directory for the structure. This file is gitignored.
+
+**`roles/web/vars/private/`** — Virtual hosts config (`apachevhosts.yml`). See the README in that directory.
+
+**`roles/mail/vars/private/mailvars.yml`** — Mail server config. See the README in that directory.
+
+### 4. Deploy
+
+```bash
+ansible-playbook -i private/<hostname>.yml <hostname>.yml
+```
+
+No password prompts — Ansible authenticates via the key in `ansible_ssh_private_key_file`, and `become` uses passwordless sudo.
+
+## Roles
+
+| Role | What it does |
+|------|-------------|
+| `basic` | Hostname, base packages, unattended-upgrades, users, SSH hardening, firewall, fail2ban |
+| `web` | OpenLiteSpeed, PHP 8.3, Let's Encrypt directory, certbot |
+| `db` | MariaDB, phpMyAdmin |
+| `mail` | Postfix, Dovecot, OpenDKIM, SpamAssassin, Roundcube |
+
+## Creating password hashes
+
+Never store plaintext passwords. Generate a hash with:
+
+```bash
+mkpasswd --method=sha-512
+```
+
+Paste the result into `linuxusers.yml` as the `password` field.
 
 ## TODO
 
 ### Web
 - Setup Zabbix
+
 ### Mail
 - Setup Z-push (90% done)
-- Setup webmail subdomains	
+- Setup webmail subdomains
