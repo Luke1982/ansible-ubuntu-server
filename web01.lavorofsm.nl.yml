@@ -1,0 +1,15 @@
+---
+- name: Deploy and configure web01.lavorofsm.nl
+  become: yes
+  hosts: webservers
+  roles:
+    - basic
+    - web
+  vars_files:
+    - roles/basic/vars/private/linuxusers.yml
+
+- name: Deploy database server on web01.lavorofsm.nl
+  become: yes
+  hosts: dbservers
+  roles:
+    - db

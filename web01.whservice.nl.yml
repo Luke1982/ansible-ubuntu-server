@@ -1,7 +1,5 @@
 ---
-# Main playbook
-
-- name: Deploy and configure webservers
+- name: Deploy and configure web01.whservice.nl
   become: yes
   hosts: webservers
   roles:
@@ -10,13 +8,13 @@
   vars_files:
     - roles/basic/vars/private/linuxusers.yml
 
-- name: Deploy database servers
+- name: Deploy database server on web01.whservice.nl
   become: yes
   hosts: dbservers
   roles:
     - db
 
-- name: Deploy mailservers
+- name: Deploy mailserver on web01.whservice.nl
   become: yes
   hosts: mailservers
   roles:
