@@ -25,7 +25,7 @@ DOMAIN_ARRAY=(${EMAIL//@/ })
 mysql -D mailserver -e "INSERT IGNORE INTO virtual_domains (name) VALUES ('${DOMAIN_ARRAY[1]}')"
 
 # Hash the password
-PASSWORD_HASH=$(dovecot pw -s SHA256-CRYPT -p ${PASSWORD})
+PASSWORD_HASH=$(dovecot pw -s BLF-CRYPT -p ${PASSWORD})
 
 # Create the user, update password if already exists
 mysql -D mailserver -e "INSERT INTO virtual_users (domain_id, email, password) VALUES ((SELECT id FROM virtual_domains WHERE name = '${DOMAIN_ARRAY[1]}'), '${EMAIL}', '${PASSWORD_HASH}') ON DUPLICATE KEY UPDATE password='${PASSWORD_HASH}'"
