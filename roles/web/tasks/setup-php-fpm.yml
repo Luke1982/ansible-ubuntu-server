@@ -1,7 +1,7 @@
 ---
 # Setup PHP
 
-- name: Make sure pool directories exist for PHP 8.3
+- name: Make sure pool directories exist for PHP {{ php_version }}
   file:
-    path: /etc/php/8.3/fpm/pool.d
+    path: /etc/php/{{ php_version }}/fpm/pool.d
     state: directory

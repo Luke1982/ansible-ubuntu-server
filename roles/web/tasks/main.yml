@@ -1,6 +1,12 @@
 ---
 # Web role tasks
 
+- name: Check that this Ubuntu release is supported
+  assert:
+    that: ansible_distribution_version in php_versions
+    fail_msg: "Ubuntu {{ ansible_distribution_version }} isn't supported: roles/web/defaults/main.yml has no PHP version for it."
+    quiet: yes
+
 - name: Install certbot and git
   apt:
     pkg:
@@ -13,19 +19,25 @@
 - name: Install PHP and some PHP modules
   apt:
     pkg:
-      - php8.3
-      - php8.3-fpm
-      - php8.3-cli
-      - php8.3-mysql
-      - php8.3-gd
-      - php8.3-imagick
-      - php8.3-xml
-      - php8.3-zip
-      - php8.3-intl
-      - php8.3-mbstring
-      - php8.3-curl
-      - php8.3-imap
+      - "php{{ php_version }}"
+      - "php{{ php_version }}-fpm"
+      - "php{{ php_version }}-cli"
+      - "php{{ php_version }}-mysql"
+      - "php{{ php_version }}-gd"
+      - "php{{ php_version }}-imagick"
+      - "php{{ php_version }}-xml"
+      - "php{{ php_version }}-zip"
+      - "php{{ php_version }}-intl"
+      - "php{{ php_version }}-mbstring"
+      - "php{{ php_version }}-curl"
     state: present
+
+# The imap extension was removed from PHP 8.4, so Ubuntu no longer packages it
+- name: Install the PHP imap module
+  apt:
+    pkg: "php{{ php_version }}-imap"
+    state: present
+  when: php_version is version('8.4', '<')
 
 - name: Create Let's Encrypt's live directory
   file:
@@ -53,6 +65,8 @@
     repo: https://github.com/nvm-sh/nvm.git
     dest: /usr/local/nvm
     version: v0.40.1
+    # Skip nvm's extra repos: they only hold its developers' test files, and downloading them needs a GitHub SSH key
+    recursive: no
 
 - name: Make nvm available to all users
   copy:

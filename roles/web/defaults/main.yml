@@ -1,1 +1,8 @@
 ---
+
+# PHP version shipped in the default repos of each Ubuntu release
+php_versions:
+  "24.04": "8.3"
+  "26.04": "8.5"
+
+php_version: "{{ php_versions[ansible_distribution_version] }}"

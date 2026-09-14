@@ -105,7 +105,7 @@ Each server has its own playbook (e.g. `web01.whservice.nl.yml`) in the project 
 | Role | What it does |
 |------|-------------|
 | `basic` | Hostname, base packages, unattended-upgrades, Linux users, SSH hardening, iptables firewall (applied at boot), fail2ban |
-| `web` | OpenLiteSpeed, PHP 8.3, Composer (global), nvm (system-wide), certbot, Let's Encrypt directory |
+| `web` | OpenLiteSpeed with LiteSpeed's PHP 8.3, PHP-FPM and CLI from Ubuntu (8.3 on Ubuntu 24.04, 8.5 on 26.04), Composer (global), nvm (system-wide), certbot, Let's Encrypt directory |
 | `db` | MariaDB, phpMyAdmin |
 | `mail` | Postfix, Dovecot with full-text IMAP search (fts-xapian), OpenDKIM, SpamAssassin, Roundcube, per-user sending limits (postfwd), fail2ban jails for SMTP, IMAP and webmail brute force |
 
