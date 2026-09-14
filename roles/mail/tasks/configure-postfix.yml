@@ -56,6 +56,16 @@
       postconf smtpd_tls_cert_file=/etc/letsencrypt/live/{{hostname}}/fullchain.pem
       postconf smtpd_tls_key_file=/etc/letsencrypt/live/{{hostname}}/privkey.pem
 
+# Checked in smtpd_relay_restrictions so the sending limits cover ports 25, 465
+# and 587 alike. default_action=DUNNO fails open: if postfwd is down, mail goes
+# through unlimited instead of all mail, inbound included, being deferred.
+- name: Check senders against the postfwd sending limits
+  lineinfile:
+    path: /etc/postfix/main.cf
+    regexp: ^smtpd_relay_restrictions\s*=
+    line: smtpd_relay_restrictions = check_policy_service { inet:127.0.0.1:10040, default_action=DUNNO }, permit_mynetworks, permit_sasl_authenticated, defer_unauth_destination
+  notify: restart postfix
+
 - name: Place a marker for custom postfix configuration in master.cf
   lineinfile:
     path: /etc/postfix/master.cf

@@ -1,0 +1,18 @@
+# Managed by Ansible (roles/mail/templates/postfwd.cf.j2)
+#
+# Sending limits for authenticated users. Postfix asks postfwd about every
+# recipient (smtpd_relay_restrictions), so limits count recipients per SASL
+# login. Unauthenticated clients, i.e. inbound mail, match no rule.
+#
+# A rate() rule under its limit lets evaluation continue with the next rule;
+# the first rule over its limit answers with its 450.
+{% for account, limits in mail_send_limits_by_account.items() %}
+{% set account_index = loop.index %}
+{% for limit in limits %}
+id=ACCOUNT{{ account_index }}_LIMIT{{ loop.index }}; sasl_username=={{ account }}; action=rate(sasl_username/{{ limit.recipients }}/{{ limit.seconds }}/450 4.7.1 Sending limit reached: {{ limit.recipients }} recipients per {{ limit.seconds }} seconds. Try again later.)
+{% endfor %}
+id=ACCOUNT{{ account_index }}_DONE; sasl_username=={{ account }}; action=DUNNO
+{% endfor %}
+{% for limit in mail_send_limits %}
+id=DEFAULT_LIMIT{{ loop.index }}; sasl_username=.; action=rate(sasl_username/{{ limit.recipients }}/{{ limit.seconds }}/450 4.7.1 Sending limit reached: {{ limit.recipients }} recipients per {{ limit.seconds }} seconds. Try again later.)
+{% endfor %}

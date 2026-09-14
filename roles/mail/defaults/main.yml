@@ -1,0 +1,17 @@
+---
+# Sending limits for authenticated mail users, counted in recipients per SASL
+# login (see templates/postfwd.cf.j2). Keep them ordered from the shortest
+# window to the longest, so recipients refused by a short window don't use up
+# a longer one.
+mail_send_limits:
+  - recipients: 300
+    seconds: 3600
+  - recipients: 1000
+    seconds: 86400
+
+# Accounts that need other limits than mail_send_limits, e.g. one that sends a
+# newsletter. An empty list means no limit for that account.
+mail_send_limits_by_account: {}
+#  newsletter@example.com:
+#    - recipients: 2000
+#      seconds: 3600

@@ -33,3 +33,27 @@ mailservers:
         - example.com
         - other.com
 ```
+
+## Sending limits (optional)
+
+Authenticated users can send to at most 300 recipients per hour and 1000 per
+day (defaults in `roles/mail/defaults/main.yml`). Override them, or give single
+accounts other limits, in `mailvars.yml` or the inventory:
+
+```yaml
+mail_send_limits:
+  - recipients: 300
+    seconds: 3600
+  - recipients: 1000
+    seconds: 86400
+
+mail_send_limits_by_account:
+  newsletter@example.com:
+    - recipients: 2000
+      seconds: 3600
+  noreply@example.com: []   # no limit
+```
+
+A user over a limit gets a temporary `450 4.7.1 Sending limit reached` error for
+the remaining recipients. The counters are kept in memory by postfwd and reset
+when it restarts.

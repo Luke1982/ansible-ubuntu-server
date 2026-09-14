@@ -6,6 +6,7 @@
     pkg:
       - postfix
       - postfix-mysql
+      - postfwd
       - dovecot-mysql
       - dovecot-imapd
       - dovecot-lmtpd
@@ -124,6 +125,7 @@
   notify: restart spamassassin
 
 - include_tasks: configure-postfix.yml
+- include_tasks: configure-postfwd.yml
 - include_tasks: configure-fail2ban.yml
 
 - name: Add a group for the virtual mail handling

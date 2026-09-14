@@ -6,6 +6,11 @@
     name: dovecot
     state: restarted
 
+- name: restart postfwd
+  service:
+    name: postfwd
+    state: restarted
+
 - name: restart postfix
   service:
     name: postfix

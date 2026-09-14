@@ -1,0 +1,18 @@
+---
+# Per-user sending limits, see templates/postfwd.cf.j2. Postfix queries postfwd
+# on 127.0.0.1:10040, the package default from /etc/default/postfwd.
+
+- name: Install postfwd sending limit rules
+  template:
+    src: postfwd.cf.j2
+    dest: /etc/postfix/postfwd.cf
+    mode: 0644
+    owner: root
+    group: root
+  notify: restart postfwd
+
+- name: Enable and start postfwd
+  service:
+    name: postfwd
+    enabled: yes
+    state: started
