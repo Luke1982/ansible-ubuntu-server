@@ -1,0 +1,15 @@
+[Unit]
+Description=iptables firewall rules from /usr/local/bin/start_firewall.sh
+DefaultDependencies=no
+Wants=network-pre.target local-fs.target
+After=local-fs.target systemd-modules-load.service
+Before=network-pre.target fail2ban.service shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/start_firewall.sh
+
+[Install]
+WantedBy=multi-user.target

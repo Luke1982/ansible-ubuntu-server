@@ -5,6 +5,7 @@
     name: ssh
     state: restarted
 
-- name: start firewall
-  command:
-    cmd: bash /usr/local/bin/start_firewall.sh
+- name: restart firewall
+  systemd:
+    name: firewall
+    state: restarted

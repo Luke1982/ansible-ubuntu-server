@@ -7,7 +7,22 @@
     mode: 0755
     owner: root
     group: root
-  notify: start firewall
+  notify: restart firewall
+
+- name: Install the systemd unit that applies the firewall at boot
+  copy:
+    src: firewall.service
+    dest: /etc/systemd/system/firewall.service
+    mode: 0644
+    owner: root
+    group: root
+
+- name: Enable and start the firewall service
+  systemd:
+    name: firewall
+    enabled: yes
+    state: started
+    daemon_reload: yes
 
 - name: Install fail2ban
   apt:
