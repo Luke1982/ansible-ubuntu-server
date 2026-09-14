@@ -2,6 +2,8 @@ private/*.yml
 roles/web/vars/private/*.yml
 roles/basic/vars/private/*.yml
 roles/mail/vars/private/*.yml
+roles/mail/files/private/*
+!roles/mail/files/private/README.md
 *.retry
 .env
 .worktrees/

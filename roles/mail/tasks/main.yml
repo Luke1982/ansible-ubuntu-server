@@ -94,6 +94,35 @@
     target: /tmp/setup_bayes_tables.sql
     login_unix_socket: /var/run/mysqld/mysqld.sock
 
+# Optional: restore previously learned Bayes data when migrating servers.
+# Drop a mysqldump of the old `bayes` database at
+# roles/mail/files/private/bayes_dump.sql and it will be imported here.
+# See roles/mail/files/private/README.md.
+- name: Check for a Bayes dump to restore
+  ansible.builtin.stat:
+    path: "{{ playbook_dir }}/roles/mail/files/private/bayes_dump.sql"
+  delegate_to: localhost
+  become: false
+  register: bayes_dump
+
+- name: Copy over the Bayes dump
+  copy:
+    src: roles/mail/files/private/bayes_dump.sql
+    dest: /tmp/bayes_dump.sql
+    mode: 0644
+    owner: root
+    group: root
+  when: bayes_dump.stat.exists
+
+- name: Restore learned Bayes data
+  mysql_db:
+    state: import
+    name: bayes
+    target: /tmp/bayes_dump.sql
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+  when: bayes_dump.stat.exists
+  notify: restart spamassassin
+
 - include_tasks: configure-postfix.yml
 - include_tasks: configure-fail2ban.yml
 
