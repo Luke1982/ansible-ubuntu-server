@@ -3,7 +3,7 @@
 IPT="/sbin/iptables"
 
 # Your DNS servers you use: cat /etc/resolv.conf
-DNS_SERVER="127.0.0.53"
+DNS_SERVER="{{ dns_servers }}"
 
 # FLush all iptables rules
 iptables --flush

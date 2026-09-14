@@ -1,13 +1,13 @@
 ---
 
 - name: Copy IPtables setup script over
-  copy:
-    src: start_firewall.sh
+  template:
+    src: start_firewall.sh.j2
     dest: /usr/local/bin/start_firewall.sh
     mode: 0755
     owner: root
     group: root
-  notify: setup iptables dns
+  notify: start firewall
 
 - name: Install fail2ban
   apt:
