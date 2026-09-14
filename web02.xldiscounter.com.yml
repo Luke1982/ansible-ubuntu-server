@@ -1,0 +1,23 @@
+---
+- name: Deploy and configure web02.xldiscounter.com
+  become: yes
+  hosts: web02.xldiscounter.com
+  roles:
+    - basic
+    - web
+  vars_files:
+    - roles/basic/vars/private/linuxusers.yml
+
+- name: Deploy database server on web02.xldiscounter.com
+  become: yes
+  hosts: web02.xldiscounter.com
+  roles:
+    - db
+
+- name: Deploy mailserver on web02.xldiscounter.com
+  become: yes
+  hosts: web02.xldiscounter.com
+  roles:
+    - mail
+  vars_files:
+    - roles/mail/vars/private/mailvars.yml
