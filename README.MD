@@ -30,7 +30,14 @@ ansible-galaxy collection install -r requirements.yml
 
 ### 3. Create a private inventory file
 
-Copy `inventory-example.yml` to `private/<hostname>.yml` and fill in the IP, hostname, DNS servers, and the path to your SSH key. See `private/README.md` for the full structure.
+Copy `inventory-example.yml` to `private/<hostname>.yml` and fill in the server's name, IP, SSH settings and role variables. The comments in the example explain each setting.
+
+```bash
+mkdir -p private
+cp inventory-example.yml private/<hostname>.yml
+```
+
+`ansible.cfg` loads every file in `private/` as one inventory, so you never pass `-i`.
 
 ### 4. Create private variable files
 
@@ -52,13 +59,13 @@ be imported automatically. See `roles/mail/files/private/README.md` for details.
 
 ### 5. Create a playbook
 
-Create `<hostname>.yml` in the project root. Include only the roles that apply to that server:
+Create `<hostname>.yml` in the project root. Set `hosts:` to the server's name from its inventory file, and include only the roles that apply to that server:
 
 ```yaml
 ---
 - name: Deploy <hostname>
   become: yes
-  hosts: webservers
+  hosts: <hostname>
   roles:
     - basic
     - web
@@ -66,10 +73,12 @@ Create `<hostname>.yml` in the project root. Include only the roles that apply t
     - roles/basic/vars/private/linuxusers.yml
 ```
 
+A playbook only runs on the host it names. If that name is not in any file in `private/`, Ansible warns that no hosts matched and does nothing.
+
 ### 6. Run the playbook
 
 ```bash
-ansible-playbook -i private/<hostname>.yml <hostname>.yml
+ansible-playbook <hostname>.yml
 ```
 
 No password prompts — Ansible authenticates via the key in `ansible_ssh_private_key_file`, and `become` uses passwordless sudo.
@@ -78,7 +87,7 @@ No password prompts — Ansible authenticates via the key in `ansible_ssh_privat
 
 ## Project structure
 
-Each server has its own playbook (e.g. `web01.whservice.nl.yml`) in the project root. Private inventory files live in `private/` and private variable files live under each role's `vars/private/`. Neither directory is committed to git.
+Each server has its own playbook (e.g. `web01.whservice.nl.yml`) in the project root, which targets that server by name. Each server also has an inventory file in `private/`, and `ansible.cfg` loads all of them as one inventory. Private variable files live under each role's `vars/private/`. None of these private files are committed to git.
 
 ## Roles
 

@@ -1,21 +1,45 @@
+# Example inventory for one server.
+#
+# Copy this file to private/<hostname>.yml and fill in your values:
+#
+#   mkdir -p private
+#   cp inventory-example.yml private/web01.example.com.yml
+#
+# ansible.cfg loads every file in private/ as one inventory, so you run a
+# server's playbook without -i:
+#
+#   ansible-playbook web01.example.com.yml
+#
+# That playbook selects this server by name (hosts: web01.example.com), so the
+# name under "hosts:" below must match it exactly.
 all:
-  children:
-    webservers:
-      hosts:
-        192.168.178.165:
-          dns_servers: 127.0.0.53
-          hostname: "web01.domain.nl"
-    dbservers:
-      hosts:
-        192.168.178.165
-    mailservers:
-      hosts:
-        192.168.178.165:
-          hostname: "web01.domein.nl"
-          defaultdomain: domein.nl
-          emaildomains:
-            - domein.nl
-  vars:
-    ansible_python_interpreter: /usr/bin/python3
-    ansible_user: ansible
-    ansible_ssh_private_key_file: ~/.ssh/id_rsa
+  hosts:
+    # The server's inventory name. Use its FQDN, the same as its playbook name.
+    web01.example.com:
+
+      # --- Connection ---------------------------------------------------------
+      # Set these on the host, not in an "all: vars:" section. Every file in
+      # private/ is merged into one inventory, so a value under "all: vars:"
+      # in one file would apply to every server.
+
+      # IP address (or DNS name) Ansible connects to over SSH.
+      ansible_host: 192.168.1.10
+      # The user created in step 1 of the README, with passwordless sudo.
+      ansible_user: ansible
+      # Private key matching the public key you copied with ssh-copy-id.
+      ansible_ssh_private_key_file: ~/.ssh/id_rsa
+      ansible_python_interpreter: /usr/bin/python3
+
+      # --- basic role (every server) ------------------------------------------
+      # Hostname to give the server. Usually the same as the name above.
+      # The mail role also uses it as the mail server's FQDN (Postfix, Dovecot,
+      # Roundcube and the Let's Encrypt certificate path).
+      hostname: "web01.example.com"
+      # DNS servers the firewall allows lookups to, separated by spaces.
+      # Check /etc/resolv.conf on the server; 127.0.0.53 is systemd-resolved.
+      dns_servers: 127.0.0.53
+
+      # --- mail role (only if the playbook includes it) -----------------------
+      # Primary mail domain, used to create the DKIM key and by SpamAssassin.
+      # Leave it out for servers without mail.
+      defaultdomain: example.com

@@ -1,7 +1,7 @@
 ---
 - name: Deploy and configure web01.lavorofsm.nl
   become: yes
-  hosts: webservers
+  hosts: web01.lavorofsm.nl
   roles:
     - basic
     - web
@@ -10,6 +10,6 @@
 
 - name: Deploy database server on web01.lavorofsm.nl
   become: yes
-  hosts: dbservers
+  hosts: web01.lavorofsm.nl
   roles:
     - db
