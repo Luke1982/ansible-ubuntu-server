@@ -8,3 +8,33 @@
     owner: root
     group: root
   notify: restart fail2ban
+
+- name: Install dovecot fail2ban jail
+  copy:
+    src: jail-dovecot.conf
+    dest: /etc/fail2ban/jail.d/dovecot.conf
+    mode: 0644
+    owner: root
+    group: root
+  notify: restart fail2ban
+
+- name: Install roundcube fail2ban jail
+  copy:
+    src: jail-roundcube-auth.conf
+    dest: /etc/fail2ban/jail.d/roundcube-auth.conf
+    mode: 0644
+    owner: root
+    group: root
+  notify: restart fail2ban
+
+# An earlier draft of this role installed these. postfix-sasl.conf points at a
+# filter that doesn't exist in fail2ban 1.0, which stops fail2ban from starting.
+- name: Remove superseded fail2ban jails
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/fail2ban/jail.d/postfix-sasl.conf
+    - /etc/fail2ban/jail.d/postfix-rate.conf
+    - /etc/fail2ban/filter.d/postfix-rate.conf
+  notify: restart fail2ban

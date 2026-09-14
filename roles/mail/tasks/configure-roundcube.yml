@@ -13,6 +13,14 @@
     regexp: \$config\['smtp_server'\]\s?=\s?[\w\(\)',\s\[\]]+;
     line: $config['smtp_server'] = 'tls://{{hostname}}';
 
+# fail2ban's roundcube-auth jail reads failed logins from the journal. Syslog
+# also works whatever user OpenLiteSpeed runs PHP as, unlike /var/log/roundcube.
+- name: Make roundcube log to syslog
+  lineinfile:
+    path: /etc/roundcube/config.inc.php
+    regexp: \$config\['log_driver'\]\s?=
+    line: $config['log_driver'] = 'syslog';
+
 - name: Add managesieve and password plugins to roundcube
   replace:
     path: /etc/roundcube/config.inc.php
