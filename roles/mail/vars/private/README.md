@@ -1,16 +1,35 @@
-# Private configuration of the mail role
-This directory should have the following files:
+# roles/mail/vars/private
 
-- mailvars.yml
+This directory should contain `mailvars.yml`. It is gitignored.
 
 ## mailvars.yml
-Should look like:
 
 ```yaml
 ---
-# Mailserver variables
-
-mailuser_db_pass: CHANGEME
+mailuser_db_pass: "your-strong-password-here"
 ```
-## Other configuration parameters
-Make sure you set all the variables in the private inventory file (in the `private/` directory under your root directory) like the inventory example file in the root directory. The mail role uses those.
+
+| Variable | Description |
+|----------|-------------|
+| `mailuser_db_pass` | Password for the `mailuser` MariaDB account used by Postfix and Dovecot |
+
+## Inventory variables
+
+The mail role also requires these variables in your private inventory file (`private/<hostname>.yml`):
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `hostname` | FQDN of the mail server | `mail.example.com` |
+| `defaultdomain` | Primary mail domain | `example.com` |
+| `emaildomains` | List of all domains to accept mail for | see below |
+
+```yaml
+mailservers:
+  hosts:
+    192.168.1.10:
+      hostname: "mail.example.com"
+      defaultdomain: example.com
+      emaildomains:
+        - example.com
+        - other.com
+```
