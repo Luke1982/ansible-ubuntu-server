@@ -33,7 +33,19 @@
   template:
     src: dovecot-local.conf.j2
     dest: /etc/dovecot/local.conf
-  notify: restart dovecot
+  notify:
+    - restart dovecot
+    - index mailboxes
+
+# fts-xapian only drops deleted mail from its index when the index is optimized.
+- name: Remove deleted mail from the search indexes every night
+  cron:
+    name: dovecot fts optimize
+    cron_file: dovecot-fts-optimize
+    user: root
+    hour: "3"
+    minute: "30"
+    job: doveadm fts optimize -A
 
 - name: Enable sieve_after in Dovecot
   lineinfile:

@@ -14,10 +14,21 @@ service lmtp {
     user = postfix
   }
 }
+# Full-text search indexing runs here. Xapian needs more address space than
+# the default 256M on large mailboxes. At most 2 indexing processes (default
+# 10), so indexing existing mail can't take all the CPU from the websites and
+# database on this server. Searches still go ahead of background indexing.
+service indexer-worker {
+  process_limit = 2
+  vsz_limit = 2G
+}
 
 
 ## Overrides conf.d/10-mail.conf
 mail_location = maildir:/var/vmail/%d/%n/Maildir
+# Full-text search (dovecot-fts-xapian, configured in the plugin block below).
+# Keep this above the protocol blocks: $mail_plugins is expanded where it's read.
+mail_plugins = $mail_plugins fts fts_xapian
 
 
 ## Overrides conf.d/10-ssl.conf
@@ -51,11 +62,23 @@ plugin {
   mailbox_alias_old5 = Sent
   sieve = file:~/sieve;active=~/.dovecot.sieve
   sieve_after = /etc/dovecot/sieve-after
+
+  # Keep a search index per mailbox, so IMAP SEARCH reads the index instead
+  # of opening every message. partial/full are the n-gram lengths for header
+  # fields, so part of an address or subject matches too.
+  fts = xapian
+  fts_xapian = partial=3 full=20 verbose=0
+  # Index mail as it is delivered or saved, not when it is first searched.
+  fts_autoindex = yes
+  # Answer header searches (From, Subject, ...) from the index too, and never
+  # fall back to reading every message.
+  fts_enforced = yes
 }
 
 ## Overrides conf.d/20-lmtpd.conf
 protocol lmtp {
-  mail_plugins = " mailbox_alias sieve"
+  # $mail_plugins adds fts, so mail is indexed on delivery.
+  mail_plugins = $mail_plugins mailbox_alias sieve
 }
 
 auth_mechanisms = plain login

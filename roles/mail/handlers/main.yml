@@ -6,6 +6,12 @@
     name: dovecot
     state: restarted
 
+# Must stay below "restart dovecot": handlers run in this order. Queues every
+# mailbox for the indexer; messages that are already indexed are skipped.
+- name: index mailboxes
+  shell:
+    cmd: doveadm index -A -q '*'
+
 - name: restart postfwd
   service:
     name: postfwd

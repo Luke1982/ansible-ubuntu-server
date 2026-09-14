@@ -11,6 +11,7 @@
       - dovecot-imapd
       - dovecot-lmtpd
       - dovecot-managesieved
+      - dovecot-fts-xapian
       - spamassassin
       - spamass-milter
       - roundcube
