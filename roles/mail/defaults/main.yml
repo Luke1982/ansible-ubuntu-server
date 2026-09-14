@@ -7,6 +7,9 @@ dovecot_versions:
 
 dovecot_version: "{{ dovecot_versions[ansible_distribution_version] }}"
 
+# Where the mailctl Python package is installed (see tasks/install-mailctl.yml)
+mailctl_lib: /usr/local/lib/mailctl
+
 # Sending limits for authenticated mail users, counted in recipients per SASL
 # login (see templates/postfwd.cf.j2). Keep them ordered from the shortest
 # window to the longest, so recipients refused by a short window don't use up

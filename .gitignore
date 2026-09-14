@@ -5,6 +5,8 @@ roles/mail/vars/private/*.yml
 roles/mail/files/private/*
 !roles/mail/files/private/README.md
 *.retry
+__pycache__/
+.pytest_cache/
 .env
 .worktrees/
 .claude/settings.json

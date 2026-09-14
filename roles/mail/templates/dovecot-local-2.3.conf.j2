@@ -22,6 +22,14 @@ service indexer-worker {
   process_limit = 2
   vsz_limit = 2G
 }
+# IMAP processes run as vmail and record login times through the dict socket.
+service dict {
+  unix_listener dict {
+    mode = 0660
+    user = vmail
+    group = vmail
+  }
+}
 
 
 ## Overrides conf.d/10-mail.conf
@@ -73,6 +81,22 @@ plugin {
   # Answer header searches (From, Subject, ...) from the index too, and never
   # fall back to reading every message.
   fts_enforced = yes
+
+  # Login times for mailctl, stored through the dict below (%s service, %u user, %r remote IP).
+  last_login_dict = proxy::sql
+  last_login_key = last-login/%s/%u/%r
+  last_login_precision = s
+}
+
+# The last_login table, see dovecot-dict-sql.conf.ext.
+dict {
+  sql = mysql:/etc/dovecot/dovecot-dict-sql.conf.ext
+}
+
+## Overrides conf.d/20-imap.conf
+protocol imap {
+  # Webmail logs in over IMAP too, so its logins count as well.
+  mail_plugins = $mail_plugins last_login
 }
 
 ## Overrides conf.d/20-lmtpd.conf

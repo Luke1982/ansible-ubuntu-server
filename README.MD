@@ -68,6 +68,14 @@ search in each folder doesn't have to index it:
 doveadm index -A -q '*'
 ```
 
+#### DKIM after the first run with mailctl
+
+The playbook used to rebuild OpenDKIM's signing table on every run, leaving out every domain but the server's own, and gave the server's own domain a new DKIM key each time. The first run with `mailctl` signs every domain that has a key again, and keys are never replaced any more. Check each domain, the server's own included, with `mailctl status DOMAIN`, and publish the record from `mailctl dkim show DOMAIN` where the DKIM check fails.
+
+#### Ubuntu release upgrades
+
+The mail role supports Ubuntu 24.04 (Dovecot 2.3) and Ubuntu 26.04 (Dovecot 2.4), but not upgrading a mail server from one to the other in place: the package upgrade keeps the Dovecot config files the role changed, and Dovecot 2.4 doesn't accept them. Set up a new 26.04 server with the playbook and move the mail and databases to it instead.
+
 ### 5. Create a playbook
 
 Create `<hostname>.yml` in the project root. Set `hosts:` to the server's name from its inventory file, and include only the roles that apply to that server:
@@ -107,7 +115,41 @@ Each server has its own playbook (e.g. `web01.whservice.nl.yml`) in the project 
 | `basic` | Hostname, base packages, unattended-upgrades, Linux users, SSH hardening, iptables firewall (applied at boot), fail2ban |
 | `web` | OpenLiteSpeed with LiteSpeed's PHP 8.3, PHP-FPM and CLI from Ubuntu (8.3 on Ubuntu 24.04, 8.5 on 26.04), Composer (global), nvm (system-wide), certbot, Let's Encrypt directory |
 | `db` | MariaDB, phpMyAdmin |
-| `mail` | Postfix, Dovecot with full-text IMAP search (fts-xapian), OpenDKIM, SpamAssassin, Roundcube, per-user sending limits (postfwd), fail2ban jails for SMTP, IMAP and webmail brute force |
+| `mail` | Postfix, Dovecot with full-text IMAP search (fts-xapian) and login tracking, OpenDKIM, SpamAssassin, Roundcube, per-user sending limits (postfwd), fail2ban jails for SMTP, IMAP and webmail brute force, and `mailctl` (below) |
+
+## Managing mail with mailctl
+
+Mail servers get `mailctl`, a command-line tool for the mail domains, addresses, forwards, DKIM keys and spam settings. Run it as root on the server; `mailctl --help` lists everything, and `--help` on a command explains it with an example.
+
+| Command | What it does |
+|---------|-------------|
+| `mailctl domain add example.nl` | Adds a domain, creates its DKIM key and shows the DNS records to publish |
+| `mailctl address add info@example.nl` | Creates an account; asks for the password |
+| `mailctl forward add sales@example.nl info@example.nl` | Forwards mail for an address |
+| `mailctl status info@example.nl` | Folders, last logins, sending against the limits, recent bounces |
+| `mailctl status example.nl` | Checks the domain's MX, SPF, DKIM and DMARC records |
+| `mailctl spam set example.nl required_score 4` | Changes a spam setting for an account, a domain or the whole server |
+| `mailctl filters show info@example.nl` | Shows an account's mail filters |
+
+Last logins are recorded for IMAP, which webmail uses too; accounts that only send mail show no logins.
+
+Every command asks for what you leave out. In scripts, pass everything on the command line and give passwords through standard input, never as an argument:
+
+```bash
+mailctl address add info@example.nl --password-stdin < password.txt
+mailctl address delete info@example.nl --yes --keep-mail
+```
+
+The code is in `roles/mail/files/mailctl`. Its tests start a throwaway MariaDB or MySQL server and run against the library versions of both Ubuntu releases:
+
+```bash
+cd roles/mail/files/mailctl
+python3 -m venv /tmp/mailctl-24.04
+/tmp/mailctl-24.04/bin/pip install -r tests/requirements-24.04.txt
+MAILCTL_REQUIRE_DB=1 /tmp/mailctl-24.04/bin/pytest tests
+```
+
+Do the same with `tests/requirements-26.04.txt` (ideally on Python 3.14) for Ubuntu 26.04. The tests use the database server installed on your machine. To use another one, like MariaDB from Ubuntu's `mariadb-server-core` and `mariadb-client-core` packages (download both with `apt download` and unpack them into one folder with `dpkg -x`), point `MAILCTL_TEST_DB_PREFIX` at that folder. Without `MAILCTL_REQUIRE_DB=1` the database tests are skipped when there's no server; with it they fail. Database servers refuse to run as root, so run the tests as a normal user.
 
 ## Creating password hashes
 

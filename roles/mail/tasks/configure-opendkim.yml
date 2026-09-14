@@ -8,12 +8,14 @@
     group: root
     owner: root
     src: roles/mail/files/opendkim.conf
+  notify: restart opendkim
 
 - name: Set the correct run directory for opendkim
   lineinfile:
     path: /etc/default/opendkim
     regexp: RUNDIR\s?=\s?[\w\/]+
     line: RUNDIR=/var/run/opendkim
+  notify: restart opendkim
 
 - name: Create OpenDKIM socket directory
   file:
@@ -51,13 +53,6 @@
     group: root
     mode: 0755
 
-- name: Copy OpenDKIM domain setup file
-  copy:
-    dest: /usr/local/bin/setup_dkim_for_domain.sh
-    group: root
-    owner: root
-    src: roles/mail/files/setup_dkim_for_domain.sh
-
 - name: Setup OpenDKIM TrustedHosts
   template:
     dest: /etc/opendkim/TrustedHosts
@@ -65,23 +60,16 @@
     owner: root
     group: root
     src: opendkim_TrustedHosts.j2
+  notify: restart opendkim
 
-- name: Setup OpenDKIM KeyTable
-  template:
-    dest: /etc/opendkim/KeyTable
-    mode: 0644
-    owner: root
-    group: root
-    src: opendkim_KeyTable.j2
+- name: Remove the DKIM setup script that mailctl replaced
+  file:
+    path: /usr/local/bin/setup_dkim_for_domain.sh
+    state: absent
 
-- name: Setup OpenDKIM SigningTable
-  template:
-    dest: /etc/opendkim/SigningTable
-    mode: 0644
-    owner: root
-    group: root
-    src: opendkim_SigningTable.j2
-
-- name: Setup the host's default domain
-  shell:
-    cmd: bash /usr/local/bin/setup_dkim_for_domain.sh {{ defaultdomain }}
+# mailctl rebuilds KeyTable and SigningTable from the keys in /etc/opendkim/keys, so every domain with
+# a key stays signed, and reloads OpenDKIM when they change. An existing key is never replaced.
+- name: Create a DKIM key for the server's own domain and sign every domain that has a key
+  command: mailctl dkim create {{ defaultdomain }}
+  register: dkim_create
+  changed_when: "'Created a DKIM key' in dkim_create.stdout or 'Updated the OpenDKIM tables' in dkim_create.stdout"

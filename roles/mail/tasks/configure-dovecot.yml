@@ -52,12 +52,49 @@
   when: dovecot_version == "2.4"
   notify: restart dovecot
 
-# Left behind by the 2.3 config: unused by 2.4, and it holds the database password
-- name: Remove the old Dovecot SQL configuration file
+# Left behind by the 2.3 config: unused by 2.4, and they hold the database password
+- name: Remove the old Dovecot SQL configuration files
   file:
-    path: /etc/dovecot/dovecot-sql.conf.ext
+    path: "{{ item }}"
     state: absent
+  loop:
+    - /etc/dovecot/dovecot-sql.conf.ext
+    - /etc/dovecot/dovecot-dict-sql.conf.ext
   when: dovecot_version == "2.4"
+
+# Login times for mailctl: Dovecot's last_login plugin writes them to the last_login table.
+# Both files hold the database password.
+- name: Setup Dovecot login tracking (2.3)
+  template:
+    src: dovecot-dict-sql-2.3.conf.ext.j2
+    dest: /etc/dovecot/dovecot-dict-sql.conf.ext
+    owner: root
+    group: dovecot
+    mode: 0640
+  when: dovecot_version == "2.3"
+  notify: restart dovecot
+
+- name: Setup Dovecot login tracking (2.4)
+  template:
+    src: dovecot-last-login-2.4.conf.j2
+    dest: /etc/dovecot/conf.d/95-last-login.conf
+    owner: root
+    group: dovecot
+    mode: 0640
+  when: dovecot_version == "2.4"
+  notify: restart dovecot
+
+# Dovecot keeps a row per IP address an account logs in from; mailctl only shows the newest.
+- name: Remove superseded login times every night
+  cron:
+    name: prune last_login
+    cron_file: mailctl-prune-last-login
+    user: root
+    hour: "3"
+    minute: "45"
+    job: >-
+      mariadb mailserver -e 'DELETE old FROM last_login old JOIN last_login newer
+      ON newer.userid = old.userid AND newer.service = old.service AND newer.last_access > old.last_access'
 
 - name: Copy over local Dovecot conf file
   template:

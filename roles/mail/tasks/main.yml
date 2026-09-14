@@ -175,4 +175,5 @@
 - include_tasks: configure-dovecot.yml
 - include_tasks: configure-roundcube.yml
 - include_tasks: configure-spamassassin.yml
+- include_tasks: install-mailctl.yml
 - include_tasks: configure-opendkim.yml

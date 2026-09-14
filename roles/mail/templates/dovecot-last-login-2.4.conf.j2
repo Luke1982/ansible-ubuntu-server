@@ -1,0 +1,47 @@
+# Login times for mailctl, written by Dovecot's last_login plugin to the last_login table.
+# local.conf loads the plugin for IMAP.
+
+last_login {
+  dict proxy {
+    name = sql
+  }
+  key = last-login/%{service}/%{user}/%{remote_ip}
+  precision = s
+}
+
+dict_server {
+  dict sql {
+    sql_driver = mysql
+    mysql 127.0.0.1 {
+      dbname = mailserver
+      user = mailuser
+      password = "{{ mailuser_db_pass }}"
+    }
+    # The remote IP is part of the table's key: the dict only updates last_access of an existing row,
+    # so each address a user logs in from gets a row of its own.
+    dict_map shared/last-login/$service/$user/$remote_ip {
+      sql_table = last_login
+      value_field last_access {
+        type = uint
+      }
+      key_field userid {
+        value = $user
+      }
+      key_field service {
+        value = $service
+      }
+      key_field last_ip {
+        value = $remote_ip
+      }
+    }
+  }
+}
+
+# IMAP processes run as vmail and record login times through the dict socket.
+service dict {
+  unix_listener dict {
+    mode = 0660
+    user = vmail
+    group = vmail
+  }
+}

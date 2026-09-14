@@ -1,0 +1,65 @@
+---
+# mailctl manages mail domains, addresses, forwards, DKIM keys and spam settings.
+# Its code is in roles/mail/files/mailctl; run "mailctl --help" on the server.
+
+- name: Install the packages mailctl needs
+  apt:
+    pkg:
+      - python3-typer
+      - python3-rich
+      - python3-dnspython
+    state: present
+
+- name: Create the mailctl package directory
+  file:
+    path: "{{ mailctl_lib }}/mailctl"
+    state: directory
+    mode: 0755
+
+# Only .py files, so __pycache__ directories from local test runs stay behind.
+- name: Create the mailctl package subdirectories
+  file:
+    path: "{{ mailctl_lib }}/mailctl/{{ item.path }}"
+    state: directory
+    mode: 0755
+  with_community.general.filetree: mailctl/mailctl/
+  when: item.state == "directory" and "__pycache__" not in item.path
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Copy the mailctl package
+  copy:
+    src: "{{ item.src }}"
+    dest: "{{ mailctl_lib }}/mailctl/{{ item.path }}"
+    mode: 0644
+  with_community.general.filetree: mailctl/mailctl/
+  when: item.state == "file" and item.path.endswith(".py")
+  loop_control:
+    label: "{{ item.path }}"
+
+# -P keeps the current directory off the module path, so nothing there can pose as mailctl.
+- name: Install the mailctl command
+  copy:
+    dest: /usr/local/bin/mailctl
+    mode: 0755
+    content: |
+      #!/bin/sh
+      PYTHONPATH={{ mailctl_lib }} exec /usr/bin/python3 -P -m mailctl "$@"
+
+- name: Create the mailctl configuration directory
+  file:
+    path: /etc/mailctl
+    state: directory
+    mode: 0755
+
+# The sending limits are the ones postfwd enforces (templates/postfwd.cf.j2).
+- name: Write the mailctl configuration
+  copy:
+    dest: /etc/mailctl/config.json
+    mode: 0644
+    content: "{{ mailctl_config | to_nice_json }}\n"
+  vars:
+    mailctl_config:
+      hostname: "{{ hostname }}"
+      send_limits: "{{ mail_send_limits }}"
+      send_limits_by_account: "{{ mail_send_limits_by_account }}"

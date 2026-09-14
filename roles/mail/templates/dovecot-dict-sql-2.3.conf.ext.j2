@@ -1,0 +1,17 @@
+# Login times for mailctl, written by Dovecot's last_login plugin (see local.conf).
+connect = host=127.0.0.1 dbname=mailserver user=mailuser password={{ mailuser_db_pass }}
+
+# The remote IP is part of the table's key: the dict only updates last_access of an existing row,
+# so each address a user logs in from gets a row of its own.
+map {
+  pattern = shared/last-login/$service/$user/$remote_ip
+  table = last_login
+  value_field = last_access
+  value_type = uint
+
+  fields {
+    userid = $user
+    service = $service
+    last_ip = $remote_ip
+  }
+}

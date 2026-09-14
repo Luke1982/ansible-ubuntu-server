@@ -88,6 +88,19 @@ fts_search_add_missing = yes
 fts_search_read_fallback = no
 
 
+## Overrides conf.d/20-imap.conf
+protocol imap {
+  # A protocol's mail_plugins replace the global ones, so fts is listed again.
+  # last_login records login times for mailctl (see conf.d/95-last-login.conf);
+  # webmail logs in over IMAP too.
+  mail_plugins {
+    fts = yes
+    fts_xapian = yes
+    last_login = yes
+  }
+}
+
+
 ## Overrides conf.d/20-lmtp.conf
 protocol lmtp {
   # 20-lmtp.conf strips the domain from the recipient, but mail accounts are

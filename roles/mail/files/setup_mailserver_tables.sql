@@ -32,3 +32,13 @@ CREATE TABLE IF NOT EXISTS `virtual_sender_aliases` (
  CONSTRAINT alias_unique UNIQUE (alias),
  FOREIGN KEY (domain_id) REFERENCES virtual_domains(id) ON DELETE CASCADE
  ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+
+-- Written by Dovecot's last_login plugin, read by mailctl. Dovecot only updates last_access of an
+-- existing row, so the IP is part of the key: one row per address a user logs in from.
+CREATE TABLE IF NOT EXISTS `last_login` (
+ `userid` varchar(100) NOT NULL,
+ `service` varchar(10) NOT NULL,
+ `last_access` bigint NOT NULL,
+ `last_ip` varchar(40) NOT NULL,
+ PRIMARY KEY (`userid`, `service`, `last_ip`)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
