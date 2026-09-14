@@ -7,3 +7,4 @@ roles/mail/files/private/*
 *.retry
 .env
 .worktrees/
+.claude/settings.json
