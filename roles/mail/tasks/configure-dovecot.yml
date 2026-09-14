@@ -20,6 +20,7 @@
     owner: root
     group: root
     backup: yes
+  when: dovecot_version == "2.3"
 
 - name: Replace Dovecot SQL authentication file
   copy:
@@ -28,10 +29,39 @@
     dest: /etc/dovecot/conf.d/auth-sql.conf.ext
     owner: root
     group: root
+  when: dovecot_version == "2.3"
+
+# Holds the database password, so it isn't readable by everyone
+- name: Setup Dovecot SQL authentication file with the database connection
+  template:
+    backup: yes
+    src: dovecot-auth-sql-2.4.conf.ext.j2
+    dest: /etc/dovecot/conf.d/auth-sql.conf.ext
+    owner: root
+    group: dovecot
+    mode: 0640
+  when: dovecot_version == "2.4"
+  notify: restart dovecot
+
+# Left behind by the 2.3 config: Dovecot 2.4 won't start with this line
+- name: Remove the old sieve_after line from 90-sieve.conf
+  lineinfile:
+    path: /etc/dovecot/conf.d/90-sieve.conf
+    regexp: ^sieve_after\s*=
+    state: absent
+  when: dovecot_version == "2.4"
+  notify: restart dovecot
+
+# Left behind by the 2.3 config: unused by 2.4, and it holds the database password
+- name: Remove the old Dovecot SQL configuration file
+  file:
+    path: /etc/dovecot/dovecot-sql.conf.ext
+    state: absent
+  when: dovecot_version == "2.4"
 
 - name: Copy over local Dovecot conf file
   template:
-    src: dovecot-local.conf.j2
+    src: "dovecot-local-{{ dovecot_version }}.conf.j2"
     dest: /etc/dovecot/local.conf
   notify:
     - restart dovecot
@@ -52,6 +82,7 @@
     path: /etc/dovecot/conf.d/90-sieve.conf
     regexp: \s{0,4}#sieve_after\s?=\s?\w*
     line: sieve_after = /etc/dovecot/sieve-after
+  when: dovecot_version == "2.3"
 
 - name: Copy over sieve config file for general spam handling
   copy:

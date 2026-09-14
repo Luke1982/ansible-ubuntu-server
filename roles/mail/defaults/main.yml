@@ -1,4 +1,12 @@
 ---
+# Dovecot version in the default repos of each Ubuntu release. 2.4 changed the
+# config format, so each version gets its own config files.
+dovecot_versions:
+  "24.04": "2.3"
+  "26.04": "2.4"
+
+dovecot_version: "{{ dovecot_versions[ansible_distribution_version] }}"
+
 # Sending limits for authenticated mail users, counted in recipients per SASL
 # login (see templates/postfwd.cf.j2). Keep them ordered from the shortest
 # window to the longest, so recipients refused by a short window don't use up

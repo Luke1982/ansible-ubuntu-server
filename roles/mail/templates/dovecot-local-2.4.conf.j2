@@ -1,0 +1,105 @@
+## Overrides conf.d/10-master.conf
+service auth {
+  # Postfix smtp-auth
+  unix_listener /var/spool/postfix/private/auth {
+    mode = 0660
+    user = postfix
+    group = postfix
+  }
+}
+service lmtp {
+  unix_listener /var/spool/postfix/private/dovecot-lmtp {
+    group = postfix
+    mode = 0666
+    user = postfix
+  }
+}
+# Full-text search indexing runs here. Xapian needs more address space than
+# the default 256M on large mailboxes. At most 2 indexing processes (default
+# 10), so indexing existing mail can't take all the CPU from the websites and
+# database on this server. Searches still go ahead of background indexing.
+service indexer-worker {
+  process_limit = 2
+  vsz_limit = 2G
+}
+
+
+## Overrides conf.d/10-mail.conf
+mail_driver = maildir
+mail_path = /var/vmail/%{user | domain}/%{user | username}/Maildir
+# Full-text search (dovecot-fts-xapian, configured in the fts section below).
+mail_plugins {
+  fts = yes
+  fts_xapian = yes
+}
+
+
+## Overrides conf.d/10-ssl.conf
+ssl = yes
+ssl_server_cert_file = /etc/letsencrypt/live/{{hostname}}/fullchain.pem
+ssl_server_key_file = /etc/letsencrypt/live/{{hostname}}/privkey.pem
+
+
+## Overrides conf.d/15-mailboxes.conf
+# Dovecot 2.4 dropped the mailbox_alias plugin, so "Sent Items" and the like
+# are no longer aliases of Sent. Clients find Sent and Trash by special_use.
+namespace inbox {
+  mailbox Sent {
+    auto = create
+    special_use = \Sent
+  }
+  mailbox Trash {
+    auto = create
+    special_use = \Trash
+  }
+}
+
+
+## Overrides conf.d/90-sieve.conf
+sieve_script personal {
+  driver = file
+  path = ~/sieve
+  active_path = ~/.dovecot.sieve
+}
+# Runs after the user's own filters: moves spam to the Junk folder.
+sieve_script spam-to-folder {
+  type = after
+  path = /etc/dovecot/sieve-after/spam-to-folder.sieve
+}
+
+
+## Overrides conf.d/90-fts.conf
+# Keep a search index per mailbox, so IMAP SEARCH reads the index instead
+# of opening every message. partial is the shortest search term, so part of
+# an address or subject matches too.
+fts xapian {
+  partial = 3
+  verbose = 0
+}
+# Dovecot requires a default language, although fts-xapian doesn't use it.
+language en {
+  default = yes
+}
+# Index mail as it is delivered or saved, not when it is first searched.
+fts_autoindex = yes
+# Answer header searches (From, Subject, ...) from the index too, and never
+# fall back to reading every message (fts_enforced in Dovecot 2.3).
+fts_search_add_missing = yes
+fts_search_read_fallback = no
+
+
+## Overrides conf.d/20-lmtp.conf
+protocol lmtp {
+  # 20-lmtp.conf strips the domain from the recipient, but mail accounts are
+  # looked up by their full address.
+  auth_username_format = %{user | lower}
+  # A protocol's mail_plugins replace the global ones, so fts is listed again:
+  # mail gets indexed on delivery.
+  mail_plugins {
+    fts = yes
+    fts_xapian = yes
+    sieve = yes
+  }
+}
+
+auth_mechanisms = plain login

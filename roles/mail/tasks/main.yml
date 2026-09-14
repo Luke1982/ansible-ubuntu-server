@@ -1,6 +1,12 @@
 ---
 # Main mailserver tasks file
 
+- name: Check that this Ubuntu release is supported
+  assert:
+    that: ansible_distribution_version in dovecot_versions
+    fail_msg: "Ubuntu {{ ansible_distribution_version }} isn't supported: roles/mail/defaults/main.yml has no Dovecot version for it."
+    quiet: yes
+
 - name: Install mailserver packages
   apt:
     pkg:

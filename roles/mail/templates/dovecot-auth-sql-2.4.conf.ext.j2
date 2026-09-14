@@ -1,0 +1,21 @@
+# Authentication for SQL users. Included from 10-auth.conf.
+# Dovecot 2.4 has no separate dovecot-sql.conf.ext: the connection and the
+# queries are set here.
+
+sql_driver = mysql
+
+mysql 127.0.0.1 {
+  dbname = mailserver
+  user = mailuser
+  password = "{{ mailuser_db_pass }}"
+}
+
+passdb sql {
+  default_password_scheme = SHA256-CRYPT
+  query = SELECT email as user, password FROM virtual_users WHERE email='%{user}';
+}
+
+userdb sql {
+  query = SELECT CONCAT('/var/vmail/',(SELECT name FROM virtual_domains WHERE id=domain_id),'/',REPLACE('%{user}',CONCAT('@',(SELECT name FROM virtual_domains WHERE id=domain_id)),'')) AS home, 5000 AS uid, 5000 AS gid FROM virtual_users WHERE email ='%{user}';
+  iterate_query = SELECT email AS user FROM virtual_users;
+}
