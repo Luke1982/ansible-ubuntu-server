@@ -18,6 +18,19 @@
     group: root
   notify: restart fail2ban
 
+# The dovecot filter in Ubuntu 26.04's fail2ban 1.1.0 doesn't recognise Dovecot
+# 2.4's failed logins ("Login aborted: ... (auth failed, ...) (auth_failed)"),
+# so nothing gets banned. fail2ban's newer filter does, and still matches 2.3.
+- name: Install a dovecot fail2ban filter that recognises Dovecot 2.4
+  copy:
+    src: filter-dovecot.local
+    dest: /etc/fail2ban/filter.d/dovecot.local
+    mode: 0644
+    owner: root
+    group: root
+  when: dovecot_version == "2.4"
+  notify: restart fail2ban
+
 - name: Install roundcube fail2ban jail
   copy:
     src: jail-roundcube-auth.conf
