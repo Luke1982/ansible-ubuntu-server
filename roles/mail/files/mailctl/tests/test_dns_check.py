@@ -45,45 +45,88 @@ def resolver(failing=(), **overrides):
     return FakeResolver(**records, failing=failing)
 
 
+MAIL_HOST_RECORDS = (DnsRecord("MX", "example.nl", "10 mail.example.nl"), DnsRecord("A", "mail.example.nl", "203.0.113.5"))
+
+
 def check(dns, name, *, server_ips=SERVER_IPS, dkim_value=DKIM_VALUE):
-    checks = dns_check.check_domain(
-        "example.nl", hostname="mail.example.nl", server_ips=server_ips, dkim_value=dkim_value, resolver=dns
-    )
+    checks = dns_check.check_domain("example.nl", server_ips=server_ips, dkim_value=dkim_value, resolver=dns)
     return next(result for result in checks if result.name == name)
 
 
 def test_a_correctly_set_up_domain_passes_every_check():
-    checks = dns_check.check_domain(
-        "example.nl", hostname="mail.example.nl", server_ips=SERVER_IPS, dkim_value=DKIM_VALUE, resolver=resolver()
-    )
+    checks = dns_check.check_domain("example.nl", server_ips=SERVER_IPS, dkim_value=DKIM_VALUE, resolver=resolver())
 
     assert [result.name for result in checks] == ["MX", "SPF", "DKIM", "DMARC"]
-    assert all(result.status is Status.OK and result.fix is None for result in checks)
+    assert all(result.status is Status.OK and result.fixes == () for result in checks)
 
 
-def test_recommended_records():
-    assert dns_check.recommended_records("example.nl", "mail.example.nl", DKIM_VALUE) == [
+def test_recommended_records_deliver_mail_to_the_mail_host_at_the_servers_public_addresses():
+    server_ips = {ip_address("93.184.216.34"), ip_address("2606:2800:220:1::5"), ip_address("10.0.0.5")}
+
+    assert dns_check.recommended_records("example.nl", server_ips, DKIM_VALUE) == [
         DnsRecord("MX", "example.nl", "10 mail.example.nl"),
+        DnsRecord("A", "mail.example.nl", "93.184.216.34"),
+        DnsRecord("AAAA", "mail.example.nl", "2606:2800:220:1::5"),
         DnsRecord("TXT", "example.nl", "v=spf1 mx ~all"),
         DnsRecord("TXT", "mail._domainkey.example.nl", DKIM_VALUE),
         DnsRecord("TXT", "_dmarc.example.nl", "v=DMARC1; p=quarantine"),
     ]
 
 
-def test_missing_mx_fails_with_the_record_to_publish():
+def test_the_mail_host_of_a_subdomain_is_in_the_subdomain():
+    records = dns_check.recommended_records("shop.example.nl", SERVER_IPS, None)
+
+    assert records[:2] == [
+        DnsRecord("MX", "shop.example.nl", "10 mail.shop.example.nl"),
+        DnsRecord("A", "mail.shop.example.nl", "203.0.113.5"),
+    ]
+
+
+def test_recommended_records_leave_out_the_address_records_when_the_servers_addresses_are_unknown():
+    records = dns_check.recommended_records("example.nl", set(), None)
+
+    assert [record.type for record in records] == ["MX", "TXT", "TXT"]
+
+
+def test_missing_mx_fails_with_the_records_to_publish():
     result = check(resolver(mx={"example.nl": []}), "MX")
 
     assert result.status is Status.FAIL
-    assert result.fix == DnsRecord("MX", "example.nl", "10 mail.example.nl")
+    assert result.fixes == MAIL_HOST_RECORDS
 
 
-def test_mx_pointing_elsewhere_fails():
+def test_mx_pointing_elsewhere_fails_with_the_records_to_publish():
     dns = resolver(mx={"example.nl": ["mx.provider.nl"]}, addresses={"mx.provider.nl": ["198.51.100.7"]})
 
     result = check(dns, "MX")
 
     assert result.status is Status.FAIL
     assert "mx.provider.nl" in result.detail
+    assert result.fixes == MAIL_HOST_RECORDS
+
+
+def test_mx_reaching_this_server_under_another_name_is_a_warning():
+    dns = resolver(mx={"example.nl": ["server.hosting.example"]}, addresses={"server.hosting.example": ["203.0.113.5"]})
+
+    result = check(dns, "MX")
+
+    assert result.status is Status.WARN
+    assert "server.hosting.example" in result.detail
+    assert "mail.example.nl" in result.detail
+    assert result.fixes == MAIL_HOST_RECORDS
+
+
+def test_mx_to_the_mail_host_fails_when_the_mail_host_isnt_this_server():
+    result = check(resolver(addresses={"mail.example.nl": ["198.51.100.7"]}), "MX")
+
+    assert result.status is Status.FAIL
+    assert result.fixes == (DnsRecord("A", "mail.example.nl", "203.0.113.5"),)
+
+
+def test_mx_accepts_the_mail_host_written_with_capitals():
+    dns = resolver(mx={"example.nl": ["Mail.Example.NL"]}, addresses={"Mail.Example.NL": ["203.0.113.5"]})
+
+    assert check(dns, "MX").status is Status.OK
 
 
 def test_mx_passes_when_a_backup_mx_is_this_server():
@@ -165,7 +208,7 @@ def test_spf_needs_exactly_one_record(records):
     result = check(resolver(txt={"example.nl": ["google-site-verification=abc", *records]}), "SPF")
 
     assert result.status is Status.FAIL
-    assert result.fix == DnsRecord("TXT", "example.nl", "v=spf1 mx ~all")
+    assert result.fixes == (DnsRecord("TXT", "example.nl", "v=spf1 mx ~all"),)
 
 
 def test_spf_ignores_other_txt_records():
@@ -211,14 +254,14 @@ def test_dkim_with_a_different_published_key_fails_with_the_record_to_publish():
     result = check(resolver(txt={"mail._domainkey.example.nl": ["v=DKIM1; k=rsa; p=OTHERKEY"]}), "DKIM")
 
     assert result.status is Status.FAIL
-    assert result.fix == DnsRecord("TXT", "mail._domainkey.example.nl", DKIM_VALUE)
+    assert result.fixes == (DnsRecord("TXT", "mail._domainkey.example.nl", DKIM_VALUE),)
 
 
 def test_dkim_without_a_published_record_fails():
     result = check(resolver(txt={"mail._domainkey.example.nl": []}), "DKIM")
 
     assert result.status is Status.FAIL
-    assert result.fix == DnsRecord("TXT", "mail._domainkey.example.nl", DKIM_VALUE)
+    assert result.fixes == (DnsRecord("TXT", "mail._domainkey.example.nl", DKIM_VALUE),)
 
 
 def test_dkim_without_a_key_on_this_server_fails_with_the_command_to_create_one():
@@ -226,7 +269,7 @@ def test_dkim_without_a_key_on_this_server_fails_with_the_command_to_create_one(
 
     assert result.status is Status.FAIL
     assert "mailctl dkim create example.nl" in result.detail
-    assert result.fix is None
+    assert result.fixes == ()
 
 
 def test_dmarc_shows_the_policy():
@@ -238,7 +281,7 @@ def test_missing_dmarc_is_a_warning_with_the_record_to_publish(records):
     result = check(resolver(txt={"_dmarc.example.nl": records}), "DMARC")
 
     assert result.status is Status.WARN
-    assert result.fix == DnsRecord("TXT", "_dmarc.example.nl", "v=DMARC1; p=quarantine")
+    assert result.fixes == (DnsRecord("TXT", "_dmarc.example.nl", "v=DMARC1; p=quarantine"),)
 
 
 def test_two_dmarc_records_are_a_problem():
@@ -248,9 +291,7 @@ def test_two_dmarc_records_are_a_problem():
 
 
 def test_a_subdomain_without_dmarc_follows_its_parent_domain():
-    checks = dns_check.check_domain(
-        "shop.example.nl", hostname="mail.example.nl", server_ips=SERVER_IPS, dkim_value=None, resolver=resolver()
-    )
+    checks = dns_check.check_domain("shop.example.nl", server_ips=SERVER_IPS, dkim_value=None, resolver=resolver())
 
     dmarc = next(result for result in checks if result.name == "DMARC")
     assert (dmarc.status, dmarc.detail) == (Status.OK, "Policy: quarantine, set for example.nl.")

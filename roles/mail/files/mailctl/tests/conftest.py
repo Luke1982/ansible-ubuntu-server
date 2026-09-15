@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 from dataclasses import asdict, replace
+from ipaddress import ip_address
 from pathlib import Path
 from typing import NoReturn
 
@@ -49,7 +50,7 @@ def config(tmp_path) -> Config:
     """A configuration pointing every path into the test's temp directory, owned by the current user."""
     user = pwd.getpwuid(os.geteuid()).pw_name
     return Config(
-        hostname="mail.example.nl",
+        hostname="server.hosting.example",
         send_limits=(SendLimit(recipients=300, seconds=3600), SendLimit(recipients=1000, seconds=86400)),
         db_socket="",
         vmail_root=tmp_path / "vmail",
@@ -218,11 +219,12 @@ class Mailctl:
 
 @pytest.fixture
 def mailctl(db_config, tmp_path, monkeypatch, fake_command, fake_opendkim_genkey) -> Mailctl:
-    """mailctl working on the test database and the test's temp directory."""
+    """mailctl working on the test database and the test's temp directory, on a server at 203.0.113.5."""
     config_file = tmp_path / "config.json"
     config_file.write_text(json.dumps(asdict(db_config), default=str))
     monkeypatch.setenv("MAILCTL_CONFIG", str(config_file))
     monkeypatch.setattr(system, "require_root", lambda: None)
+    monkeypatch.setattr(system, "server_ips", lambda: {ip_address("203.0.113.5")})
     db_config.vmail_root.mkdir()
     fake_command("systemctl")
     fake_command("doveadm")

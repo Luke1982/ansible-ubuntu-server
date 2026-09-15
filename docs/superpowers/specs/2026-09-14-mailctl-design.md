@@ -127,7 +127,8 @@ Domains and addresses are trimmed and lowercased. A domain is valid when it has 
 The old helper script inserted a domain row every time it ran, so a domain name can occur more than once. Reads group by name, and rows that refer to a domain use its lowest id.
 
 - `add`: fails if the domain exists. Inserts into `virtual_domains`, then creates the DKIM key, updates OpenDKIM and reads the key's record. Failures after the insert are warnings, since the domain stands; without a key, a note gives the command to create it later. Prints the recommended records:
-  - `MX  DOMAIN  10 HOSTNAME`
+  - `MX  DOMAIN  10 mail.DOMAIN`
+  - `A` and `AAAA` for `mail.DOMAIN`: this server's public addresses (all of them when it has no public ones), from `ip -json address show scope global`. When they can't be read, these are left out with a warning.
   - `TXT DOMAIN  v=spf1 mx ~all`
   - `TXT mail._domainkey.DOMAIN  <key record>` (when there is a key)
   - `TXT _dmarc.DOMAIN  v=DMARC1; p=quarantine`
@@ -192,9 +193,9 @@ Both syslog timestamp formats are parsed: RFC 3339 (`2026-09-14T13:25:36.123456+
 
 ### Status of a domain
 
-Checks, each shown as ✓ (ok), ! (warning) or ✗ (problem) with a one-line explanation and, when publishing a record would solve it, that record:
+Checks, each shown as ✓ (ok), ! (warning) or ✗ (problem) with a one-line explanation and, when publishing records would solve it, those records:
 
-- **MX:** at least one MX host resolves to one of this server's IP addresses (from `ip -json address show scope global`).
+- **MX:** ok when `mail.DOMAIN` is an MX host that resolves to one of this server's IP addresses. A warning when mail only reaches this server under another name, like the server's own hostname. A problem when there is no MX record or no MX host reaches this server. The records shown are the `mail.DOMAIN` MX record (unless it's already there) and `mail.DOMAIN`'s A and AAAA records.
 - **SPF:** exactly one `v=spf1` record, which must allow every public address of this server (private addresses are ignored, unless the server has no public ones). The evaluator handles `all`, `ip4`, `ip6`, `a`, `mx`, `include` and `redirect` with qualifiers and CIDR lengths, stopping after 10 DNS lookups. When they're reached, `exists`, `ptr` and macros make the result a warning, since they can't be judged; an unknown mechanism, an invalid address, or a referenced domain without exactly one SPF record is a problem.
 - **DKIM:** the TXT record at `mail._domainkey.DOMAIN` has the same `p=` as the key on this server (spaces ignored). No key on the server is a problem, with the command to create one.
 - **DMARC:** exactly one record starting with `v=DMARC1` at `_dmarc.DOMAIN`, or else at a parent domain's, showing its policy. Missing is a warning; two or more are a problem.

@@ -83,10 +83,25 @@ def test_domain_add_signs_the_domain_and_prints_the_records_to_publish(mailctl, 
     output = mailctl.ok("domain", "add", "Example.NL")
 
     assert "Added example.nl" in output
-    for expected in ("10 mail.example.nl", "v=spf1 mx ~all", "mail._domainkey.example.nl",
-                     FAKE_KEY_RECORD_START, "v=DMARC1; p=quarantine"):
+    assert re.search(r"MX\s+example\.nl\n\s+10 mail\.example\.nl\n", output)
+    assert re.search(r"A\s+mail\.example\.nl\n\s+203\.0\.113\.5\n", output)
+    for expected in ("v=spf1 mx ~all", "mail._domainkey.example.nl", FAKE_KEY_RECORD_START, "v=DMARC1; p=quarantine"):
         assert expected in output
     assert db_config.dkim_signing_table.read_text() == "*@example.nl mail._domainkey.example.nl\n"
+
+
+def test_domain_add_leaves_out_the_address_records_when_the_servers_addresses_cant_be_read(mailctl, monkeypatch):
+    def no_addresses():
+        raise MailctlError("ip isn't installed.")
+
+    monkeypatch.setattr(system, "server_ips", no_addresses)
+
+    output = mailctl.ok("domain", "add", "example.nl")
+
+    assert "10 mail.example.nl" in output
+    assert not re.search(r"^\s*A+\s+mail\.example\.nl$", output, re.MULTILINE)
+    assert "Couldn't read this server's addresses" in output
+    assert "ip isn't installed" in output
 
 
 def test_domain_add_keeps_the_domain_when_the_key_cant_be_created(mailctl, fake_command):

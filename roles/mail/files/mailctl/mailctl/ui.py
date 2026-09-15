@@ -6,6 +6,7 @@ characters are made visible, so a filter script or a DNS record can't steer the 
 
 import re
 import sys
+from collections.abc import Iterable
 from datetime import datetime, timedelta
 
 from rich import box
@@ -137,7 +138,7 @@ def add_row(to_table: Table, *cells: str | Text) -> None:
     to_table.add_row(*(text(cell) if isinstance(cell, str) else cell for cell in cells))
 
 
-def records(dns_records: list[DnsRecord], indent: int = 2) -> None:
+def records(dns_records: Iterable[DnsRecord], indent: int = 2) -> None:
     """DNS records, with each value on a line of its own so it can be copied in one piece."""
     for record in dns_records:
         line(text(record.type, "bold"), " ", text(record.name, "cyan"), indent=indent)

@@ -102,6 +102,21 @@ def test_status_of_a_domain_checks_its_dns(mailctl, account, monkeypatch):
     assert "1 address" in output
 
 
+def test_status_of_a_domain_shows_every_record_mail_delivery_needs(mailctl, account, monkeypatch):
+    class FakeDnsWithoutMx(FakeDns):
+        def mx(self, name):
+            return []
+
+    monkeypatch.setattr(dns_check, "SystemResolver", FakeDnsWithoutMx)
+    monkeypatch.setattr(system, "server_ips", lambda: {ip_address("203.0.113.5")})
+
+    output = mailctl.ok("status", "example.nl")
+
+    assert "There is no MX record" in output
+    assert re.search(r"MX\s+example\.nl\n\s+10 mail\.example\.nl\n", output)
+    assert re.search(r"A\s+mail\.example\.nl\n\s+203\.0\.113\.5\n", output)
+
+
 def test_status_of_a_domain_shows_the_rest_when_the_dns_checks_fail(mailctl, account, monkeypatch):
     def no_addresses():
         raise MailctlError("ip isn't installed.")

@@ -38,7 +38,7 @@ class Check:
     name: str
     status: Status
     detail: str
-    fix: DnsRecord | None = None  # the record to publish when that would solve the problem
+    fixes: tuple[DnsRecord, ...] = ()  # the records to publish when that would solve the problem
 
 
 class LookupFailed(Exception):
@@ -78,10 +78,17 @@ class SystemResolver:
             raise LookupFailed(f"The {kind} lookup for {name} failed: {error}") from None
 
 
-def recommended_records(domain: str, hostname: str, dkim_value: str | None) -> list[DnsRecord]:
-    """The records a domain on this server needs. The DKIM record is left out while the domain has no key."""
+def recommended_records(domain: str, server_ips: set[IPAddress], dkim_value: str | None) -> list[DnsRecord]:
+    """The records a domain on this server needs. The DKIM record is left out while the domain has no key, and the
+    mail host's addresses while this server's addresses are unknown."""
     dkim_records = [dkim_record(domain, dkim_value)] if dkim_value else []
-    return [_mx_record(domain, hostname), _spf_record(domain), *dkim_records, _dmarc_record(domain)]
+    return [
+        _mx_record(domain),
+        *_address_records(domain, server_ips),
+        _spf_record(domain),
+        *dkim_records,
+        _dmarc_record(domain),
+    ]
 
 
 def dkim_record(domain: str, value: str) -> DnsRecord:
@@ -91,35 +98,48 @@ def dkim_record(domain: str, value: str) -> DnsRecord:
 @dataclass(frozen=True)
 class _Domain:
     name: str
-    hostname: str
     server_ips: set[IPAddress]
     dkim_value: str | None
     resolver: Resolver
 
 
-# What a check finds: a status, the explanation, and the record to publish if that would solve the problem.
-_Finding = tuple[Status, str, DnsRecord | None]
+# What a check finds: a status, the explanation, and the records to publish if that would solve the problem.
+_Finding = tuple[Status, str, tuple[DnsRecord, ...]]
 
 
-def check_domain(
-    domain: str, *, hostname: str, server_ips: set[IPAddress], dkim_value: str | None, resolver: Resolver
-) -> list[Check]:
-    target = _Domain(domain, hostname, server_ips, dkim_value, resolver)
+def check_domain(domain: str, *, server_ips: set[IPAddress], dkim_value: str | None, resolver: Resolver) -> list[Check]:
+    target = _Domain(domain, server_ips, dkim_value, resolver)
     checks: list[tuple[str, Callable[[_Domain], _Finding]]] = [
         ("MX", _check_mx), ("SPF", _check_spf), ("DKIM", _check_dkim), ("DMARC", _check_dmarc),
     ]
     results = []
     for name, check in checks:
         try:
-            status, detail, fix = check(target)
+            status, detail, fixes = check(target)
         except LookupFailed as error:
-            status, detail, fix = Status.WARN, str(error), None
-        results.append(Check(name, status, detail, fix))
+            status, detail, fixes = Status.WARN, str(error), ()
+        results.append(Check(name, status, detail, fixes))
     return results
 
 
-def _mx_record(domain: str, hostname: str) -> DnsRecord:
-    return DnsRecord("MX", domain, f"10 {hostname}")
+def _mail_host(domain: str) -> str:
+    """The name mail for the domain is delivered to."""
+    return f"mail.{domain}"
+
+
+def _mx_record(domain: str) -> DnsRecord:
+    return DnsRecord("MX", domain, f"10 {_mail_host(domain)}")
+
+
+def _address_records(domain: str, server_ips: set[IPAddress]) -> tuple[DnsRecord, ...]:
+    """The mail host's A and AAAA records, pointing to this server."""
+    ips = sorted(_reachable(server_ips), key=lambda ip: (ip.version, ip))
+    return tuple(DnsRecord("A" if ip.version == 4 else "AAAA", _mail_host(domain), str(ip)) for ip in ips)
+
+
+def _reachable(server_ips: set[IPAddress]) -> set[IPAddress]:
+    """The addresses other mail servers reach this server on: the public ones, or all of them when it has none."""
+    return {ip for ip in server_ips if ip.is_global} or server_ips
 
 
 def _spf_record(domain: str) -> DnsRecord:
@@ -131,57 +151,62 @@ def _dmarc_record(domain: str) -> DnsRecord:
 
 
 def _check_mx(domain: _Domain) -> _Finding:
+    mail_host = _mail_host(domain.name)
     hosts = domain.resolver.mx(domain.name)
-    fix = _mx_record(domain.name, domain.hostname)
+    to_this_server = [host for host in hosts if domain.resolver.addresses(host) & domain.server_ips]
+    if mail_host in (host.lower() for host in to_this_server):
+        return Status.OK, f"Mail is delivered to {', '.join(hosts)}.", ()
+    fixes = _address_records(domain.name, domain.server_ips)
+    if mail_host not in (host.lower() for host in hosts):
+        fixes = (_mx_record(domain.name), *fixes)
     if not hosts:
-        return Status.FAIL, "There is no MX record, so mail for the domain can't be delivered.", fix
-    if any(domain.resolver.addresses(host) & domain.server_ips for host in hosts):
-        return Status.OK, f"Mail is delivered to {', '.join(hosts)}.", None
-    return Status.FAIL, f"Mail is delivered to {', '.join(hosts)}, which isn't this server.", fix
+        return Status.FAIL, "There is no MX record, so mail for the domain can't be delivered.", fixes
+    if to_this_server:
+        return Status.WARN, f"Mail is delivered to this server as {', '.join(to_this_server)}, not as {mail_host}.", fixes
+    return Status.FAIL, f"Mail is delivered to {', '.join(hosts)}, which isn't this server.", fixes
 
 
 def _check_spf(domain: _Domain) -> _Finding:
-    fix = _spf_record(domain.name)
+    fixes = (_spf_record(domain.name),)
     records = _spf_records(domain.name, domain.resolver)
     if len(records) != 1:
         problem = "There is no SPF record" if not records else f"There are {len(records)} SPF records instead of one"
-        return Status.FAIL, f"{problem}, so receiving servers can't verify mail from this server.", fix
-    # Private addresses never reach other mail servers.
-    ips = {ip for ip in domain.server_ips if ip.is_global} or domain.server_ips
+        return Status.FAIL, f"{problem}, so receiving servers can't verify mail from this server.", fixes
+    ips = _reachable(domain.server_ips)
     try:
         refused = sorted((ip for ip in ips if not _SpfEvaluation(domain.resolver).allows(domain.name, ip)), key=str)
     except _Undecided as undecided:
-        return undecided.status, str(undecided), None
+        return undecided.status, str(undecided), ()
     if refused:
-        return Status.FAIL, f"The SPF record doesn't allow this server's address {', '.join(map(str, refused))}.", fix
-    return Status.OK, "The SPF record allows this server to send mail for the domain.", None
+        return Status.FAIL, f"The SPF record doesn't allow this server's address {', '.join(map(str, refused))}.", fixes
+    return Status.OK, "The SPF record allows this server to send mail for the domain.", ()
 
 
 def _check_dkim(domain: _Domain) -> _Finding:
     if domain.dkim_value is None:
         detail = f"This server has no DKIM key for the domain. Create one with: mailctl dkim create {domain.name}"
-        return Status.FAIL, detail, None
+        return Status.FAIL, detail, ()
     fix = dkim_record(domain.name, domain.dkim_value)
     published = [_public_key(record) for record in domain.resolver.txt(fix.name)]
     if _public_key(domain.dkim_value) in published:
-        return Status.OK, "The published key matches this server's key.", None
+        return Status.OK, "The published key matches this server's key.", ()
     if not any(published):
-        return Status.FAIL, f"There is no DKIM record at {fix.name}.", fix
-    return Status.FAIL, f"The DKIM record at {fix.name} has another key than this server.", fix
+        return Status.FAIL, f"There is no DKIM record at {fix.name}.", (fix,)
+    return Status.FAIL, f"The DKIM record at {fix.name} has another key than this server.", (fix,)
 
 
 def _check_dmarc(domain: _Domain) -> _Finding:
-    fix = _dmarc_record(domain.name)
+    fixes = (_dmarc_record(domain.name),)
     # A subdomain without a DMARC record of its own follows the policy of its parent domain.
     labels = domain.name.split(".")
     for name in (".".join(labels[start:]) for start in range(len(labels) - 1)):
         records = [record for record in domain.resolver.txt(f"_dmarc.{name}") if _is_dmarc(record)]
         if len(records) > 1:
-            return Status.FAIL, f"There are {len(records)} DMARC records for {name}, so receiving servers ignore them.", fix
+            return Status.FAIL, f"There are {len(records)} DMARC records for {name}, so receiving servers ignore them.", fixes
         if records:
             source = "" if name == domain.name else f", set for {name}"
-            return Status.OK, f"Policy: {_tag(records[0], 'p') or 'none'}{source}.", None
-    return Status.WARN, "There is no DMARC record. Mail still arrives, but some providers trust it less.", fix
+            return Status.OK, f"Policy: {_tag(records[0], 'p') or 'none'}{source}.", ()
+    return Status.WARN, "There is no DMARC record. Mail still arrives, but some providers trust it less.", fixes
 
 
 def _spf_records(domain: str, resolver: Resolver) -> list[str]:

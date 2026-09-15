@@ -126,14 +126,9 @@ def _dns_checks(session: Session, domain: str) -> None:
             ui.warn(f"Couldn't read the DKIM key: {problem.message}", indent=2)
     with ui.console.status("Checking the DNS records…"):
         checks = dns_check.check_domain(
-            domain,
-            hostname=session.config.hostname,
-            server_ips=system.server_ips(),
-            dkim_value=dkim_value,
-            resolver=dns_check.SystemResolver(),
+            domain, server_ips=system.server_ips(), dkim_value=dkim_value, resolver=dns_check.SystemResolver()
         )
     width = max(len(check.name) for check in checks)
     for check in checks:
         ui.line(ui.mark(check.status), " ", ui.text(check.name.ljust(width), "bold"), "  ", check.detail, indent=2)
-        if check.fix:
-            ui.records([check.fix], indent=4)
+        ui.records(check.fixes, indent=4)

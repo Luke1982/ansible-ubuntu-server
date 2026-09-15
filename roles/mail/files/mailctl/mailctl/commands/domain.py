@@ -1,7 +1,7 @@
 """mailctl domain: add, list and delete mail domains."""
 
 from .. import ui
-from ..core import addresses, dkim, dns_check, domains, forwards, mailbox
+from ..core import addresses, dkim, dns_check, domains, forwards, mailbox, system
 from ..session import Session, open_session
 from .shared import DeleteMail, Domain, Yes, ask_domain, attempt, decide_mail, group, warn_about_incoming_forwards
 
@@ -31,8 +31,9 @@ def create(session: Session, domain: str) -> None:
         attempt(problems, "Couldn't read the DKIM key", lambda: dkim.record_value(session.config, domain))
         if has_key else None
     )
+    server_ips = attempt(problems, "Couldn't read this server's addresses", system.server_ips)
     ui.success(f"Added {domain}. Publish these DNS records for it:")
-    ui.records(dns_check.recommended_records(domain, session.config.hostname, dkim_value))
+    ui.records(dns_check.recommended_records(domain, server_ips or set(), dkim_value))
     for problem in problems:
         ui.warn(problem)
     if not has_key:
