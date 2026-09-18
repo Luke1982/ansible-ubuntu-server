@@ -64,8 +64,8 @@ def create_maildir(config: Config, address: str) -> None:
 
 
 def _complete(folder: "_MailFolder") -> None:
-    """Gives a Maildir folder its cur, new and tmp directories, so it exists for Dovecot: otherwise Dovecot has to
-    create the folder when it's first opened, and that can be refused (seen with Dovecot 2.4 and its acl plugin)."""
+    """Gives a Maildir folder its cur, new and tmp directories, so it's a complete folder from the start instead of
+    one Dovecot creates when it's first opened."""
     for name in ("cur", "new", "tmp"):
         folder.enter(name, create=True)
 
