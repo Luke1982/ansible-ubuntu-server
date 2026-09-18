@@ -89,3 +89,10 @@
   loop:
     - memcached
     - sogo
+
+# SOGo reads its configuration only when it starts. Restart it now rather than
+# at the end of the play: when a later task fails or the run is stopped, the
+# handler never runs, the next run sees nothing changed, and SOGo keeps running
+# on its built-in defaults (a PostgreSQL database that isn't there).
+- name: Restart SOGo now when its configuration changed
+  meta: flush_handlers
