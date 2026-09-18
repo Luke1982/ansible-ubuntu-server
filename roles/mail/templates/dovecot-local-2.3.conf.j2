@@ -35,8 +35,10 @@ service dict {
 ## Overrides conf.d/10-mail.conf
 mail_location = maildir:/var/vmail/%d/%n/Maildir
 # Full-text search (dovecot-fts-xapian, configured in the plugin block below).
+# acl: SOGo's ActiveSync needs the IMAP ACL extension (imap_acl below). There
+# are no ACL files, so everyone keeps full rights to their own folders.
 # Keep this above the protocol blocks: $mail_plugins is expanded where it's read.
-mail_plugins = $mail_plugins fts fts_xapian
+mail_plugins = $mail_plugins fts fts_xapian acl
 
 
 ## Overrides conf.d/10-ssl.conf
@@ -68,6 +70,7 @@ plugin {
   mailbox_alias_old3 = Sent
   mailbox_alias_old4 = Trash
   mailbox_alias_old5 = Sent
+  acl = vfile
   sieve = file:~/sieve;active=~/.dovecot.sieve
   sieve_after = /etc/dovecot/sieve-after
 
@@ -96,7 +99,7 @@ dict {
 ## Overrides conf.d/20-imap.conf
 protocol imap {
   # Webmail logs in over IMAP too, so its logins count as well.
-  mail_plugins = $mail_plugins last_login
+  mail_plugins = $mail_plugins last_login imap_acl
 }
 
 ## Overrides conf.d/20-lmtpd.conf

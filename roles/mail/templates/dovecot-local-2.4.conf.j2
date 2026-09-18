@@ -28,10 +28,14 @@ service indexer-worker {
 mail_driver = maildir
 mail_path = /var/vmail/%{user | domain}/%{user | username}/Maildir
 # Full-text search (dovecot-fts-xapian, configured in the fts section below).
+# acl: SOGo's ActiveSync needs the IMAP ACL extension (imap_acl below). There
+# are no ACL files, so everyone keeps full rights to their own folders.
 mail_plugins {
   fts = yes
   fts_xapian = yes
+  acl = yes
 }
+acl_driver = vfile
 
 
 ## Overrides conf.d/10-ssl.conf
@@ -96,6 +100,8 @@ protocol imap {
   mail_plugins {
     fts = yes
     fts_xapian = yes
+    acl = yes
+    imap_acl = yes
     last_login = yes
   }
 }
@@ -111,6 +117,7 @@ protocol lmtp {
   mail_plugins {
     fts = yes
     fts_xapian = yes
+    acl = yes
     sieve = yes
   }
 }
