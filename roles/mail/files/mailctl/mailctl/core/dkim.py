@@ -5,10 +5,9 @@ so every domain with a key gets signed.
 """
 
 import os
-import tempfile
 from pathlib import Path
 
-from . import names, system
+from . import files, names, system
 from .config import Config
 from .errors import MailctlError
 
@@ -52,7 +51,7 @@ def write_tables(config: Config) -> bool:
     domains = key_domains(config)
     key_table = "".join(f"{record_name(domain)} {domain}:{SELECTOR}:{_private_key(config, domain)}\n" for domain in domains)
     signing_table = "".join(f"*@{domain} {record_name(domain)}\n" for domain in domains)
-    changes = [_replace(config.dkim_key_table, key_table), _replace(config.dkim_signing_table, signing_table)]
+    changes = [files.replace(config.dkim_key_table, key_table), files.replace(config.dkim_signing_table, signing_table)]
     return any(changes)
 
 
@@ -62,14 +61,14 @@ def update_opendkim(config: Config) -> bool:
     When OpenDKIM can't be reloaded, the old tables are put back, so the next update tries again.
     """
     tables = (config.dkim_key_table, config.dkim_signing_table)
-    previous = [_read(table) for table in tables]
+    previous = [files.read(table) for table in tables]
     if not write_tables(config):
         return False
     try:
         system.reload("opendkim")
     except MailctlError:
         for table, content in zip(tables, previous):
-            _restore(table, content)
+            files.restore(table, content)
         raise
     return True
 
@@ -95,29 +94,3 @@ def _key_dir(config: Config, domain: str) -> Path:
 
 def _private_key(config: Config, domain: str) -> Path:
     return _key_dir(config, domain) / f"{SELECTOR}.private"
-
-
-def _read(path: Path) -> str | None:
-    try:
-        return path.read_text()
-    except FileNotFoundError:
-        return None
-
-
-def _restore(path: Path, content: str | None) -> None:
-    if content is None:
-        path.unlink(missing_ok=True)
-    else:
-        _replace(path, content)
-
-
-def _replace(path: Path, content: str) -> bool:
-    """Replaces the file in one step, so OpenDKIM never reads half a table. Returns whether the content changed."""
-    if _read(path) == content:
-        return False
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=f".{path.name}.", delete=False) as file:
-        file.write(content)
-    os.chmod(file.name, 0o644)
-    os.replace(file.name, path)
-    return True
