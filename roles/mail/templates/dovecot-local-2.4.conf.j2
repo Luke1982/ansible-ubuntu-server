@@ -27,6 +27,9 @@ service indexer-worker {
 ## Overrides conf.d/10-mail.conf
 mail_driver = maildir
 mail_path = /var/vmail/%{user | domain}/%{user | username}/Maildir
+# INBOX is the Maildir itself. Ubuntu's 10-mail.conf puts it in /var/mail/%{user}
+# (for mbox), where vmail can't write; left empty, it would be a folder .INBOX.
+mail_inbox_path = .
 # Full-text search (dovecot-fts-xapian, configured in the fts section below).
 # acl: SOGo's ActiveSync needs the IMAP ACL extension (imap_acl below). There
 # are no ACL files, so everyone keeps full rights to their own folders.
