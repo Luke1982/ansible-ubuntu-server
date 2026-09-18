@@ -1,5 +1,6 @@
 import os
 import pwd
+import time
 from ipaddress import ip_address
 from types import SimpleNamespace
 
@@ -133,3 +134,19 @@ def test_server_ips_without_any_route_explain_why(fake_command):
 
     with pytest.raises(MailctlError, match="Can't tell which address this server sends mail from: .*unreachable"):
         system.server_ips()
+
+
+def test_run_starter_returns_while_a_daemon_it_started_keeps_running(fake_command):
+    # lswsctrl starts OpenLiteSpeed and its watchdog in the background when it isn't running.
+    fake_command("starter", "sleep 5 & echo '[OK] started'")
+    started = time.monotonic()
+
+    assert system.run_starter("starter") == "[OK] started"
+    assert time.monotonic() - started < 3
+
+
+def test_run_starter_reports_a_failure_with_its_output(fake_command):
+    fake_command("starter", "echo '[ERROR] Failed to start' ; exit 1")
+
+    with pytest.raises(MailctlError, match=r"^starter failed: \[ERROR\] Failed to start$"):
+        system.run_starter("starter")

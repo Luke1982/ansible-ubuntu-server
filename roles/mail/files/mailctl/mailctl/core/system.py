@@ -6,6 +6,7 @@ import pwd
 import shlex
 import shutil
 import subprocess
+import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from ipaddress import IPv4Address, IPv6Address, ip_address
@@ -16,6 +17,21 @@ from .errors import MailctlError
 
 def run(*args: str, stdin: str | None = None) -> str:
     return _run(args, stdin, text=True, errors="replace")
+
+
+def run_starter(*args: str) -> str:
+    """Like run(), for a command that may start a daemon, like lswsctrl. The daemon keeps the command's output open
+    as long as it runs, so that output goes to a file: reading a pipe would never end."""
+    with tempfile.TemporaryFile("w+", errors="replace") as output:
+        try:
+            result = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT, check=False)
+        except FileNotFoundError:
+            raise MailctlError(f"{args[0]} isn't installed.") from None
+        output.seek(0)
+        text = output.read().strip()
+    if result.returncode != 0:
+        raise MailctlError(f"{shlex.join(args)} failed: {text or f'exit status {result.returncode}'}")
+    return text
 
 
 def run_binary(*args: str, stdin: bytes) -> bytes:

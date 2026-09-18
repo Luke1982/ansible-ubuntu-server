@@ -102,8 +102,10 @@ def _replace(path: Path, content: str, status: os.stat_result) -> None:
 
 
 def restart(root: Path) -> None:
-    """A graceful restart: requests being handled finish first."""
-    system.run(str(root / "bin" / "lswsctrl"), "restart")
+    """A graceful restart: requests being handled finish first. When OpenLiteSpeed isn't running, this starts it."""
+    output = system.run_starter(str(root / "bin" / "lswsctrl"), "restart")
+    if "[ERROR]" in output:  # lswsctrl reports some failures only in its output
+        raise MailctlError(f"lswsctrl restart failed: {output}")
 
 
 def blocks(lines: list[str]) -> list[Block]:
