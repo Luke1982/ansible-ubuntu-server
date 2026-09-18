@@ -3,8 +3,10 @@ from ipaddress import ip_address
 
 import pytest
 from conftest import FakeCommand
+from test_openlitespeed import HTTPD_CONFIG
 
-from mailctl.core import webmail
+from mailctl.core import openlitespeed, webmail
+from mailctl.core.errors import MailctlError
 from mailctl.core.dns_check import LookupFailed
 from mailctl.core.webmail import Outcome, State
 
@@ -57,13 +59,7 @@ HERE = FakeResolver({"webmail.example.nl": ["203.0.113.5", "2001:db8::5"], "webm
 
 @pytest.fixture
 def config(config, tmp_path):
-    return replace(
-        config,
-        ols_root=tmp_path / "lsws",
-        webmail_root=tmp_path / "www" / "webmail",
-        letsencrypt_dir=tmp_path / "letsencrypt",
-        sogo_resources=tmp_path / "sogo" / "WebServerResources",
-    )
+    return replace(config, webmail_root=tmp_path / "www" / "webmail", sogo_resources=tmp_path / "sogo" / "resources")
 
 
 @pytest.fixture
@@ -73,9 +69,11 @@ def certbot(fake_command):
 
 @pytest.fixture
 def lswsctrl(config):
-    directory = config.ols_root / "bin"
-    directory.mkdir(parents=True)
-    return FakeCommand(directory, "lswsctrl", "")
+    """OpenLiteSpeed, set up by hand in WebAdmin: listeners and a site of its own (see test_openlitespeed)."""
+    (config.ols_root / "conf").mkdir(parents=True)
+    openlitespeed.config_file(config.ols_root).write_text(HTTPD_CONFIG)
+    (config.ols_root / "bin").mkdir()
+    return FakeCommand(config.ols_root / "bin", "lswsctrl", "")
 
 
 class FakeWebServer:
@@ -102,8 +100,19 @@ def served(monkeypatch):
 pytestmark = pytest.mark.usefixtures("certbot", "lswsctrl", "served")
 
 
-def conf(config, name):
-    return (config.ols_root / "conf" / "webmail" / name).read_text()
+def site(config, name):
+    """The settings of a site, in the webmail directory."""
+    return (config.ols_root / "conf" / "webmail" / f"{name}.conf").read_text()
+
+
+def httpd_config(config):
+    return openlitespeed.config_file(config.ols_root).read_text()
+
+
+def mapped(config, listener):
+    """The names the listener maps to webmail sites."""
+    return {host: names for host, names in openlitespeed.maps(openlitespeed.read(config.ols_root), listener).items()
+            if host.startswith("webmail.")}
 
 
 def sync(config, *domains, resolver=HERE):
@@ -111,7 +120,6 @@ def sync(config, *domains, resolver=HERE):
 
 
 def test_a_domain_whose_webmail_name_points_here_gets_a_site_with_a_certificate(config, certbot, lswsctrl, served):
-
     result = sync(config, "example.nl")
 
     assert list(result.outcomes) == [Outcome("webmail.example.nl", State.NEW)]
@@ -126,15 +134,15 @@ def test_a_domain_whose_webmail_name_points_here_gets_a_site_with_a_certificate(
     ]]
     # Once to serve the challenge on port 80, once to switch the site to https.
     assert lswsctrl.calls == [["restart"], ["restart"]]
-    assert "map webmail.example.nl webmail.example.nl" in conf(config, "http-maps.conf")
-    assert "map webmail.example.nl webmail.example.nl" in conf(config, "https-maps.conf")
-    assert "virtualhost webmail.example.nl {" in conf(config, "vhosts.conf")
+    for listener in ("HTTP", "HTTPS", "HTTPS6"):
+        assert mapped(config, listener) == {"webmail.example.nl": ["webmail.example.nl"]}
+    assert "note                    Managed by mailctl: webmail" in httpd_config(config)
 
 
 def test_the_site_serves_sogo_over_https_for_its_own_name(config):
     sync(config, "example.nl")
 
-    site = conf(config, "webmail.example.nl.conf")
+    settings = site(config, "webmail.example.nl")
 
     live = config.letsencrypt_dir / "live" / "webmail.example.nl"
     for expected in (
@@ -149,7 +157,7 @@ def test_the_site_serves_sogo_over_https_for_its_own_name(config):
         f"location                {config.sogo_resources}/",
         f"docRoot                 {config.webmail_root}/",
     ):
-        assert expected in site, expected
+        assert expected in settings, expected
 
 
 def test_nothing_changes_for_a_live_site(config, certbot, lswsctrl):
@@ -180,14 +188,13 @@ def test_certbot_registers_the_account_with_the_email_address_when_there_is_one(
 def test_a_domain_whose_webmail_name_doesnt_point_here_waits_for_it(
     config, certbot, lswsctrl, served, records, detail
 ):
-    sync(config)
-
     result = sync(config, "example.nl", resolver=FakeResolver(records))
 
     assert list(result.outcomes) == [Outcome("webmail.example.nl", State.WAITING, detail)]
     assert not result.changed
     assert webmail.sites(config) == []
-    assert certbot.calls == [] and lswsctrl.calls == [["restart"]] and served.requests == []
+    assert certbot.calls == [] and lswsctrl.calls == [] and served.requests == []
+    assert httpd_config(config) == HTTPD_CONFIG
 
 
 def test_a_site_whose_name_no_longer_points_here_goes_with_its_certificate(config, certbot, lswsctrl):
@@ -202,7 +209,7 @@ def test_a_site_whose_name_no_longer_points_here_goes_with_its_certificate(confi
     assert webmail.sites(config) == []
     assert not webmail.has_certificate(config, "webmail.example.nl")
     assert certbot.calls[-1][:3] == ["delete", "--cert-name", "webmail.example.nl"]
-    assert "webmail.example.nl" not in conf(config, "vhosts.conf") + conf(config, "http-maps.conf")
+    assert httpd_config(config) == HTTPD_CONFIG
     # Twice to set the site up, once to take it away.
     assert len(lswsctrl.calls) == 3
 
@@ -253,11 +260,11 @@ def test_a_refused_certificate_leaves_a_site_that_only_answers_challenges(config
         " http://webmail.other.nl/.well-known/acme-challenge/x: 404",
     )]
     assert result.changed
-    site = conf(config, "webmail.other.nl.conf")
-    assert "acme-challenge" in site
-    assert "vhssl" not in site and "extprocessor" not in site
-    assert "webmail.other.nl" in conf(config, "http-maps.conf")
-    assert "webmail.other.nl" not in conf(config, "https-maps.conf")
+    settings = site(config, "webmail.other.nl")
+    assert "acme-challenge" in settings
+    assert "vhssl" not in settings and "extprocessor" not in settings
+    assert mapped(config, "HTTP") == {"webmail.other.nl": ["webmail.other.nl"]}
+    assert mapped(config, "HTTPS") == mapped(config, "HTTPS6") == {}
 
 
 def test_a_refused_certificate_doesnt_stop_the_other_domains(config, fake_command):
@@ -269,8 +276,7 @@ def test_a_refused_certificate_doesnt_stop_the_other_domains(config, fake_comman
     assert [(outcome.host, outcome.state) for outcome in result.outcomes] == [
         ("webmail.example.nl", State.NEW), ("webmail.other.nl", State.FAILED),
     ]
-    maps = conf(config, "https-maps.conf")
-    assert "webmail.example.nl" in maps and "webmail.other.nl" not in maps
+    assert list(mapped(config, "HTTPS")) == ["webmail.example.nl"]
 
 
 def test_the_certificate_is_tried_again_on_the_next_run(config, fake_command):
@@ -281,7 +287,7 @@ def test_the_certificate_is_tried_again_on_the_next_run(config, fake_command):
     result = sync(config, "other.nl")
 
     assert list(result.outcomes) == [Outcome("webmail.other.nl", State.NEW)]
-    assert "webmail.other.nl" in conf(config, "https-maps.conf")
+    assert list(mapped(config, "HTTPS")) == ["webmail.other.nl"]
 
 
 def test_no_certificate_is_requested_while_the_site_isnt_served(config, certbot, served):
@@ -326,13 +332,61 @@ def test_remove_takes_away_a_domains_site_and_certificate(config, certbot, lswsc
     assert not webmail.remove(config, "example.nl")
 
 
-def test_sites_are_the_generated_site_files_only(config):
+def test_sites_are_the_virtual_hosts_with_mailctls_note_and_others_are_left_alone(config):
+    sync(config, "example.nl", "other.nl")
+
+    assert webmail.sites(config) == ["webmail.example.nl", "webmail.other.nl"]
+    assert sorted(path.name for path in (config.ols_root / "conf" / "webmail").iterdir()) == [
+        "webmail.example.nl.conf", "webmail.other.nl.conf",
+    ]
+
+    sync(config)
+
+    assert httpd_config(config) == HTTPD_CONFIG
+
+
+@pytest.mark.parametrize("hand_made", [
+    "virtualhost webmail.example.nl {\n  vhRoot                  /var/www/roundcube/\n}\n",
+    "listener Web {\n  address                 *:80\n  map                     shop webmail.example.nl\n}\n",
+])
+def test_a_site_for_the_name_that_mailctl_doesnt_manage_is_left_alone(config, certbot, hand_made):
+    """Like a site set up by hand for Roundcube."""
+    openlitespeed.config_file(config.ols_root).write_text(HTTPD_CONFIG + hand_made)
+
+    result = sync(config, "example.nl")
+
+    assert list(result.outcomes) == [Outcome(
+        "webmail.example.nl", State.FAILED,
+        "OpenLiteSpeed already has a site for webmail.example.nl, which mailctl leaves alone."
+        " Remove it in WebAdmin to get webmail for example.nl.",
+    )]
+    assert httpd_config(config) == HTTPD_CONFIG + hand_made
+    assert certbot.calls == []
+
+
+@pytest.mark.parametrize(("address", "problem"), [
+    ("*:80", "no HTTP listener on port 80"), ("*:443", "no HTTPS listener on port 443"),
+])
+def test_a_sync_needs_openlitespeed_listening_on_both_ports(config, address, problem):
+    openlitespeed.config_file(config.ols_root).write_text(
+        HTTPD_CONFIG.replace(f"address                 {address}", "address                 *:8088")
+        .replace("address                 [::]:443", "address                 [::]:8443")
+    )
+
+    with pytest.raises(MailctlError, match=problem):
+        sync(config, "example.nl")
+
+
+def test_files_that_arent_webmail_sites_leave_the_webmail_directory(config):
+    """An earlier version included these files in OpenLiteSpeed's config."""
+    directory = config.ols_root / "conf" / "webmail"
+    directory.mkdir()
+    for name in ("vhosts.conf", "http-maps.conf", "https-maps.conf"):
+        (directory / name).write_text("# Written by mailctl webmail sync. Changes are overwritten.\n")
+
     sync(config, "example.nl")
 
-    assert sorted(path.name for path in (config.ols_root / "conf" / "webmail").iterdir()) == [
-        "http-maps.conf", "https-maps.conf", "vhosts.conf", "webmail.example.nl.conf",
-    ]
-    assert webmail.sites(config) == ["webmail.example.nl"]
+    assert sorted(path.name for path in directory.iterdir()) == ["webmail.example.nl.conf"]
 
 
 def test_domains_with_capitals_from_the_old_helper_script_get_their_site_in_lower_case(config):
@@ -348,4 +402,4 @@ def test_names_that_arent_domains_never_reach_openlitespeeds_configuration(confi
 
     assert result.outcomes == ()
     assert webmail.sites(config) == []
-    assert "evil" not in conf(config, "vhosts.conf")
+    assert httpd_config(config) == HTTPD_CONFIG

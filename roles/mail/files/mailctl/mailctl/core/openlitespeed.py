@@ -1,7 +1,7 @@
-"""OpenLiteSpeed's server config (httpd_config.conf): its listeners, and the members of virtual host templates.
+"""OpenLiteSpeed's server config (httpd_config.conf): its listeners, virtual hosts, and the members of templates.
 
-The config is set up by hand in WebAdmin, so mailctl only adds and removes the members of its own templates, in the
-layout WebAdmin writes, and leaves everything else as it is. It doesn't use 'include': WebAdmin makes a config with
+The config is set up by hand in WebAdmin, so mailctl only adds and removes its own virtual hosts, template members and
+the listeners' names for them, in the layout WebAdmin writes, and leaves everything else as it is. It doesn't use 'include': WebAdmin makes a config with
 includes read-only.
 """
 
@@ -43,6 +43,15 @@ class Member:
     name: str
     domain: str
     aliases: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class VirtualHost:
+    """A virtual host of its own, for a site that needs settings a template can't give each member."""
+    name: str
+    root: str
+    config_file: str
+    note: str
 
 
 def config_file(root: Path) -> Path:
@@ -207,11 +216,67 @@ def without_member(lines: list[str], name: str, template: str) -> list[str]:
     return lines
 
 
+def virtual_hosts(lines: list[str]) -> dict[str, str | None]:
+    """The virtual hosts, with their notes."""
+    return {block.name: value(lines, block, "note") for block in blocks(lines)
+            if block.kind == "virtualhost" and not block.depth}
+
+
+def with_virtual_host(lines: list[str], host: VirtualHost) -> list[str]:
+    """The config with the virtual host, added or brought up to date. It runs no scripts and follows no links."""
+    settings = {"vhRoot": host.root, "configFile": host.config_file, "allowSymbolLink": "0", "enableScript": "0",
+                "restrained": "1", "note": host.note}
+    return _with_block(lines, "virtualhost", host.name, settings)
+
+
+def without_virtual_host(lines: list[str], name: str) -> list[str]:
+    found = _top_block(lines, "virtualhost", name)
+    if not found:
+        return lines
+    start = found.start - 1 if found.start and not lines[found.start - 1].strip() else found.start
+    return [*lines[:start], *lines[found.end + 1:]]
+
+
+def maps(lines: list[str], listener: str) -> dict[str, list[str]]:
+    """The names the listener gives each virtual host ("map VHOST NAME, NAME")."""
+    mapped: dict[str, list[str]] = {}
+    for setting in _maps(lines, listener):
+        host, names = (setting.value.split(None, 1) + [""])[:2]
+        mapped.setdefault(host, []).extend(name for name in re.split(r"[,\s]+", names) if name)
+    return mapped
+
+
+def with_map(lines: list[str], listener: str, host: str, name: str) -> list[str]:
+    """The config with the listener mapping the name, and nothing else, to the virtual host."""
+    if maps(lines, listener).get(host) == [name]:
+        return lines
+    lines = without_map(lines, listener, host)
+    end = _top_block(lines, "listener", listener).end
+    return [*lines[:end], _setting(2, "map", f"{host} {name}"), *lines[end:]]
+
+
+def without_map(lines: list[str], listener: str, host: str) -> list[str]:
+    dropped = {index for setting in _maps(lines, listener) if setting.value.split(None, 1)[0] == host
+               for index in range(setting.start, setting.end + 1)}
+    return [line for index, line in enumerate(lines) if index not in dropped]
+
+
+def _maps(lines: list[str], listener: str) -> list[_Setting]:
+    found = _top_block(lines, "listener", listener)
+    return [setting for setting in (_settings(lines, found) if found else []) if setting.key.lower() == "map"]
+
+
 def _with_template(lines: list[str], template: Template) -> list[str]:
     settings = {"templateFile": template.file, "listeners": ", ".join(template.listeners), "note": template.note}
-    found = _template(lines, template.name)
+    return _with_block(lines, "vhTemplate", template.name, settings)
+
+
+def _with_block(lines: list[str], kind: str, name: str, settings: dict[str, str]) -> list[str]:
+    """The config with the top-level block, added at the end or with its settings brought up to date. A setting is
+    replaced whole, a multi-line one included."""
+    found = _top_block(lines, kind, name)
     if not found:
-        added = [f"vhTemplate {template.name} {{", *(_setting(2, key, setting) for key, setting in settings.items()), "}"]
+        added = [f"{kind} {name} {{", *(_setting(2, key, setting) for key, setting in settings.items()), "}"]
         return [*lines, *([""] if lines and lines[-1].strip() else []), *added]
     for key, wanted in settings.items():
         existing = next((setting for setting in _settings(lines, found) if setting.key.lower() == key.lower()), None)
@@ -219,13 +284,17 @@ def _with_template(lines: list[str], template: Template) -> list[str]:
             continue
         start, end = (existing.start, existing.end) if existing else (found.start + 1, found.start)
         lines = [*lines[:start], _setting(2, key, wanted), *lines[end + 1:]]
-        found = _template(lines, template.name)
+        found = _top_block(lines, kind, name)
     return lines
 
 
 def _template(lines: list[str], name: str) -> Block | None:
+    return _top_block(lines, "vhTemplate", name)
+
+
+def _top_block(lines: list[str], kind: str, name: str) -> Block | None:
     return next((block for block in blocks(lines)
-                 if block.kind == "vhtemplate" and block.depth == 0 and block.name == name), None)
+                 if block.kind == kind.lower() and not block.depth and block.name == name), None)
 
 
 def _setting(indent: int, key: str, setting: str) -> str:

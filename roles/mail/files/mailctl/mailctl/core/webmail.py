@@ -2,7 +2,12 @@
 
 A site is an OpenLiteSpeed virtual host with a Let's Encrypt certificate of its own, which certbot gets through the
 site itself. Until the certificate exists, the site only answers Let's Encrypt's challenges, so SOGo is never
-offered without encryption. The generated files in the webmail directory are the only record of which sites exist.
+offered without encryption.
+
+The sites are virtual hosts of their own in OpenLiteSpeed's config, marked with mailctl's note, and not members of a
+template: SOGo needs a request header with the site's own name, and OpenLiteSpeed doesn't fill in variables in request
+headers. Their settings are in the webmail directory. The note is the only record of which sites exist; mailctl
+leaves every other virtual host alone.
 """
 
 import http.client
@@ -13,14 +18,16 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from . import files, names, system
+from . import files, names, openlitespeed, system
 from .config import Config
 from .dns_check import IPAddress, LookupFailed, Resolver
 from .errors import MailctlError
+from .openlitespeed import VirtualHost
 
 PREFIX = "webmail."
 SERVE_TIMEOUT = 10  # seconds OpenLiteSpeed gets to serve a new site after a restart
 _HEADER = "# Written by mailctl webmail sync. Changes are overwritten.\n"
+_NOTE = "Managed by mailctl: webmail (mailctl webmail sync)"
 _CHALLENGES = ".well-known/acme-challenge"
 
 
@@ -78,7 +85,7 @@ def host(domain: str) -> str:
 
 
 def sites(config: Config) -> list[str]:
-    return sorted(path.stem for path in _directory(config).glob(f"{PREFIX}*.conf"))
+    return _ours(openlitespeed.read(config.ols_root))
 
 
 def has_certificate(config: Config, name: str) -> bool:
@@ -100,7 +107,15 @@ def resolve_to_this_server(resolver: Resolver, name: str, server_ips: set[IPAddr
 
 def sync(config: Config, domains: Iterable[str], server_ips: set[IPAddress], resolver: Resolver) -> Result:
     """Gives every domain whose webmail name points here a site with a certificate, and removes the other sites."""
-    plan = _plan(config, domains, server_ips, resolver)
+    lines = openlitespeed.read(config.ols_root)
+    http, https = openlitespeed.listeners(lines)
+    if not http:
+        raise MailctlError("OpenLiteSpeed has no HTTP listener on port 80, where Let's Encrypt checks a site.",
+                           hint="Add one in WebAdmin.")
+    if not https:
+        raise MailctlError("OpenLiteSpeed has no HTTPS listener on port 443, and webmail is only offered over HTTPS.",
+                           hint="Add one in WebAdmin.")
+    plan = _plan(config, lines, domains, server_ips, resolver)
     changed = _publish(config, plan.kept)
     for name in sorted(plan.removed):
         changed |= _delete_certificate(config, name)
@@ -118,12 +133,13 @@ def sync(config: Config, domains: Iterable[str], server_ips: set[IPAddress], res
     return Result(tuple(plan.outcomes[name] for name in sorted(plan.outcomes)), changed)
 
 
-def _plan(config: Config, domains: Iterable[str], server_ips: set[IPAddress], resolver: Resolver) -> _Plan:
-    """What sync() does for each site, from the domains and their webmail names' DNS."""
+def _plan(config: Config, lines: list[str], domains: Iterable[str], server_ips: set[IPAddress],
+          resolver: Resolver) -> _Plan:
+    """What sync() does for each site, from the domains, their webmail names' DNS and OpenLiteSpeed's config."""
     # The old helper script stored domains as it was given them, capitals and all. What isn't a domain name can't
     # have a site, and must never reach OpenLiteSpeed's configuration.
     wanted = {name for name in (host(domain.lower()) for domain in domains) if names.valid_domain(name)}
-    existing = set(sites(config))
+    existing = set(_ours(lines))
     plan = _Plan()
     for name in sorted(wanted | existing):
         if name not in wanted:
@@ -143,10 +159,28 @@ def _plan(config: Config, domains: Iterable[str], server_ips: set[IPAddress], re
             else:
                 plan.wait(name, str(problem))
         else:
+            if name not in existing and _taken(lines, name):
+                plan.outcomes[name] = Outcome(name, State.FAILED, (
+                    f"OpenLiteSpeed already has a site for {name}, which mailctl leaves alone."
+                    f" Remove it in WebAdmin to get webmail for {name.removeprefix(PREFIX)}."
+                ))
+                continue
             plan.keep(Outcome(name, State.LIVE))
             if not has_certificate(config, name):
                 plan.uncertified[name] = addresses
     return plan
+
+
+def _ours(lines: list[str]) -> list[str]:
+    return sorted(name for name, note in openlitespeed.virtual_hosts(lines).items() if note == _NOTE)
+
+
+def _taken(lines: list[str], name: str) -> bool:
+    """Whether a virtual host mailctl doesn't manage has the name, or a listener maps the name to one."""
+    http, https = openlitespeed.listeners(lines)
+    mapped = [host for listener in http + https for host, hosts_names in openlitespeed.maps(lines, listener).items()
+              if name in hosts_names]
+    return name in openlitespeed.virtual_hosts(lines) or any(host != name for host in mapped)
 
 
 def remove(config: Config, domain: str) -> bool:
@@ -160,22 +194,40 @@ def remove(config: Config, domain: str) -> bool:
 
 
 def _publish(config: Config, hosts: set[str]) -> bool:
-    """Writes the sites, and has OpenLiteSpeed read them if anything changed. Returns whether it did. A site is on
-    the HTTPS listeners once its certificate exists."""
+    """Writes the sites' settings and puts exactly these sites in OpenLiteSpeed's config, and has OpenLiteSpeed read
+    them if anything changed. Returns whether it did. A site is on the HTTPS listeners once its certificate exists."""
     ordered = sorted(hosts)
-    certified = [name for name in ordered if has_certificate(config, name)]
-    directory = _directory(config)
-    changes = [files.replace(directory / f"{name}.conf", _site(config, name, name in certified)) for name in ordered]
-    changes += [files.remove(directory / f"{name}.conf") for name in sites(config) if name not in hosts]
-    changes += [
-        files.replace(directory / "vhosts.conf", _HEADER + "".join(_virtual_host(config, name) for name in ordered)),
-        files.replace(directory / "http-maps.conf", _HEADER + "".join(_map(name) for name in ordered)),
-        files.replace(directory / "https-maps.conf", _HEADER + "".join(_map(name) for name in certified)),
-    ]
-    if not any(changes):
-        return False
-    system.run(str(config.ols_root / "bin" / "lswsctrl"), "restart")
-    return True
+    certified = {name for name in ordered if has_certificate(config, name)}
+    changed = False
+    for name in ordered:  # before the config refers to them
+        changed |= files.replace(_site_file(config, name), _site(config, name, name in certified))
+    lines = openlitespeed.read(config.ols_root)
+    http, https = openlitespeed.listeners(lines)
+    updated = lines
+    for name in _ours(lines):
+        if name not in hosts:
+            updated = openlitespeed.without_virtual_host(updated, name)
+            for listener in http + https:
+                updated = openlitespeed.without_map(updated, listener, name)
+    for name in ordered:
+        site = VirtualHost(name, f"{config.webmail_root}/", str(_site_file(config, name)), _NOTE)
+        updated = openlitespeed.with_virtual_host(updated, site)
+        for listener in http:
+            updated = openlitespeed.with_map(updated, listener, name, name)
+        for listener in https:
+            if name in certified:
+                updated = openlitespeed.with_map(updated, listener, name, name)
+            else:
+                updated = openlitespeed.without_map(updated, listener, name)
+    if updated != lines:
+        openlitespeed.write(config.ols_root, updated)
+        changed = True
+    for path in _directory(config).glob("*.conf"):  # once the config no longer refers to them
+        if path.stem not in hosts:
+            changed |= files.remove(path)
+    if changed:
+        openlitespeed.restart(config.ols_root)
+    return changed
 
 
 def _wait_until_served(config: Config, name: str, addresses: set[IPAddress]) -> None:
@@ -243,24 +295,12 @@ def _directory(config: Config) -> Path:
     return config.ols_root / "conf" / "webmail"
 
 
+def _site_file(config: Config, name: str) -> Path:
+    return _directory(config) / f"{name}.conf"
+
+
 def _live(config: Config, name: str) -> Path:
     return config.letsencrypt_dir / "live" / name
-
-
-def _virtual_host(config: Config, name: str) -> str:
-    return f"""
-virtualhost {name} {{
-  vhRoot                  {config.webmail_root}/
-  configFile              {_directory(config) / name}.conf
-  allowSymbolLink         0
-  enableScript            0
-  restrained              1
-}}
-"""
-
-
-def _map(name: str) -> str:
-    return f"map {name} {name}\n"
 
 
 def _site(config: Config, name: str, certified: bool) -> str:

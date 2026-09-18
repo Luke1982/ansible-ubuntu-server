@@ -5,9 +5,10 @@ from pathlib import Path
 
 import pytest
 from conftest import FakeCommand
+from test_openlitespeed import HTTPD_CONFIG
 from test_webmail import FAKE_CERTBOT, REFUSING_CERTBOT
 
-from mailctl.core import dns_check, webmail
+from mailctl.core import dns_check, openlitespeed, webmail
 
 
 class FakeDns:
@@ -19,16 +20,16 @@ class FakeDns:
 
 @pytest.fixture
 def config(config, tmp_path):
-    return replace(
-        config, ols_root=tmp_path / "lsws", webmail_root=tmp_path / "www", letsencrypt_dir=tmp_path / "letsencrypt",
-    )
+    return replace(config, webmail_root=tmp_path / "www")
 
 
 @pytest.fixture
 def webmail_ready(mailctl, db_config, fake_command, monkeypatch):
     """mailctl with example.nl, whose webmail name points here, and certbot, lswsctrl and a web server that work."""
     fake_command("certbot", FAKE_CERTBOT)
-    (db_config.ols_root / "bin").mkdir(parents=True)
+    (db_config.ols_root / "conf").mkdir(parents=True)
+    openlitespeed.config_file(db_config.ols_root).write_text(HTTPD_CONFIG)
+    (db_config.ols_root / "bin").mkdir()
     FakeCommand(db_config.ols_root / "bin", "lswsctrl", "")
     monkeypatch.setattr(dns_check, "SystemResolver", FakeDns)
     monkeypatch.setattr(webmail, "_serves", lambda address, name, file_name, token: True)

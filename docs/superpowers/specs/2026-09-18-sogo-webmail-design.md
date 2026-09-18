@@ -121,17 +121,9 @@ The `web` role installs OpenLiteSpeed, but its config (listeners and sites) is s
 
 ### Once, by Ansible (`tasks/configure-webmail.yml`)
 
-1. Fail with a clear message when `/usr/local/lsws/conf/httpd_config.conf` doesn't exist (the `web` role must run first), or when it has no listener on port 443: "Add an HTTPS listener in OpenLiteSpeed first".
-2. Find the listeners on ports 80 and 443 by their `address` lines (`*:80`, `[::]:443` and so on).
-3. Create `/usr/local/lsws/conf/webmail/` with empty `vhosts.conf`, `http-maps.conf` and `https-maps.conf` if they're missing, so OpenLiteSpeed starts before the first sync.
-4. Add include lines to `httpd_config.conf`, each in a block with its own marker (`blockinfile`), so a second listener on the same port gets its own:
-   - `include /usr/local/lsws/conf/webmail/vhosts.conf` at the end, at the top level
-   - `include /usr/local/lsws/conf/webmail/http-maps.conf` inside every port 80 listener
-   - `include /usr/local/lsws/conf/webmail/https-maps.conf` inside every port 443 listener
-
-   OpenLiteSpeed reads `include` lines anywhere, also inside blocks (`plainconf.cpp`), and WebAdmin keeps them (`PlainConfParser.php`).
-5. Create `/var/www/webmail` (the document root, holding only Let's Encrypt's challenge files).
-6. Restart OpenLiteSpeed when any of this changed, install the daily timer, and run `mailctl webmail sync`.
+1. Fail with a clear message when `/usr/local/lsws/conf/httpd_config.conf` doesn't exist (the `web` role must run first).
+2. Remove the `include` lines an earlier version of this role added (between `# BEGIN webmail` and `# END webmail` markers). WebAdmin shows a config with any `include` read-only (`ConfigDataLoader::loadPlainRoot`), so the sites are virtual hosts in the config itself.
+3. Create `/var/www/webmail` (the document root, holding only Let's Encrypt's challenges), install the daily timer, and run `mailctl webmail sync`.
 
 ### Per domain, by `mailctl webmail sync`
 
@@ -149,11 +141,11 @@ For each domain in `virtual_domains`, sync checks that `webmail.<domain>` resolv
 
 A site whose domain is no longer in `virtual_domains` is removed the same way, and `mailctl domain delete` removes the domain's site and certificate straight away.
 
-The wait before certbot also catches a server where the listener includes don't work: sync then says OpenLiteSpeed doesn't serve the name on port 80, instead of spending one of Let's Encrypt's five failed validations per hour.
+The wait before certbot also catches a site OpenLiteSpeed doesn't serve, like a listener for IPv4 only: sync then says so, instead of spending one of Let's Encrypt's five failed validations per hour.
 
 Certbot uses the server's Let's Encrypt account. When there isn't one, it registers one with `letsencrypt_email` (optional inventory variable) or, without it, with `--register-unsafely-without-email`. A failed certificate is a warning for that domain, with the `Detail:` lines of certbot's error; the other domains carry on. The next daily run tries again, which stays well under Let's Encrypt's limits. Certbot gets `--config-dir` explicitly, so mailctl and certbot agree on where certificates are.
 
-Each domain gets a virtual host `webmail.<domain>` in `vhosts.conf`, with its own config file `webmail.<domain>.conf`. Until the certificate exists, the site only answers Let's Encrypt's challenges: SOGo is never offered over plain http, so no password crosses the internet unencrypted. With the certificate:
+Each domain gets a virtual host `webmail.<domain>` in `httpd_config.conf`, written like WebAdmin writes it (`core/openlitespeed.py`) with the note "Managed by mailctl: webmail", and its settings in `conf/webmail/webmail.<domain>.conf` (`configFile`). Not a template member: SOGo needs a request header with the site's own name, and OpenLiteSpeed 1.9.2 doesn't fill in variables in request headers (tested: `%{HTTP_HOST}e` arrives as that text). The note is the only record of which sites exist; mailctl leaves every other virtual host alone, and a name another virtual host or map already has is reported instead of taken over (a site set up by hand for Roundcube, for example). Until the certificate exists, the site only answers Let's Encrypt's challenges: SOGo is never offered over plain http, so no password crosses the internet unencrypted. With the certificate:
 
 - `vhssl` with `/etc/letsencrypt/live/webmail.<domain>/`; port 80 redirects to https, except for the challenges
 - an external app of type proxy to `{{ sogo_address }}`, with a response timeout above ActiveSync's 280 seconds
@@ -163,7 +155,7 @@ Each domain gets a virtual host `webmail.<domain>` in `vhosts.conf`, with its ow
 - `/` redirects to `/SOGo/`
 - LiteSpeed's page cache is off for the site, so one user's mail can never be served to another
 
-`http-maps.conf` maps every site; `https-maps.conf` only the sites with a certificate, so OpenLiteSpeed never loads a site whose certificate is missing.
+The port 80 listeners map every site; the port 443 listeners only the sites with a certificate, so OpenLiteSpeed never loads a site whose certificate is missing.
 
 The existing certbot deploy hook (`templates/1-post-deploy-hook-letsencrypt.sh.j2`) also restarts OpenLiteSpeed gracefully when a `webmail.*` certificate is renewed.
 
@@ -200,7 +192,7 @@ Domain names come from the database, where the old helper script stored whatever
 | `roles/mail/tasks/main.yml` | Package list; asserts; `remove-roundcube.yml`, `configure-sogo.yml` and, after mailctl, `configure-webmail.yml` instead of `configure-roundcube.yml` |
 | `roles/mail/tasks/remove-roundcube.yml` | New |
 | `roles/mail/tasks/configure-sogo.yml` | New: repository (24.04), packages, database, view, `sogo.conf`, `/etc/default/sogo`, cron, services |
-| `roles/mail/tasks/configure-webmail.yml` | New: OpenLiteSpeed includes, document root, timer, first sync |
+| `roles/mail/tasks/configure-webmail.yml` | New: removal of the earlier include lines, document root, timer, first sync |
 | `roles/mail/tasks/configure-fail2ban.yml` | SOGo jail and filter instead of Roundcube's; removes the old jail file |
 | `roles/mail/templates/dovecot-local-2.3.conf.j2`, `dovecot-local-2.4.conf.j2` | `acl` and `imap_acl` plugins, `vfile` driver; `mail_max_userip_connections` for IMAP at twice `sogo_workers` |
 | `roles/mail/tasks/install-mailctl.yml` | `letsencrypt_email`, `sogo_address`, `sogo_resources` in config.json |
@@ -222,7 +214,7 @@ There are no VMs: the role is tested on a VPS by hand. Everything that can be ch
 
 - **mailctl:** unit tests like the existing ones, against the throwaway MariaDB and with fake `certbot` and `lswsctrl` commands (the `fake_command` fixture): the sync table row by row, a failed certificate leaving other domains alone, a lookup failure changing nothing, strict "points here", the generated files, the map files only listing https sites that have a certificate, the new records and checks, and `domain add`/`delete`/`status` output. Run on the 24.04 and 26.04 library versions, as now.
 - **The SOGo view:** loaded into the test database, read and updated as the `sogo` user (see Database).
-- **OpenLiteSpeed:** the generated config is checked with OpenLiteSpeed itself (the `openlitespeed` binary from LiteSpeed's package, unpacked, run as a normal user on spare ports): `-t` accepts an `httpd_config.conf` with listeners that include the generated files, and a running server with a stand-in backend on the SOGo port shows that `PROPFIND`, `REPORT` and `MKCALENDAR` reach the backend, with the `x-webobjects-*` headers and an `X-Forwarded-For` ending in the real client; that `/Microsoft-Server-ActiveSync` reaches `/SOGo/Microsoft-Server-ActiveSync`; that `.well-known` and `/` redirect; that an exact map beats a catch-all `*` map on the same listener; and that a site without a certificate only serves challenge files.
+- **OpenLiteSpeed:** the generated config is checked with OpenLiteSpeed itself (the `openlitespeed` binary from LiteSpeed's package, unpacked, run as a normal user on spare ports): `-t` accepts the `httpd_config.conf` mailctl writes (and one migrated from the earlier include lines), and a running server with a stand-in backend on the SOGo port shows that `PROPFIND`, `REPORT` and `MKCALENDAR` reach the backend, with the `x-webobjects-*` headers and an `X-Forwarded-For` ending in the real client; that `/Microsoft-Server-ActiveSync` reaches `/SOGo/Microsoft-Server-ActiveSync`; that `.well-known` and `/` redirect; that an exact map beats a catch-all `*` map on the same listener; and that a site without a certificate only serves challenge files.
 - **fail2ban:** `fail2ban-regex` with the new filter against log lines with one, several and made-up forwarded addresses.
 - **Dovecot:** the ACL changes checked with `doveconf` from Ubuntu 24.04's `dovecot-core`, unpacked here, as for the mailctl work. The 2.4 template is checked on the VPS.
 - **Ansible:** `ansible-playbook --syntax-check`.

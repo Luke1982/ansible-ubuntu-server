@@ -77,7 +77,7 @@ The playbook used to rebuild OpenDKIM's signing table on every run, leaving out 
 The mail role installs SOGo for webmail, calendars, address books and phone sync (ActiveSync), and removes Roundcube from servers that have it. Before running it:
 
 - Add `sogo_db_pass` to `mailvars.yml` (see `roles/mail/vars/private/README.md`).
-- OpenLiteSpeed needs a listener on port 443. The playbook adds a few `include` lines to `/usr/local/lsws/conf/httpd_config.conf` for the webmail sites, between `# BEGIN webmail` and `# END webmail` markers; keep them when you change that file by hand.
+- OpenLiteSpeed needs listeners on ports 80 and 443. mailctl adds a virtual host per domain to its config, `webmail.DOMAIN`, with the note "Managed by mailctl"; leave those to mailctl. It doesn't touch your other sites, and WebAdmin stays editable.
 - A site you set up by hand in OpenLiteSpeed for Roundcube stops working: remove it.
 
 Webmail, calendar and contact sync, and ActiveSync are at `https://webmail.DOMAIN` for every mail domain whose `webmail.DOMAIN` A and AAAA records all point to the server. `mailctl webmail sync` sets up each such site with a Let's Encrypt certificate of its own; it runs every day and at the end of every playbook run, so a new domain gets its webmail within a day of its records being published. `mail.DOMAIN` stays the name for IMAP and sending.

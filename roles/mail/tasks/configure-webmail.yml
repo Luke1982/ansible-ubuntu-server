@@ -1,8 +1,8 @@
 ---
 # webmail.<domain> for every mail domain, served by OpenLiteSpeed. Its listeners
-# and sites are set up by hand in WebAdmin; this only hooks in the files that
-# "mailctl webmail sync" writes: the sites, and the names each listener maps to
-# them.
+# and sites are set up by hand in WebAdmin; "mailctl webmail sync" adds a
+# virtual host of its own per domain to that config, marked with its note, and
+# leaves everything else alone.
 
 - name: Check that OpenLiteSpeed is installed
   stat:
@@ -15,66 +15,12 @@
     fail_msg: "{{ ols_root }}/conf/httpd_config.conf doesn't exist. Run the web role first: it installs OpenLiteSpeed."
     quiet: yes
 
-- name: Read OpenLiteSpeed's configuration
-  slurp:
-    src: "{{ ols_root }}/conf/httpd_config.conf"
-  register: ols_config_file
-
-# By the port in their address, like *:443 or [::]:80. Each file lists the
-# names to map: every site on port 80, only the sites with a certificate on 443.
-- name: Find OpenLiteSpeed's listeners on ports 80 and 443
-  set_fact:
-    webmail_listeners:
-      http-maps.conf: "{{ ols_config_text | regex_findall(listener_pattern | replace('PORT', '80')) }}"
-      https-maps.conf: "{{ ols_config_text | regex_findall(listener_pattern | replace('PORT', '443')) }}"
-  vars:
-    ols_config_text: "{{ ols_config_file.content | b64decode }}"
-    # OpenLiteSpeed wants a block's "{" on the line of its name.
-    listener_pattern: '(?ms)^listener\s+(\S+?)[ \t]*\{[^}]*?^\s*address\s+\S*:PORT\s*$'
-
-- name: Stop when OpenLiteSpeed has no HTTPS listener
-  assert:
-    that: webmail_listeners['https-maps.conf'] | length > 0
-    fail_msg: "OpenLiteSpeed has no listener on port 443. Add one in WebAdmin first: webmail is only served over HTTPS."
-    quiet: yes
-
-- name: Create the directory for the webmail sites
-  file:
-    path: "{{ ols_root }}/conf/webmail"
-    state: directory
-    mode: 0755
-
-# Placeholders, so OpenLiteSpeed starts before "mailctl webmail sync" fills
-# them: what it writes while there are no sites. OpenLiteSpeed warns about
-# empty files.
-- name: Create the files for the webmail sites
-  copy:
-    content: "# Written by mailctl webmail sync. Changes are overwritten.\n"
-    dest: "{{ ols_root }}/conf/webmail/{{ item }}"
-    force: no
-    mode: 0644
-  loop:
-    - vhosts.conf
-    - http-maps.conf
-    - https-maps.conf
-
-- name: Add the webmail sites to OpenLiteSpeed
-  blockinfile:
+# An earlier version of this role included files in OpenLiteSpeed's config,
+# which makes WebAdmin show all of it read-only. mailctl removes the files.
+- name: Remove the include lines of the earlier webmail setup
+  replace:
     path: "{{ ols_root }}/conf/httpd_config.conf"
-    marker: "# {mark} webmail sites, managed by Ansible"
-    block: include {{ ols_root }}/conf/webmail/vhosts.conf
-  notify: restart openlitespeed
-
-# Inside each listener, each with a marker of its own
-- name: Map the webmail sites on OpenLiteSpeed's listeners
-  blockinfile:
-    path: "{{ ols_root }}/conf/httpd_config.conf"
-    marker: "# {mark} webmail names for listener {{ item.1 }}, managed by Ansible"
-    insertafter: ^listener\s+{{ item.1 | regex_escape }}\s*\{
-    block: include {{ ols_root }}/conf/webmail/{{ item.0.key }}
-  loop: "{{ webmail_listeners | dict2items | subelements('value') }}"
-  loop_control:
-    label: "{{ item.1 }}"
+    regexp: ^# BEGIN webmail (sites|names for listener \S+), managed by Ansible\n.*\n# END webmail .*, managed by Ansible\n
   notify: restart openlitespeed
 
 - name: Create the webmail document root, for Let's Encrypt's challenges

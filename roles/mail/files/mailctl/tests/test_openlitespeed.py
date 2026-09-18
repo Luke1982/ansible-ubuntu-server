@@ -5,7 +5,7 @@ import pytest
 
 from mailctl.core import openlitespeed
 from mailctl.core.errors import MailctlError
-from mailctl.core.openlitespeed import Member, Template
+from mailctl.core.openlitespeed import Member, Template, VirtualHost
 
 # Laid out like WebAdmin writes it, with the listeners of a server set up by hand.
 HTTPD_CONFIG = """\
@@ -70,6 +70,8 @@ vhTemplate centralConfigLog {
 HTTPS = Template("mailautodiscover", "conf/templates/mailautodiscover.conf", ("HTTP", "HTTPS", "HTTPS6"), "Managed")
 HTTP_ONLY = Template("mailautodiscover-http", "conf/templates/mailautodiscover-http.conf", ("HTTP",), "Managed, HTTP")
 MEMBER = Member("autodiscover.example.nl", "autodiscover.example.nl", ("autoconfig.example.nl",))
+WEBMAIL = VirtualHost("webmail.example.nl", "/var/www/webmail/", "/etc/mailctl/webmail/webmail.example.nl.conf",
+                      "Managed by mailctl")
 
 
 def lines(text=HTTPD_CONFIG):
@@ -247,3 +249,63 @@ def test_a_config_that_is_a_symbolic_link_is_refused(tmp_path):
 
     with pytest.raises(MailctlError, match="is a symbolic link"):
         openlitespeed.read(tmp_path)
+
+
+def test_with_virtual_host_adds_it_like_webadmin_does():
+    config = openlitespeed.with_virtual_host(lines(), WEBMAIL)
+
+    assert config[:len(lines())] == lines()
+    assert "\n".join(config[len(lines()):]) == """
+virtualhost webmail.example.nl {
+  vhRoot                  /var/www/webmail/
+  configFile              /etc/mailctl/webmail/webmail.example.nl.conf
+  allowSymbolLink         0
+  enableScript            0
+  restrained              1
+  note                    Managed by mailctl
+}"""
+    assert openlitespeed.virtual_hosts(config) == {"shop": None, "webmail.example.nl": "Managed by mailctl"}
+
+
+def test_with_virtual_host_changes_nothing_the_second_time_and_brings_settings_up_to_date():
+    config = openlitespeed.with_virtual_host(lines(), WEBMAIL)
+    assert openlitespeed.with_virtual_host(config, WEBMAIL) == config
+
+    moved = VirtualHost(WEBMAIL.name, "/srv/webmail/", WEBMAIL.config_file, WEBMAIL.note)
+    config = openlitespeed.with_virtual_host(config, moved)
+
+    host = next(block for block in openlitespeed.blocks(config) if block.name == WEBMAIL.name)
+    assert openlitespeed.value(config, host, "vhRoot") == "/srv/webmail/"
+    assert sum(line.strip().startswith("vhRoot") for line in config[host.start:host.end]) == 1
+
+
+def test_without_virtual_host_leaves_the_others():
+    config = openlitespeed.with_virtual_host(lines(), WEBMAIL)
+
+    config = openlitespeed.without_virtual_host(config, WEBMAIL.name)
+
+    assert config == lines()
+    assert openlitespeed.without_virtual_host(config, "gone") == config
+
+
+def test_maps_are_the_names_each_listener_gives_its_virtual_hosts():
+    config = lines().copy()
+    config[config.index("  map                     shop shop.example.nl")] = (
+        "  map                     shop shop.example.nl, www.shop.example.nl"
+    )
+
+    assert openlitespeed.maps(config, "HTTP") == {"shop": ["shop.example.nl", "www.shop.example.nl"]}
+    assert openlitespeed.maps(config, "HTTPS6") == {}
+    assert openlitespeed.maps(config, "missing") == {}
+
+
+def test_with_map_adds_the_name_once_and_without_map_takes_it_away():
+    config = openlitespeed.with_map(lines(), "HTTPS6", WEBMAIL.name, WEBMAIL.name)
+
+    assert openlitespeed.maps(config, "HTTPS6") == {WEBMAIL.name: [WEBMAIL.name]}
+    listener = next(block for block in openlitespeed.blocks(config) if block.name == "HTTPS6")
+    assert config[listener.end - 1] == "  map                     webmail.example.nl webmail.example.nl"
+    assert openlitespeed.with_map(config, "HTTPS6", WEBMAIL.name, WEBMAIL.name) == config
+
+    assert openlitespeed.without_map(config, "HTTPS6", WEBMAIL.name) == lines()
+    assert openlitespeed.maps(openlitespeed.without_map(lines(), "HTTP", "shop"), "HTTP") == {}
