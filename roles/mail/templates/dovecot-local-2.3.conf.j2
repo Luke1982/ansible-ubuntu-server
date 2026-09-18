@@ -48,14 +48,28 @@ ssl_key = </etc/letsencrypt/live/{{hostname}}/privkey.pem
 
 
 ## Overrides conf.d/15-mailboxes.conf
+# The standard folders are always subscribed, so webmail, which only shows
+# subscribed folders, shows them. The alias folders for other mail programs
+# (Sent Items, Verzonden items and the like) aren't, so webmail hides them.
 namespace inbox {
+  mailbox INBOX {
+    auto = subscribe
+  }
+  mailbox "Drafts" {
+    auto = subscribe
+    special_use = \Drafts
+  }
   mailbox "Sent" {
-    auto = create
+    auto = subscribe
     special_use = \Sent
   }
   mailbox "Trash" {
-    auto = create
+    auto = subscribe
     special_use = \Trash
+  }
+  mailbox "Junk" {
+    auto = subscribe
+    special_use = \Junk
   }
 }
 

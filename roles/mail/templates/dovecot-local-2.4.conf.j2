@@ -50,14 +50,28 @@ ssl_server_key_file = /etc/letsencrypt/live/{{hostname}}/privkey.pem
 ## Overrides conf.d/15-mailboxes.conf
 # Dovecot 2.4 dropped the mailbox_alias plugin, so "Sent Items" and the like
 # are no longer aliases of Sent. Clients find Sent and Trash by special_use.
+# The standard folders are always subscribed, so webmail, which only shows
+# subscribed folders, shows them. The alias folders for other mail programs
+# aren't, so webmail hides them.
 namespace inbox {
+  mailbox INBOX {
+    auto = subscribe
+  }
+  mailbox Drafts {
+    auto = subscribe
+    special_use = \Drafts
+  }
   mailbox Sent {
-    auto = create
+    auto = subscribe
     special_use = \Sent
   }
   mailbox Trash {
-    auto = create
+    auto = subscribe
     special_use = \Trash
+  }
+  mailbox Junk {
+    auto = subscribe
+    special_use = \Junk
   }
 }
 

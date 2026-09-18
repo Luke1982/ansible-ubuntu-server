@@ -57,6 +57,11 @@
   SOGoSMTPServer = "smtp://{{ hostname }}:587/?tls=YES";
   SOGoSMTPAuthenticationType = PLAIN;
   SOGoMailDomain = "{{ defaultdomain }}";
+  /* Only subscribed folders: Dovecot subscribes everyone to the standard ones,
+     and the alias folders mailctl makes for other mail programs (Sent Items,
+     Verzonden items and the like) stay out of sight. People subscribe to other
+     folders in SOGo's folder list. */
+  SOGoMailShowSubscribedFoldersOnly = YES;
   SOGoDraftsFolderName = Drafts;
   SOGoSentFolderName = Sent;
   SOGoTrashFolderName = Trash;
