@@ -53,3 +53,9 @@ sogo_workers: 10
 # What new webmail users start with. They can change both.
 sogo_language: Dutch
 sogo_timezone: Europe/Amsterdam
+
+# OpenLiteSpeed, installed by the web role
+ols_root: /usr/local/lsws
+
+# Document root of the webmail sites: it only holds Let's Encrypt's challenges.
+webmail_root: /var/www/webmail

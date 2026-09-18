@@ -48,6 +48,10 @@
     name: sogo
     state: restarted
 
+# Graceful: requests in progress are finished first.
+- name: restart openlitespeed
+  command: "{{ ols_root }}/bin/lswsctrl restart"
+
 - name: restart opendkim
   service:
     name: opendkim
