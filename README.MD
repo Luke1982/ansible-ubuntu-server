@@ -82,6 +82,8 @@ The mail role installs SOGo for webmail, calendars, address books and phone sync
 
 Webmail, calendar and contact sync and ActiveSync are at `https://webmail.DOMAIN` for every mail domain whose `webmail.DOMAIN` A and AAAA records all point to the server. `mailctl webmail sync` sets up each such site with a Let's Encrypt certificate of its own; it runs every day and at the end of every playbook run, so a new domain gets its webmail within a day of its records being published. `mail.DOMAIN` stays the name for IMAP and sending.
 
+Calendars, address books and SOGo's settings live in the MariaDB database `sogo`: back it up along with the mail.
+
 Roundcube's database stays, with the contacts people saved in it. Filters made in Roundcube keep working until someone saves filters or a vacation reply in SOGo; from then on SOGo's apply. `mailctl filters show ADDRESS` shows both.
 
 #### Ubuntu release upgrades
