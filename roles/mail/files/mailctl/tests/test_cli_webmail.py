@@ -177,3 +177,10 @@ def test_webmail_sync_skips_domains_outside_the_transip_account(webmail_ready, p
 
     assert "Published" not in output
     assert publishing.paths("PUT") == []
+
+
+def test_the_playbook_runs_webmail_sync_where_it_cant_ask_anything():
+    """Ansible gives commands a terminal, where mailctl would ask for a missing TransIP login and wait forever."""
+    task = Path(__file__).resolve().parents[3] / "tasks" / "configure-webmail.yml"
+
+    assert re.search(r"^\s*shell: mailctl webmail sync </dev/null$", task.read_text(), re.MULTILINE)

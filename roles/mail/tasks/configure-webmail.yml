@@ -65,9 +65,12 @@
     daemon_reload: yes
   when: webmail_sync_units.changed
 
-# Restarts OpenLiteSpeed itself when it changes a site.
+# Restarts OpenLiteSpeed itself when it changes a site. Ansible gives commands
+# a terminal, and mailctl asks questions in one (like the TransIP login when
+# there is none), which nobody would answer: input from /dev/null tells it not
+# to ask.
 - name: Set up webmail for the domains whose webmail name points here
-  command: mailctl webmail sync
+  shell: mailctl webmail sync </dev/null
   register: webmail_sync
   changed_when: "'Changed the webmail sites.' in webmail_sync.stdout"
 
