@@ -85,7 +85,7 @@ class FakeWebServer:
         self.requests: list[tuple[str, str]] = []
         self.refused: set[str] = set()
 
-    def serves(self, address, name, path, token):
+    def serves(self, address, name, file_name, token):
         self.requests.append((str(address), name))
         return not {name, str(address)} & self.refused
 
@@ -98,10 +98,8 @@ def served(monkeypatch):
     return web_server
 
 
-@pytest.fixture
-def ready(config, certbot, lswsctrl, served):
-    """Everything a sync needs: certbot, lswsctrl, and a web server that serves every site."""
-    return certbot, lswsctrl
+# Every test gets these; the ones that look at them ask for them by name.
+pytestmark = pytest.mark.usefixtures("certbot", "lswsctrl", "served")
 
 
 def conf(config, name):
@@ -112,8 +110,7 @@ def sync(config, *domains, resolver=HERE):
     return webmail.sync(config, domains, SERVER_IPS, resolver)
 
 
-def test_a_domain_whose_webmail_name_points_here_gets_a_site_with_a_certificate(config, ready, served):
-    certbot, lswsctrl = ready
+def test_a_domain_whose_webmail_name_points_here_gets_a_site_with_a_certificate(config, certbot, lswsctrl, served):
 
     result = sync(config, "example.nl")
 
@@ -134,7 +131,7 @@ def test_a_domain_whose_webmail_name_points_here_gets_a_site_with_a_certificate(
     assert "virtualhost webmail.example.nl {" in conf(config, "vhosts.conf")
 
 
-def test_the_site_serves_sogo_over_https_for_its_own_name(config, ready):
+def test_the_site_serves_sogo_over_https_for_its_own_name(config):
     sync(config, "example.nl")
 
     site = conf(config, "webmail.example.nl.conf")
@@ -155,8 +152,7 @@ def test_the_site_serves_sogo_over_https_for_its_own_name(config, ready):
         assert expected in site, expected
 
 
-def test_nothing_changes_for_a_live_site(config, ready):
-    certbot, lswsctrl = ready
+def test_nothing_changes_for_a_live_site(config, certbot, lswsctrl):
     sync(config, "example.nl")
 
     result = sync(config, "example.nl")
@@ -167,12 +163,12 @@ def test_nothing_changes_for_a_live_site(config, ready):
     assert len(lswsctrl.calls) == 2
 
 
-def test_certbot_registers_the_account_with_the_email_address_when_there_is_one(config, ready):
-    certbot, _ = ready
-
+def test_certbot_registers_the_account_with_the_email_address_when_there_is_one(config, certbot):
     sync(replace(config, letsencrypt_email="admin@example.nl"), "example.nl")
 
-    assert certbot.calls[0][9:11] == ["--email", "admin@example.nl"]
+    call = certbot.calls[0]
+    assert call[call.index("--email") + 1] == "admin@example.nl"
+    assert "--register-unsafely-without-email" not in call
 
 
 @pytest.mark.parametrize(("records", "detail"), [
@@ -181,8 +177,9 @@ def test_certbot_registers_the_account_with_the_email_address_when_there_is_one(
     ({"webmail.example.nl": ["203.0.113.5", "2001:db8::99"]},
      "webmail.example.nl also points to 2001:db8::99, which isn't this server."),
 ])
-def test_a_domain_whose_webmail_name_doesnt_point_here_waits_for_it(config, ready, served, records, detail):
-    certbot, lswsctrl = ready
+def test_a_domain_whose_webmail_name_doesnt_point_here_waits_for_it(
+    config, certbot, lswsctrl, served, records, detail
+):
     sync(config)
 
     result = sync(config, "example.nl", resolver=FakeResolver(records))
@@ -193,8 +190,7 @@ def test_a_domain_whose_webmail_name_doesnt_point_here_waits_for_it(config, read
     assert certbot.calls == [] and lswsctrl.calls == [["restart"]] and served.requests == []
 
 
-def test_a_site_whose_name_no_longer_points_here_goes_with_its_certificate(config, ready):
-    certbot, lswsctrl = ready
+def test_a_site_whose_name_no_longer_points_here_goes_with_its_certificate(config, certbot, lswsctrl):
     sync(config, "example.nl")
 
     result = sync(config, "example.nl", resolver=FakeResolver({"webmail.example.nl": ["198.51.100.9"]}))
@@ -207,10 +203,11 @@ def test_a_site_whose_name_no_longer_points_here_goes_with_its_certificate(confi
     assert not webmail.has_certificate(config, "webmail.example.nl")
     assert certbot.calls[-1][:3] == ["delete", "--cert-name", "webmail.example.nl"]
     assert "webmail.example.nl" not in conf(config, "vhosts.conf") + conf(config, "http-maps.conf")
+    # Twice to set the site up, once to take it away.
     assert len(lswsctrl.calls) == 3
 
 
-def test_a_site_whose_domain_is_gone_goes_too(config, ready):
+def test_a_site_whose_domain_is_gone_goes_too(config):
     sync(config, "example.nl")
 
     result = sync(config)
@@ -222,8 +219,7 @@ def test_a_site_whose_domain_is_gone_goes_too(config, ready):
     assert not webmail.has_certificate(config, "webmail.example.nl")
 
 
-def test_a_failed_lookup_leaves_a_site_as_it_is(config, ready):
-    certbot, lswsctrl = ready
+def test_a_failed_lookup_leaves_a_site_as_it_is(config, certbot, lswsctrl):
     sync(config, "example.nl")
 
     result = sync(config, "example.nl", resolver=FakeResolver({}, failing={"webmail.example.nl"}))
@@ -237,7 +233,7 @@ def test_a_failed_lookup_leaves_a_site_as_it_is(config, ready):
     assert len(certbot.calls) == 1 and len(lswsctrl.calls) == 2
 
 
-def test_a_failed_lookup_creates_no_site(config, ready):
+def test_a_failed_lookup_creates_no_site(config):
     result = sync(config, "example.nl", resolver=FakeResolver({}, failing={"webmail.example.nl"}))
 
     assert list(result.outcomes) == [Outcome(
@@ -246,7 +242,7 @@ def test_a_failed_lookup_creates_no_site(config, ready):
     assert webmail.sites(config) == []
 
 
-def test_a_refused_certificate_leaves_a_site_that_only_answers_challenges(config, ready, fake_command):
+def test_a_refused_certificate_leaves_a_site_that_only_answers_challenges(config, fake_command):
     fake_command("certbot", REFUSING_CERTBOT)
 
     result = sync(config, "other.nl")
@@ -259,12 +255,12 @@ def test_a_refused_certificate_leaves_a_site_that_only_answers_challenges(config
     assert result.changed
     site = conf(config, "webmail.other.nl.conf")
     assert "acme-challenge" in site
-    assert "vhssl" not in site and "sogo" not in site
+    assert "vhssl" not in site and "extprocessor" not in site
     assert "webmail.other.nl" in conf(config, "http-maps.conf")
     assert "webmail.other.nl" not in conf(config, "https-maps.conf")
 
 
-def test_a_refused_certificate_doesnt_stop_the_other_domains(config, ready, fake_command):
+def test_a_refused_certificate_doesnt_stop_the_other_domains(config, fake_command):
     fake_command("certbot", 'case "$*" in *webmail.other.nl*) echo "  Detail: refused" >&2; exit 1;; esac\n'
                             + FAKE_CERTBOT)
 
@@ -277,7 +273,7 @@ def test_a_refused_certificate_doesnt_stop_the_other_domains(config, ready, fake
     assert "webmail.example.nl" in maps and "webmail.other.nl" not in maps
 
 
-def test_the_certificate_is_tried_again_on_the_next_run(config, ready, fake_command):
+def test_the_certificate_is_tried_again_on_the_next_run(config, fake_command):
     fake_command("certbot", REFUSING_CERTBOT)
     sync(config, "other.nl")
     fake_command("certbot", FAKE_CERTBOT)
@@ -288,8 +284,7 @@ def test_the_certificate_is_tried_again_on_the_next_run(config, ready, fake_comm
     assert "webmail.other.nl" in conf(config, "https-maps.conf")
 
 
-def test_no_certificate_is_requested_while_the_site_isnt_served(config, ready, served):
-    certbot, _ = ready
+def test_no_certificate_is_requested_while_the_site_isnt_served(config, certbot, served):
     served.refused.add("webmail.example.nl")
 
     result = sync(config, "example.nl")
@@ -302,9 +297,8 @@ def test_no_certificate_is_requested_while_the_site_isnt_served(config, ready, s
     assert certbot.calls == []
 
 
-def test_every_address_of_the_site_must_be_served(config, ready, served):
+def test_every_address_of_the_site_must_be_served(config, certbot, served):
     """Let's Encrypt may use any of them; a listener for IPv4 only is a common reason for a refused certificate."""
-    certbot, _ = ready
     served.refused.add("2001:db8::5")
 
     result = sync(config, "example.nl")
@@ -314,14 +308,13 @@ def test_every_address_of_the_site_must_be_served(config, ready, served):
     assert certbot.calls == []
 
 
-def test_the_test_file_for_openlitespeed_is_removed_afterwards(config, ready):
+def test_the_test_file_for_openlitespeed_is_removed_afterwards(config):
     sync(config, "example.nl")
 
     assert list((config.webmail_root / ".well-known" / "acme-challenge").iterdir()) == []
 
 
-def test_remove_takes_away_a_domains_site_and_certificate(config, ready):
-    certbot, lswsctrl = ready
+def test_remove_takes_away_a_domains_site_and_certificate(config, certbot, lswsctrl):
     sync(config, "example.nl", "other.nl")
 
     assert webmail.remove(config, "example.nl")
@@ -333,7 +326,7 @@ def test_remove_takes_away_a_domains_site_and_certificate(config, ready):
     assert not webmail.remove(config, "example.nl")
 
 
-def test_sites_are_the_generated_site_files_only(config, ready):
+def test_sites_are_the_generated_site_files_only(config):
     sync(config, "example.nl")
 
     assert sorted(path.name for path in (config.ols_root / "conf" / "webmail").iterdir()) == [
@@ -342,14 +335,14 @@ def test_sites_are_the_generated_site_files_only(config, ready):
     assert webmail.sites(config) == ["webmail.example.nl"]
 
 
-def test_domains_with_capitals_from_the_old_helper_script_get_their_site_in_lower_case(config, ready):
+def test_domains_with_capitals_from_the_old_helper_script_get_their_site_in_lower_case(config):
     result = sync(config, "Example.NL")
 
     assert [outcome.host for outcome in result.outcomes] == ["webmail.example.nl"]
     assert webmail.sites(config) == ["webmail.example.nl"]
 
 
-def test_names_that_arent_domains_never_reach_openlitespeeds_configuration(config, ready):
+def test_names_that_arent_domains_never_reach_openlitespeeds_configuration(config):
     """The old helper script stored any text it was given."""
     result = sync(config, "not a domain", "evil.nl\n}\nextprocessor x {", "a" * 250 + ".nl")
 
