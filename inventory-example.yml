@@ -33,7 +33,7 @@ all:
       # --- basic role (every server) ------------------------------------------
       # Hostname to give the server. Usually the same as the name above.
       # The mail role also uses it as the mail server's FQDN (Postfix, Dovecot,
-      # Roundcube and the Let's Encrypt certificate path).
+      # SOGo's outgoing mail and the Let's Encrypt certificate path).
       hostname: "web01.example.com"
       # DNS servers the firewall allows lookups to, separated by spaces.
       # Check /etc/resolv.conf on the server; 127.0.0.53 is systemd-resolved.

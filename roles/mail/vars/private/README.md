@@ -7,11 +7,13 @@ This directory should contain `mailvars.yml`. It is gitignored.
 ```yaml
 ---
 mailuser_db_pass: "your-strong-password-here"
+sogo_db_pass: "another-strong-password"
 ```
 
 | Variable | Description |
 |----------|-------------|
 | `mailuser_db_pass` | Password for the `mailuser` MariaDB account used by Postfix and Dovecot |
+| `sogo_db_pass` | Password for the `sogo` MariaDB account used by SOGo. Only letters, digits and `. _ ~ -`: it goes into database URLs |
 
 ## Inventory variables
 
@@ -30,6 +32,16 @@ all:
       hostname: "mail.example.com"
       defaultdomain: example.com
 ```
+
+## SOGo (optional)
+
+Defaults in `roles/mail/defaults/main.yml`; override them in `mailvars.yml` or the inventory:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `sogo_language` | `Dutch` | Language new webmail users start with |
+| `sogo_timezone` | `Europe/Amsterdam` | Time zone new webmail users start with |
+| `sogo_workers` | `10` | SOGo processes. Every phone using ActiveSync keeps one busy while it waits for changes, so add one per phone beyond a few |
 
 ## Sending limits (optional)
 

@@ -72,6 +72,16 @@ doveadm index -A -q '*'
 
 The playbook used to rebuild OpenDKIM's signing table on every run, leaving out every domain but the server's own, and gave the server's own domain a new DKIM key each time. The first run with `mailctl` signs every domain that has a key again, and keys are never replaced any more. Check each domain, the server's own included, with `mailctl status DOMAIN`, and publish the record from `mailctl dkim show DOMAIN` where the DKIM check fails.
 
+#### From Roundcube to SOGo
+
+The mail role installs SOGo for webmail, calendars, address books and phone sync (ActiveSync), and removes Roundcube from servers that have it. Before running it:
+
+- Add `sogo_db_pass` to `mailvars.yml` (see `roles/mail/vars/private/README.md`).
+- OpenLiteSpeed needs a listener on port 443. The playbook adds a few `include` lines to `/usr/local/lsws/conf/httpd_config.conf` for the webmail sites, between `# BEGIN webmail` and `# END webmail` markers; keep them when you change that file by hand.
+- A site you set up by hand in OpenLiteSpeed for Roundcube stops working: remove it.
+
+Roundcube's database stays, with the contacts people saved in it. Filters made in Roundcube keep working until someone saves filters or a vacation reply in SOGo; from then on SOGo's apply. `mailctl filters show ADDRESS` shows both.
+
 #### Ubuntu release upgrades
 
 The mail role supports Ubuntu 24.04 (Dovecot 2.3) and Ubuntu 26.04 (Dovecot 2.4), but not upgrading a mail server from one to the other in place: the package upgrade keeps the Dovecot config files the role changed, and Dovecot 2.4 doesn't accept them. Set up a new 26.04 server with the playbook and move the mail and databases to it instead.
@@ -115,7 +125,7 @@ Each server has its own playbook (e.g. `web01.whservice.nl.yml`) in the project 
 | `basic` | Hostname, base packages, unattended-upgrades, Linux users, SSH hardening, iptables firewall (applied at boot), fail2ban |
 | `web` | OpenLiteSpeed with LiteSpeed's PHP 8.3, PHP-FPM and CLI from Ubuntu (8.3 on Ubuntu 24.04, 8.5 on 26.04), Composer (global), nvm (system-wide), certbot, Let's Encrypt directory |
 | `db` | MariaDB, phpMyAdmin |
-| `mail` | Postfix, Dovecot with full-text IMAP search (fts-xapian) and login tracking, OpenDKIM, SpamAssassin, Roundcube, per-user sending limits (postfwd), fail2ban jails for SMTP, IMAP and webmail brute force, and `mailctl` (below) |
+| `mail` | Postfix, Dovecot with full-text IMAP search (fts-xapian) and login tracking, OpenDKIM, SpamAssassin, SOGo (webmail, calendars, address books and ActiveSync), per-user sending limits (postfwd), fail2ban jails for SMTP, IMAP and webmail brute force, and `mailctl` (below) |
 
 ## Managing mail with mailctl
 
@@ -131,7 +141,7 @@ Mail servers get `mailctl`, a command-line tool for the mail domains, addresses,
 | `mailctl spam set example.nl required_score 4` | Changes a spam setting for an account, a domain or the whole server |
 | `mailctl filters show info@example.nl` | Shows an account's mail filters |
 
-Last logins are recorded for IMAP, which webmail uses too; accounts that only send mail show no logins.
+Last logins are recorded for IMAP, which webmail and phones on ActiveSync use too; accounts that only send mail show no logins.
 
 Every command asks for what you leave out. In scripts, pass everything on the command line and give passwords through standard input, never as an argument:
 
