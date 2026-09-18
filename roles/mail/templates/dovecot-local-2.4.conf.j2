@@ -104,6 +104,10 @@ protocol imap {
     imap_acl = yes
     last_login = yes
   }
+  # SOGo connects from 127.0.0.1 for everyone, and each of its processes can
+  # keep an IMAP connection open per user, so the limit per user and address
+  # must stay above sogo_workers (default 10, as is this limit's).
+  mail_max_userip_connections = {{ sogo_workers | int * 2 }}
 }
 
 

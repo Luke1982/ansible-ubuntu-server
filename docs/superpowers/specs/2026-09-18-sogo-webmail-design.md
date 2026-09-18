@@ -109,6 +109,10 @@ SOGo's ActiveSync needs an IMAP server that offers the ACL, UIDPLUS, QRESYNC and
 
 There are no ACL files, so every user keeps full rights to their own folders and nothing changes for them. Sharing mail folders between users would also need a shared namespace, and is out of scope.
 
+### Dovecot: connections from SOGo
+
+SOGo connects to IMAP from 127.0.0.1 for every user, and each of its processes keeps a user's connection open for the next request (IMAP pooling, on by default). A user active in the web interface can so hold one connection per SOGo process, and their phone on ActiveSync goes through SOGo too. Dovecot allows 10 connections per user and address (`mail_max_userip_connections`), as many as SOGo's default 10 processes, so both templates set it to twice `sogo_workers` for IMAP.
+
 No LDAP server: the SOGo guide's requirements list assumes one, but SOGo authenticates users and provides the shared address book from SQL just as well ("SOGo can use a SQL-based database server for authentication", same guide).
 
 ## `webmail.<domain>` in OpenLiteSpeed
@@ -198,7 +202,7 @@ Domain names come from the database, where the old helper script stored whatever
 | `roles/mail/tasks/configure-sogo.yml` | New: repository (24.04), packages, database, view, `sogo.conf`, `/etc/default/sogo`, cron, services |
 | `roles/mail/tasks/configure-webmail.yml` | New: OpenLiteSpeed includes, document root, timer, first sync |
 | `roles/mail/tasks/configure-fail2ban.yml` | SOGo jail and filter instead of Roundcube's; removes the old jail file |
-| `roles/mail/templates/dovecot-local-2.3.conf.j2`, `dovecot-local-2.4.conf.j2` | `acl` and `imap_acl` plugins, `vfile` driver |
+| `roles/mail/templates/dovecot-local-2.3.conf.j2`, `dovecot-local-2.4.conf.j2` | `acl` and `imap_acl` plugins, `vfile` driver; `mail_max_userip_connections` for IMAP at twice `sogo_workers` |
 | `roles/mail/tasks/install-mailctl.yml` | `letsencrypt_email`, `sogo_address`, `sogo_resources` in config.json |
 | `roles/mail/templates/sogo.conf.j2` | New |
 | `roles/mail/templates/1-post-deploy-hook-letsencrypt.sh.j2` | Restarts OpenLiteSpeed for `webmail.*` certificates |

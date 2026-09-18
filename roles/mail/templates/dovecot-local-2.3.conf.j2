@@ -100,6 +100,10 @@ dict {
 protocol imap {
   # Webmail logs in over IMAP too, so its logins count as well.
   mail_plugins = $mail_plugins last_login imap_acl
+  # SOGo connects from 127.0.0.1 for everyone, and each of its processes can
+  # keep an IMAP connection open per user, so the limit per user and address
+  # must stay above sogo_workers (default 10, as is this limit's).
+  mail_max_userip_connections = {{ sogo_workers | int * 2 }}
 }
 
 ## Overrides conf.d/20-lmtpd.conf
