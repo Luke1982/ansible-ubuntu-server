@@ -13,8 +13,8 @@ app = group("Keep the webmail sites at webmail.DOMAIN in step with the mail doma
 def sync() -> None:
     """Set up webmail for every domain whose webmail.DOMAIN points to this server, and remove it for the others.
 
-    Each site gets a Let's Encrypt certificate of its own. This runs every day by itself; run it after publishing a
-    domain's records to not wait for that.
+    Each site gets a Let's Encrypt certificate of its own. Every playbook run runs this too; run it after publishing
+    a domain's webmail record, and after removing one.
 
     [dim]Example:[/] mailctl webmail sync
     """

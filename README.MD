@@ -80,7 +80,7 @@ The mail role installs SOGo for webmail, calendars, address books and phone sync
 - OpenLiteSpeed needs listeners on ports 80 and 443. mailctl adds a virtual host per domain to its config, `webmail.DOMAIN`, with the note "Managed by mailctl"; leave those to mailctl. It doesn't touch your other sites, and WebAdmin stays editable.
 - A site you set up by hand in OpenLiteSpeed for Roundcube stops working: remove it.
 
-Webmail, calendar and contact sync, and ActiveSync are at `https://webmail.DOMAIN` for every mail domain whose `webmail.DOMAIN` A and AAAA records all point to the server. `mailctl webmail sync` sets up each such site with a Let's Encrypt certificate of its own; it runs every day and at the end of every playbook run, so a new domain gets its webmail within a day of its records being published. `mail.DOMAIN` stays the name for IMAP and sending.
+Webmail, calendar and contact sync, and ActiveSync are at `https://webmail.DOMAIN` for every mail domain whose `webmail.DOMAIN` A and AAAA records all point to the server. `mailctl webmail sync` sets up each such site with a Let's Encrypt certificate of its own, and removes the sites whose record no longer points here. It runs at the end of every playbook run; after publishing or removing a `webmail.DOMAIN` record, run it yourself. `mail.DOMAIN` stays the name for IMAP and sending.
 
 Calendars, address books and SOGo's settings live in the MariaDB database `sogo`: back it up along with the mail.
 
@@ -148,7 +148,7 @@ Mail servers get `mailctl`, a command-line tool for the mail domains, addresses,
 | `mailctl autodiscover publish example.nl` | Lets Thunderbird and Outlook find the domain's mail settings by themselves (below) |
 | `mailctl spam set example.nl required_score 4` | Changes a spam setting for an account, a domain or the whole server |
 | `mailctl filters show info@example.nl` | Shows an account's mail filters |
-| `mailctl webmail sync` | Sets up webmail at `https://webmail.DOMAIN` for the domains whose `webmail.DOMAIN` points here, and removes it for the others. Runs daily by itself |
+| `mailctl webmail sync` | Sets up webmail at `https://webmail.DOMAIN` for the domains whose `webmail.DOMAIN` points here, and removes it for the others. Run it after changing a `webmail.DOMAIN` record; the playbook runs it too |
 
 Last logins are recorded for IMAP, which webmail and phones on ActiveSync use too; accounts that only send mail show no logins.
 
