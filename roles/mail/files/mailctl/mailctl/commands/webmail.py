@@ -39,7 +39,7 @@ def _show(outcome: Outcome) -> None:
         case State.NEW:
             ui.success(f"{url} is live, with a new certificate.")
         case State.WAITING:
-            ui.warn(f"No webmail for {outcome.host.removeprefix(webmail.PREFIX)} yet: {outcome.detail}")
+            ui.warn(f"No webmail for {outcome.domain} yet: {outcome.detail}")
         case State.FAILED:
             ui.warn(outcome.detail)
         case State.REMOVED:

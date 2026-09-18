@@ -39,11 +39,23 @@ class Outcome:
     state: State
     detail: str = ""
 
+    @property
+    def domain(self) -> str:
+        return self.host.removeprefix(PREFIX)
+
 
 @dataclass(frozen=True)
 class Result:
-    outcomes: list[Outcome]
+    outcomes: tuple[Outcome, ...]
     changed: bool
+
+
+@dataclass(frozen=True)
+class _Plan:
+    outcomes: dict[str, Outcome]
+    kept: set[str]  # the sites that stay or come
+    removed: set[str]  # the sites that go, with their certificates
+    uncertified: dict[str, set[IPAddress]]  # the sites to get a certificate for, with their addresses
 
 
 class NotPointingHere(Exception):
@@ -62,7 +74,7 @@ def has_certificate(config: Config, name: str) -> bool:
     return all((_live(config, name) / file).is_file() for file in ("fullchain.pem", "privkey.pem"))
 
 
-def points_here(resolver: Resolver, name: str, server_ips: set[IPAddress]) -> set[IPAddress]:
+def resolve_to_this_server(resolver: Resolver, name: str, server_ips: set[IPAddress]) -> set[IPAddress]:
     """The name's addresses, when every one of them is this server's: Let's Encrypt and visitors may use any of
     them. Raises NotPointingHere otherwise, and LookupFailed when the lookup fails."""
     addresses = resolver.addresses(name)
@@ -77,35 +89,12 @@ def points_here(resolver: Resolver, name: str, server_ips: set[IPAddress]) -> se
 
 def sync(config: Config, domains: Iterable[str], server_ips: set[IPAddress], resolver: Resolver) -> Result:
     """Gives every domain whose webmail name points here a site with a certificate, and removes the other sites."""
-    wanted = {host(domain) for domain in domains}
-    existing = set(sites(config))
-    outcomes: dict[str, Outcome] = {}
-    kept: set[str] = set()
-    uncertified: dict[str, set[IPAddress]] = {}  # the sites to get a certificate for, with their addresses
-    for name in sorted(wanted | existing):
-        if name not in wanted:
-            outcomes[name] = Outcome(name, State.REMOVED, "Its domain is no longer on this server.")
-            continue
-        try:
-            addresses = points_here(resolver, name, server_ips)
-        except NotPointingHere as problem:
-            state = State.REMOVED if name in existing else State.WAITING
-            outcomes[name] = Outcome(name, state, str(problem))
-            continue
-        except LookupFailed as problem:
-            outcomes[name] = Outcome(name, State.UNCHECKED, str(problem))
-            if name in existing:
-                kept.add(name)
-            continue
-        kept.add(name)
-        outcomes[name] = Outcome(name, State.LIVE)
-        if not has_certificate(config, name):
-            uncertified[name] = addresses
-
-    changed = _publish(config, kept)
-    for name in sorted(existing - kept):
+    plan = _plan(config, domains, server_ips, resolver)
+    outcomes = plan.outcomes
+    changed = _publish(config, plan.kept)
+    for name in sorted(plan.removed):
         changed |= _delete_certificate(config, name)
-    for name, addresses in uncertified.items():
+    for name, addresses in plan.uncertified.items():
         try:
             _wait_until_served(config, name, addresses)
             _request_certificate(config, name)
@@ -114,8 +103,36 @@ def sync(config: Config, domains: Iterable[str], server_ips: set[IPAddress], res
         else:
             outcomes[name] = Outcome(name, State.NEW)
             changed = True
-    _publish(config, kept)
-    return Result([outcomes[name] for name in sorted(outcomes)], changed)
+    # Moves the sites that got their certificate to the HTTPS listeners.
+    _publish(config, plan.kept)
+    return Result(tuple(outcomes[name] for name in sorted(outcomes)), changed)
+
+
+def _plan(config: Config, domains: Iterable[str], server_ips: set[IPAddress], resolver: Resolver) -> _Plan:
+    """What sync() does for each site, from the domains and their webmail names' DNS."""
+    wanted = {host(domain) for domain in domains}
+    existing = set(sites(config))
+    plan = _Plan(outcomes={}, kept=set(), removed=set(), uncertified={})
+    for name in sorted(wanted | existing):
+        try:
+            if name not in wanted:
+                raise NotPointingHere("Its domain is no longer on this server.")
+            addresses = resolve_to_this_server(resolver, name, server_ips)
+        except NotPointingHere as problem:
+            plan.outcomes[name] = Outcome(name, State.REMOVED if name in existing else State.WAITING, str(problem))
+            if name in existing:
+                plan.removed.add(name)
+        except LookupFailed as problem:
+            # A site stays as it is, and one that doesn't exist yet waits for the next run.
+            plan.outcomes[name] = Outcome(name, State.UNCHECKED if name in existing else State.WAITING, str(problem))
+            if name in existing:
+                plan.kept.add(name)
+        else:
+            plan.outcomes[name] = Outcome(name, State.LIVE)
+            plan.kept.add(name)
+            if not has_certificate(config, name):
+                plan.uncertified[name] = addresses
+    return plan
 
 
 def remove(config: Config, domain: str) -> bool:
@@ -148,21 +165,22 @@ def _publish(config: Config, names: set[str]) -> bool:
 
 
 def _wait_until_served(config: Config, name: str, addresses: set[IPAddress]) -> None:
-    """Waits until OpenLiteSpeed serves a test file from the challenge folder under the name, as Let's Encrypt will
-    ask for its challenge. Failed validations count against Let's Encrypt's limits, so this is checked first."""
+    """Waits until OpenLiteSpeed serves a test file from the challenge folder under the name at each of its addresses,
+    as Let's Encrypt asks for its challenge at any of them. Failed validations count against Let's Encrypt's limits,
+    so this is checked first."""
     token = secrets.token_hex(16)
     probe = config.webmail_root / _CHALLENGES / f"mailctl-{token}"
-    address = min(addresses, key=lambda ip: (ip.version, ip))
     files.replace(probe, token)
     try:
         deadline = time.monotonic() + SERVE_TIMEOUT
-        while not _serves(address, name, probe.name, token):
-            if time.monotonic() >= deadline:
-                raise MailctlError(
-                    f"OpenLiteSpeed doesn't serve {name} on port 80.",
-                    hint="Run the Ansible playbook: it adds the webmail sites to OpenLiteSpeed's configuration.",
-                )
-            time.sleep(0.5)
+        for address in sorted(addresses, key=lambda ip: (ip.version, ip)):
+            while not _serves(address, name, probe.name, token):
+                if time.monotonic() >= deadline:
+                    raise MailctlError(
+                        f"OpenLiteSpeed doesn't serve {name} on port 80 at {address}.",
+                        hint="Run the Ansible playbook: it adds the webmail sites to OpenLiteSpeed's configuration.",
+                    )
+                time.sleep(0.5)
     finally:
         files.remove(probe)
 
@@ -180,7 +198,8 @@ def _serves(address: IPAddress, name: str, file_name: str, token: str) -> bool:
 
 
 def _request_certificate(config: Config, name: str) -> None:
-    account = ["--email", config.letsencrypt_email] if config.letsencrypt_email else ["--register-unsafely-without-email"]
+    email = config.letsencrypt_email
+    account = ["--email", email] if email else ["--register-unsafely-without-email"]
     try:
         _certbot(config, "certonly", "--webroot", "--webroot-path", str(config.webmail_root), "--cert-name", name,
                  "--domains", name, "--agree-tos", *account)
@@ -220,7 +239,7 @@ virtualhost {name} {{
   vhRoot                  {config.webmail_root}/
   configFile              {_directory(config) / name}.conf
   allowSymbolLink         0
-  enableScript            1
+  enableScript            0
   restrained              1
 }}
 """

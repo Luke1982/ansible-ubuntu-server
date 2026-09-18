@@ -20,9 +20,10 @@
   SOGoMemcachedHost = "127.0.0.1";
 
   /* The mail accounts, through the sogo_users view (files/setup_sogo_view.sql).
-     Hashes keep their {SCHEME} prefix, as Dovecot reads them; new ones are
-     SHA512-CRYPT, like mailctl's. With DomainFieldName, users only find
-     accounts of their own domain in the address book. */
+     Hashes start with their scheme, like {SHA512-CRYPT}, which SOGo reads in
+     any case; it writes the scheme as given here, so in capitals, exactly as
+     mailctl does. With DomainFieldName, users only find accounts of their own
+     domain in the address book. */
   SOGoUserSources = (
     {
       type = sql;
@@ -32,7 +33,7 @@
       isAddressBook = YES;
       displayName = "Colleagues";
       DomainFieldName = c_domain;
-      userPasswordAlgorithm = "sha512-crypt";
+      userPasswordAlgorithm = "SHA512-CRYPT";
       prependPasswordScheme = YES;
     }
   );

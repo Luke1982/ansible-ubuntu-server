@@ -5,8 +5,8 @@
 # OpenLiteSpeed passes on whatever X-Forwarded-For the client sent and appends
 # the address the request came from, so the list can start with made-up
 # addresses. The stock filter bans the first one; this bans the last, the one
-# OpenLiteSpeed added. Only that last address is followed by the rest of the
-# line up to its end, whatever the client put in front of it.
+# OpenLiteSpeed added. The pattern runs up to the end of the line, so nothing
+# the client puts in front of that address, quotes included, can move it.
 
 [Definition]
 

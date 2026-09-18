@@ -41,7 +41,7 @@ Defaults in `roles/mail/defaults/main.yml`; override them in `mailvars.yml` or t
 |----------|---------|-------------|
 | `sogo_language` | `Dutch` | Language new webmail users start with |
 | `sogo_timezone` | `Europe/Amsterdam` | Time zone new webmail users start with |
-| `sogo_workers` | `10` | SOGo processes. Every phone using ActiveSync keeps one busy while it waits for changes, so add one per phone beyond a few |
+| `sogo_workers` | `10` | SOGo processes. Every phone using ActiveSync keeps one busy while it waits for changes: raise it when many phones do |
 
 ## Sending limits (optional)
 

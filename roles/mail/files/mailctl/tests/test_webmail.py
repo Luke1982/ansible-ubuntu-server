@@ -79,7 +79,7 @@ def lswsctrl(config):
 
 
 class FakeWebServer:
-    """Serves the test file of every name that isn't in refused, and records (address, name) of each request."""
+    """Serves the test file, except for the names and addresses in refused. Records (address, name) of requests."""
 
     def __init__(self):
         self.requests: list[tuple[str, str]] = []
@@ -87,7 +87,7 @@ class FakeWebServer:
 
     def serves(self, address, name, path, token):
         self.requests.append((str(address), name))
-        return name not in self.refused
+        return not {name, str(address)} & self.refused
 
 
 @pytest.fixture
@@ -117,11 +117,11 @@ def test_a_domain_whose_webmail_name_points_here_gets_a_site_with_a_certificate(
 
     result = sync(config, "example.nl")
 
-    assert result.outcomes == [Outcome("webmail.example.nl", State.NEW)]
+    assert list(result.outcomes) == [Outcome("webmail.example.nl", State.NEW)]
     assert result.changed
     assert webmail.sites(config) == ["webmail.example.nl"]
     assert webmail.has_certificate(config, "webmail.example.nl")
-    assert served.requests == [("203.0.113.5", "webmail.example.nl")]
+    assert served.requests == [("203.0.113.5", "webmail.example.nl"), ("2001:db8::5", "webmail.example.nl")]
     assert certbot.calls == [[
         "certonly", "--webroot", "--webroot-path", str(config.webmail_root), "--cert-name", "webmail.example.nl",
         "--domains", "webmail.example.nl", "--agree-tos", "--register-unsafely-without-email",
@@ -161,7 +161,7 @@ def test_nothing_changes_for_a_live_site(config, ready):
 
     result = sync(config, "example.nl")
 
-    assert result.outcomes == [Outcome("webmail.example.nl", State.LIVE)]
+    assert list(result.outcomes) == [Outcome("webmail.example.nl", State.LIVE)]
     assert not result.changed
     assert len(certbot.calls) == 1
     assert len(lswsctrl.calls) == 2
@@ -187,7 +187,7 @@ def test_a_domain_whose_webmail_name_doesnt_point_here_waits_for_it(config, read
 
     result = sync(config, "example.nl", resolver=FakeResolver(records))
 
-    assert result.outcomes == [Outcome("webmail.example.nl", State.WAITING, detail)]
+    assert list(result.outcomes) == [Outcome("webmail.example.nl", State.WAITING, detail)]
     assert not result.changed
     assert webmail.sites(config) == []
     assert certbot.calls == [] and lswsctrl.calls == [["restart"]] and served.requests == []
@@ -199,7 +199,7 @@ def test_a_site_whose_name_no_longer_points_here_goes_with_its_certificate(confi
 
     result = sync(config, "example.nl", resolver=FakeResolver({"webmail.example.nl": ["198.51.100.9"]}))
 
-    assert result.outcomes == [Outcome(
+    assert list(result.outcomes) == [Outcome(
         "webmail.example.nl", State.REMOVED, "webmail.example.nl points to 198.51.100.9, which isn't this server."
     )]
     assert result.changed
@@ -215,7 +215,9 @@ def test_a_site_whose_domain_is_gone_goes_too(config, ready):
 
     result = sync(config)
 
-    assert result.outcomes == [Outcome("webmail.example.nl", State.REMOVED, "Its domain is no longer on this server.")]
+    assert list(result.outcomes) == [
+        Outcome("webmail.example.nl", State.REMOVED, "Its domain is no longer on this server.")
+    ]
     assert webmail.sites(config) == []
     assert not webmail.has_certificate(config, "webmail.example.nl")
 
@@ -226,7 +228,7 @@ def test_a_failed_lookup_leaves_a_site_as_it_is(config, ready):
 
     result = sync(config, "example.nl", resolver=FakeResolver({}, failing={"webmail.example.nl"}))
 
-    assert result.outcomes == [Outcome(
+    assert list(result.outcomes) == [Outcome(
         "webmail.example.nl", State.UNCHECKED, "The A lookup for webmail.example.nl failed: timed out"
     )]
     assert not result.changed
@@ -238,7 +240,9 @@ def test_a_failed_lookup_leaves_a_site_as_it_is(config, ready):
 def test_a_failed_lookup_creates_no_site(config, ready):
     result = sync(config, "example.nl", resolver=FakeResolver({}, failing={"webmail.example.nl"}))
 
-    assert result.outcomes[0].state is State.UNCHECKED
+    assert list(result.outcomes) == [Outcome(
+        "webmail.example.nl", State.WAITING, "The A lookup for webmail.example.nl failed: timed out"
+    )]
     assert webmail.sites(config) == []
 
 
@@ -247,7 +251,7 @@ def test_a_refused_certificate_leaves_a_site_that_only_answers_challenges(config
 
     result = sync(config, "other.nl")
 
-    assert result.outcomes == [Outcome(
+    assert list(result.outcomes) == [Outcome(
         "webmail.other.nl", State.FAILED,
         "No certificate for webmail.other.nl: 203.0.113.5: Invalid response from"
         " http://webmail.other.nl/.well-known/acme-challenge/x: 404",
@@ -280,7 +284,7 @@ def test_the_certificate_is_tried_again_on_the_next_run(config, ready, fake_comm
 
     result = sync(config, "other.nl")
 
-    assert result.outcomes == [Outcome("webmail.other.nl", State.NEW)]
+    assert list(result.outcomes) == [Outcome("webmail.other.nl", State.NEW)]
     assert "webmail.other.nl" in conf(config, "https-maps.conf")
 
 
@@ -290,11 +294,23 @@ def test_no_certificate_is_requested_while_the_site_isnt_served(config, ready, s
 
     result = sync(config, "example.nl")
 
+    assert list(result.outcomes) == [Outcome(
+        "webmail.example.nl", State.FAILED,
+        "OpenLiteSpeed doesn't serve webmail.example.nl on port 80 at 203.0.113.5."
+        " Run the Ansible playbook: it adds the webmail sites to OpenLiteSpeed's configuration.",
+    )]
+    assert certbot.calls == []
+
+
+def test_every_address_of_the_site_must_be_served(config, ready, served):
+    """Let's Encrypt may use any of them; a listener for IPv4 only is a common reason for a refused certificate."""
+    certbot, _ = ready
+    served.refused.add("2001:db8::5")
+
+    result = sync(config, "example.nl")
+
     assert result.outcomes[0].state is State.FAILED
-    assert result.outcomes[0].detail == (
-        "OpenLiteSpeed doesn't serve webmail.example.nl on port 80."
-        " Run the Ansible playbook: it adds the webmail sites to OpenLiteSpeed's configuration."
-    )
+    assert "at 2001:db8::5." in result.outcomes[0].detail
     assert certbot.calls == []
 
 

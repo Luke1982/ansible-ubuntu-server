@@ -1,5 +1,7 @@
+import re
 from dataclasses import replace
 from ipaddress import ip_address
+from pathlib import Path
 
 import pytest
 from conftest import FakeCommand
@@ -41,16 +43,23 @@ def test_webmail_sync_explains_itself_with_an_example(mailctl):
     assert "Example" in output
 
 
+def ansible_change_message() -> str:
+    """The output that the Ansible task running 'mailctl webmail sync' counts as a change."""
+    task = Path(__file__).resolve().parents[3] / "tasks" / "configure-webmail.yml"
+    return re.search(r"'([^']+)' in webmail_sync\.stdout", task.read_text()).group(1)
+
+
 def test_webmail_sync_sets_up_the_site_and_says_what_changed(webmail_ready):
     output = webmail_ready.ok("webmail", "sync")
 
     assert "https://webmail.example.nl is live, with a new certificate." in output
-    assert "Changed the webmail sites." in output
+    assert ansible_change_message() in output
 
     output = webmail_ready.ok("webmail", "sync")
 
     assert "https://webmail.example.nl" in output
     assert "new certificate" not in output
+    assert ansible_change_message() not in output
     assert "Nothing changed." in output
 
 
@@ -76,7 +85,8 @@ def test_webmail_sync_says_what_to_do_when_openlitespeed_doesnt_serve_the_site(w
 
     output = webmail_ready.ok("webmail", "sync")
 
-    assert "OpenLiteSpeed doesn't serve webmail.example.nl on port 80. Run the Ansible playbook" in output
+    assert "OpenLiteSpeed doesn't serve webmail.example.nl on port 80 at 203.0.113.5." in output
+    assert "Run the Ansible playbook" in output
 
 
 def test_webmail_sync_removes_the_site_of_a_deleted_domain(webmail_ready):
