@@ -291,7 +291,10 @@ def test_no_certificate_is_requested_while_the_site_isnt_served(config, ready, s
     result = sync(config, "example.nl")
 
     assert result.outcomes[0].state is State.FAILED
-    assert result.outcomes[0].detail == "OpenLiteSpeed doesn't serve webmail.example.nl on port 80."
+    assert result.outcomes[0].detail == (
+        "OpenLiteSpeed doesn't serve webmail.example.nl on port 80."
+        " Run the Ansible playbook: it adds the webmail sites to OpenLiteSpeed's configuration."
+    )
     assert certbot.calls == []
 
 

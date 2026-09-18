@@ -110,7 +110,7 @@ def sync(config: Config, domains: Iterable[str], server_ips: set[IPAddress], res
             _wait_until_served(config, name, addresses)
             _request_certificate(config, name)
         except MailctlError as problem:
-            outcomes[name] = Outcome(name, State.FAILED, problem.message)
+            outcomes[name] = Outcome(name, State.FAILED, " ".join(filter(None, (problem.message, problem.hint))))
         else:
             outcomes[name] = Outcome(name, State.NEW)
             changed = True

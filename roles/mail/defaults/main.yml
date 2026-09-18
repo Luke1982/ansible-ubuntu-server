@@ -59,3 +59,7 @@ ols_root: /usr/local/lsws
 
 # Document root of the webmail sites: it only holds Let's Encrypt's challenges.
 webmail_root: /var/www/webmail
+
+# Email address for the Let's Encrypt account of the webmail certificates, used
+# when certbot has no account yet. Without it, the account has no address.
+letsencrypt_email: ""

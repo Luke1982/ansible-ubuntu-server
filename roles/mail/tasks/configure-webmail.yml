@@ -82,3 +82,33 @@
     path: "{{ webmail_root }}/.well-known/acme-challenge"
     state: directory
     mode: 0755
+
+# A new domain gets its webmail within a day of its webmail record pointing here.
+- name: Install the daily webmail sync
+  copy:
+    src: "{{ item }}"
+    dest: /etc/systemd/system/{{ item }}
+    mode: 0644
+  loop:
+    - mailctl-webmail-sync.service
+    - mailctl-webmail-sync.timer
+  register: webmail_sync_units
+
+- name: Start the daily webmail sync
+  systemd:
+    name: mailctl-webmail-sync.timer
+    enabled: yes
+    state: started
+    daemon_reload: "{{ webmail_sync_units.changed }}"
+
+# Restarts OpenLiteSpeed itself when it changes a site, which also brings in
+# the include lines added above.
+- name: Set up webmail for the domains whose webmail name points here
+  command: mailctl webmail sync
+  register: webmail_sync
+  changed_when: "'Changed the webmail sites.' in webmail_sync.stdout"
+
+- name: Show the webmail sites that need attention
+  debug:
+    msg: "{{ webmail_sync.stdout_lines | select('match', '^!') | list }}"
+  when: webmail_sync.stdout_lines | select('match', '^!') | list | length > 0

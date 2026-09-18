@@ -1,0 +1,8 @@
+[Unit]
+Description=Set up the webmail sites of the mail domains (mailctl webmail sync)
+After=network-online.target mariadb.service lshttpd.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/mailctl webmail sync

@@ -63,3 +63,8 @@
       hostname: "{{ hostname }}"
       send_limits: "{{ mail_send_limits }}"
       send_limits_by_account: "{{ mail_send_limits_by_account }}"
+      sogo_address: "{{ sogo_address }}"
+      sogo_resources: "{{ sogo_release.resources }}"
+      ols_root: "{{ ols_root }}"
+      webmail_root: "{{ webmail_root }}"
+      letsencrypt_email: "{{ letsencrypt_email }}"
