@@ -83,9 +83,9 @@ class ZoneChange:
 
 def read_zone(session: Session, domain: str, records: list[DnsRecord], *, read_only: bool) -> ZoneChange:
     """What publishing the records at TransIP changes. Asks for the TransIP login in a terminal when there is none."""
-    client = transip.Client(_credentials(session), hostname=session.config.hostname, read_only=read_only)
+    client = transip.Client(transip_credentials(session), hostname=session.config.hostname, read_only=read_only)
     with ui.console.status("Reading the DNS records at TransIP…"):
-        zone_name, entries = _zone(client, domain)
+        zone_name, entries = find_zone(client, domain)
         nameservers = client.nameservers(zone_name)
     if not transip.uses_transip_nameservers(nameservers):
         ui.warn(f"{zone_name} uses the nameservers {', '.join(nameservers) or '(none)'}, "
@@ -142,7 +142,7 @@ def credentials(login: Login = None, key_stdin: KeyStdin = False) -> None:
         _enter_credentials(session, login, key_stdin)
 
 
-def _credentials(session: Session) -> transip.Credentials:
+def transip_credentials(session: Session) -> transip.Credentials:
     """The saved TransIP login and key; in a terminal they're asked for when there are none yet."""
     saved = transip.saved_credentials(session.config)
     if saved:
@@ -183,7 +183,7 @@ def _explain_key_pair() -> None:
             f"server's addresses on its whitelist{addresses}.")
 
 
-def _zone(client: transip.Client, domain: str) -> tuple[str, list[zone.Entry]]:
+def find_zone(client: transip.Client, domain: str) -> tuple[str, list[zone.Entry]]:
     """The zone at TransIP that holds the domain's records: the domain's own, or else the nearest parent domain's."""
     labels = domain.split(".")
     for start in range(len(labels) - 1):

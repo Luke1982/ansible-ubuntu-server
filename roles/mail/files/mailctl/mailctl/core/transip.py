@@ -13,7 +13,14 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from ipaddress import ip_address
 from pathlib import Path
+
+import dns.exception
+import dns.message
+import dns.query
+import dns.rdatatype
+import dns.resolver
 
 from . import system
 from .config import Config
@@ -212,6 +219,26 @@ class Client:
         payload = json.dumps(body).encode() if isinstance(body, dict) else body
         headers = {**headers, "Content-Type": "application/json", "Accept": "application/json"}
         return self._send(method, API + path, headers, payload)
+
+
+def nameserver_addresses(zone: str, name: str, timeout: float = 5.0) -> list[set]:
+    """The A and AAAA records each of the zone's nameservers gives for the name. They're asked directly, so no cache
+    answers with what it saw before the record was published."""
+    resolver = dns.resolver.Resolver()
+    resolver.lifetime = timeout
+    answers = []
+    try:
+        for nameserver in resolver.resolve(zone, "NS"):
+            address = resolver.resolve(nameserver.target, "A")[0].address
+            found = set()
+            for kind in ("A", "AAAA"):
+                response = dns.query.udp(dns.message.make_query(name, kind), address, timeout=timeout)
+                found |= {ip_address(item.address) for rrset in response.answer
+                          if rrset.rdtype in (dns.rdatatype.A, dns.rdatatype.AAAA) for item in rrset}
+            answers.append(found)
+    except (dns.exception.DNSException, OSError) as error:
+        raise MailctlError(f"Couldn't ask the nameservers of {zone} about {name}: {error}") from None
+    return answers
 
 
 def uses_transip_nameservers(nameservers: list[str]) -> bool:
