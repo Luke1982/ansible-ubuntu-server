@@ -1,0 +1,86 @@
+{# SOGo's configuration is an OpenStep property list: "key = value;" in braces,
+   arrays in parentheses. Values with other characters than letters, digits and
+   "_" are quoted. #}
+{% set database = "mysql://sogo:" ~ sogo_db_pass ~ "@127.0.0.1:3306/sogo" %}
+{
+  /* {{ ansible_managed }} */
+
+  WOPort = "{{ sogo_address }}";
+
+  /* SOGo's own tables. The database is utf8mb4; so is the connection. */
+  MySQL4Encoding = "utf8mb4";
+  SOGoProfileURL = "{{ database }}/sogo_user_profile";
+  OCSFolderInfoURL = "{{ database }}/sogo_folder_info";
+  OCSSessionsFolderURL = "{{ database }}/sogo_sessions_folder";
+  OCSEMailAlarmsFolderURL = "{{ database }}/sogo_alarms_folder";
+  OCSAdminURL = "{{ database }}/sogo_admin";
+  OCSStoreURL = "{{ database }}/sogo_store";
+  OCSAclURL = "{{ database }}/sogo_acl";
+  OCSCacheFolderURL = "{{ database }}/sogo_cache_folder";
+  SOGoMemcachedHost = "127.0.0.1";
+
+  /* The mail accounts, through the sogo_users view (files/setup_sogo_view.sql).
+     Hashes keep their {SCHEME} prefix, as Dovecot reads them; new ones are
+     SHA512-CRYPT, like mailctl's. With DomainFieldName, users only find
+     accounts of their own domain in the address book. */
+  SOGoUserSources = (
+    {
+      type = sql;
+      id = accounts;
+      viewURL = "{{ database }}/sogo_users";
+      canAuthenticate = YES;
+      isAddressBook = YES;
+      displayName = "Colleagues";
+      DomainFieldName = c_domain;
+      userPasswordAlgorithm = "sha512-crypt";
+      prependPasswordScheme = YES;
+    }
+  );
+  SOGoPasswordChangeEnabled = YES;
+
+  /* After 5 failed logins, attempts less than a minute apart are refused
+     unchecked for 5 minutes. Covers webmail, calendar and contact apps and
+     ActiveSync; fail2ban only sees webmail logins. */
+  SOGoMaximumFailedLoginCount = 5;
+  SOGoMaximumFailedLoginInterval = 60;
+  SOGoFailedLoginBlockInterval = 300;
+
+  /* Mail. Dovecot trusts connections from localhost, so IMAP and Sieve need
+     no TLS. Sending goes through submission as the user, so the sending limits
+     and "send as" rules apply, over TLS with the hostname's certificate. */
+  SOGoIMAPServer = "imap://127.0.0.1:143";
+  NGImap4ConnectionStringSeparator = ".";
+  SOGoSieveServer = "sieve://127.0.0.1:4190";
+  SOGoSieveFolderEncoding = "UTF-8";
+  SOGoMailingMechanism = smtp;
+  SOGoSMTPServer = "smtp://{{ hostname }}:587/?tls=YES";
+  SOGoSMTPAuthenticationType = PLAIN;
+  SOGoMailDomain = "{{ defaultdomain }}";
+  SOGoDraftsFolderName = Drafts;
+  SOGoSentFolderName = Sent;
+  SOGoTrashFolderName = Trash;
+  SOGoJunkFolderName = Junk;
+
+  /* Filters, vacation replies (with start and end dates, which Dovecot's
+     Sieve checks itself) and forwarding */
+  SOGoSieveScriptsEnabled = YES;
+  SOGoVacationEnabled = YES;
+  SOGoVacationPeriodEnabled = YES;
+  SOGoForwardEnabled = YES;
+
+  /* Calendars and address books, also for apps */
+  SOGoCalendarDAVAccessEnabled = YES;
+  SOGoAddressBookDAVAccessEnabled = YES;
+  SOGoAppointmentSendEMailNotifications = YES;
+  SOGoACLsSendEMailNotifications = YES;
+
+  /* ActiveSync. OpenLiteSpeed closes connections that are quiet for 300
+     seconds, so phones get an answer before that and ask again. */
+  SOGoMaximumPingInterval = 280;
+  SOGoMaximumSyncInterval = 280;
+  SOGoInternalSyncInterval = 30;
+
+  /* What new users start with */
+  SOGoLanguage = "{{ sogo_language }}";
+  SOGoTimeZone = "{{ sogo_timezone }}";
+}

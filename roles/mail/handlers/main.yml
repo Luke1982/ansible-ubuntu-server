@@ -43,6 +43,11 @@
     name: fail2ban
     state: restarted
 
+- name: restart sogo
+  service:
+    name: sogo
+    state: restarted
+
 - name: restart opendkim
   service:
     name: opendkim

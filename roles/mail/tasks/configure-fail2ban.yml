@@ -31,17 +31,38 @@
   when: dovecot_version == "2.4"
   notify: restart fail2ban
 
-- name: Install roundcube fail2ban jail
+- name: Install the SOGo fail2ban jail
   copy:
-    src: jail-roundcube-auth.conf
-    dest: /etc/fail2ban/jail.d/roundcube-auth.conf
+    src: jail-sogo-auth.conf
+    dest: /etc/fail2ban/jail.d/sogo-auth.conf
     mode: 0644
     owner: root
     group: root
   notify: restart fail2ban
 
-# An earlier draft of this role installed these. postfix-sasl.conf points at a
-# filter that doesn't exist in fail2ban 1.0, which stops fail2ban from starting.
+# Bans the address OpenLiteSpeed saw instead of one the client made up.
+- name: Install a SOGo fail2ban filter that bans the real client
+  copy:
+    src: filter-sogo-auth.local
+    dest: /etc/fail2ban/filter.d/sogo-auth.local
+    mode: 0644
+    owner: root
+    group: root
+  notify: restart fail2ban
+
+# fail2ban won't start with a jail whose log doesn't exist yet.
+- name: Make sure SOGo's log exists
+  copy:
+    content: ""
+    dest: /var/log/sogo/sogo.log
+    force: no
+    owner: sogo
+    group: sogo
+    mode: 0640
+
+# An earlier draft of this role installed the postfix ones. postfix-sasl.conf
+# points at a filter that doesn't exist in fail2ban 1.0, which stops fail2ban
+# from starting. SOGo replaced Roundcube.
 - name: Remove superseded fail2ban jails
   file:
     path: "{{ item }}"
@@ -50,4 +71,5 @@
     - /etc/fail2ban/jail.d/postfix-sasl.conf
     - /etc/fail2ban/jail.d/postfix-rate.conf
     - /etc/fail2ban/filter.d/postfix-rate.conf
+    - /etc/fail2ban/jail.d/roundcube-auth.conf
   notify: restart fail2ban

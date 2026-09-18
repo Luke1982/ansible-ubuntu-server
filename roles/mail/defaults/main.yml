@@ -26,3 +26,30 @@ mail_send_limits_by_account: {}
 #  newsletter@example.com:
 #    - recipients: 2000
 #      seconds: 3600
+
+# SOGo per Ubuntu release: where it comes from, its packages, and where they put
+# SOGo's images, scripts and styles, which OpenLiteSpeed serves directly.
+sogo_releases:
+  "24.04":
+    # Ubuntu 24.04 has no SOGo package: these are SOGo's own (nightly) builds.
+    repository: https://packages.sogo.nu/nightly/5/ubuntu
+    # SOGo's builds leave the database driver to a package of its own.
+    packages: [sogo, sogo-activesync, sope4.9-gdl1-mysql]
+    resources: /usr/lib/GNUstep/SOGo/WebServerResources
+  "26.04":
+    repository: ""
+    packages: [sogo, sogo-activesync]
+    resources: /usr/share/GNUstep/SOGo/WebServerResources
+
+sogo_release: "{{ sogo_releases[ansible_distribution_version] }}"
+
+# Where SOGo listens. OpenLiteSpeed passes webmail.<domain> on to it.
+sogo_address: 127.0.0.1:20000
+
+# SOGo processes. A phone using ActiveSync keeps one busy while it waits for
+# changes; the web interface and calendar apps need the others.
+sogo_workers: 10
+
+# What new webmail users start with. They can change both.
+sogo_language: Dutch
+sogo_timezone: Europe/Amsterdam

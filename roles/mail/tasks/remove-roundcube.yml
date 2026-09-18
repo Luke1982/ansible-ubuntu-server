@@ -1,0 +1,31 @@
+---
+# SOGo replaces Roundcube (configure-sogo.yml). Roundcube's database stays, with
+# the contacts and settings people saved in it.
+
+- name: List the installed packages
+  package_facts:
+
+# Purging asks dbconfig-common whether to drop the database. Answer no first.
+- name: Keep Roundcube's database when Roundcube is purged
+  debconf:
+    name: roundcube-core
+    question: "roundcube/{{ item }}"
+    vtype: boolean
+    value: "false"
+  loop:
+    - dbconfig-remove
+    - purge
+  when: "'roundcube-core' in ansible_facts.packages"
+
+# Purged, so its configuration, which holds the mail database password, goes too.
+- name: Remove Roundcube
+  apt:
+    pkg:
+      - roundcube
+      - roundcube-core
+      - roundcube-plugins
+      - roundcube-mysql
+      - roundcube-pgsql
+      - roundcube-sqlite3
+    state: absent
+    purge: yes

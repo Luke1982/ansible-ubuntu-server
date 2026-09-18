@@ -3,8 +3,18 @@
 
 - name: Check that this Ubuntu release is supported
   assert:
-    that: ansible_distribution_version in dovecot_versions
-    fail_msg: "Ubuntu {{ ansible_distribution_version }} isn't supported: roles/mail/defaults/main.yml has no Dovecot version for it."
+    that:
+      - ansible_distribution_version in dovecot_versions
+      - ansible_distribution_version in sogo_releases
+    fail_msg: "Ubuntu {{ ansible_distribution_version }} isn't supported: roles/mail/defaults/main.yml has no Dovecot or SOGo settings for it."
+    quiet: yes
+
+# The password goes into database URLs in sogo.conf, where other characters
+# would need escaping.
+- name: Check the SOGo database password
+  assert:
+    that: sogo_db_pass is defined and sogo_db_pass is match('^[A-Za-z0-9._~-]+$')
+    fail_msg: "Set sogo_db_pass in roles/mail/vars/private/mailvars.yml, using only letters, digits and . _ ~ -"
     quiet: yes
 
 - name: Install mailserver packages
@@ -20,8 +30,6 @@
       - dovecot-fts-xapian
       - spamassassin
       - spamass-milter
-      - roundcube
-      - roundcube-plugins
       - opendkim
       - opendkim-tools
       - mariadb-server
@@ -133,7 +141,6 @@
 
 - include_tasks: configure-postfix.yml
 - include_tasks: configure-postfwd.yml
-- include_tasks: configure-fail2ban.yml
 
 - name: Add a group for the virtual mail handling
   group:
@@ -173,7 +180,10 @@
     owner: root
 
 - include_tasks: configure-dovecot.yml
-- include_tasks: configure-roundcube.yml
+- include_tasks: remove-roundcube.yml
+- include_tasks: configure-sogo.yml
+# After SOGo: its jail reads SOGo's log.
+- include_tasks: configure-fail2ban.yml
 - include_tasks: configure-spamassassin.yml
 - include_tasks: install-mailctl.yml
 - include_tasks: configure-opendkim.yml

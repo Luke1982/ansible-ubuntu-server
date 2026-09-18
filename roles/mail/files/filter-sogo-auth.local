@@ -1,0 +1,13 @@
+# Replaces the failregex of fail2ban's own sogo-auth filter, installed as
+# filter.d/sogo-auth.local. See tasks/configure-fail2ban.yml.
+#
+# SOGo logs the client of a failed webmail login from X-Forwarded-For.
+# OpenLiteSpeed passes on whatever X-Forwarded-For the client sent and appends
+# the address the request came from, so the list can start with made-up
+# addresses. The stock filter bans the first one; this bans the last, the one
+# OpenLiteSpeed added. Only that last address is followed by the rest of the
+# line up to its end, whatever the client put in front of it.
+
+[Definition]
+
+failregex = ^ sogod \[\d+\]: SOGoRootPage Login from '(?:.*[,'])?\s*<HOST>' for user '[^']*' might not have worked(?: - password policy: \d*  grace: -?\d*  expire: -?\d*  bound: -?\d*)?\s*$

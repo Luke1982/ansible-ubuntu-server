@@ -1,0 +1,91 @@
+---
+# SOGo: webmail, calendars, address books and ActiveSync for every mail account.
+# OpenLiteSpeed serves it at webmail.<domain> (configure-webmail.yml).
+
+# The key is kept in the repo, so the server never trusts a key it downloaded.
+- name: Add SOGo's package signing key
+  copy:
+    src: sogo-archive-key.asc
+    dest: /etc/apt/keyrings/sogo.asc
+    mode: 0644
+  when: sogo_release.repository | length > 0
+
+- name: Add SOGo's package repository
+  apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/sogo.asc] {{ sogo_release.repository }} {{ ansible_distribution_release }} {{ ansible_distribution_release }}"
+    filename: sogo
+  when: sogo_release.repository | length > 0
+
+# SOGo's own builds recommend apache2 or nginx, which would take ports 80 and
+# 443 from OpenLiteSpeed.
+- name: Install SOGo
+  apt:
+    pkg: "{{ sogo_release.packages + ['memcached'] }}"
+    install_recommends: no
+    state: present
+
+# utf8mb4, so the tables SOGo creates can hold every character, emoji included.
+- name: Setup SOGo's database
+  mysql_db:
+    name: sogo
+    encoding: utf8mb4
+    collation: utf8mb4_unicode_ci
+    state: present
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+
+- name: Setup the SOGo database user
+  mysql_user:
+    host: localhost
+    name: sogo
+    password: "{{ sogo_db_pass }}"
+    priv: "sogo.*:ALL"
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+
+- name: Copy over the SOGo accounts view
+  copy:
+    src: setup_sogo_view.sql
+    dest: /tmp/setup_sogo_view.sql
+    mode: 0644
+    owner: root
+    group: root
+
+- name: Create the view SOGo reads the mail accounts from
+  mysql_db:
+    state: import
+    name: sogo
+    target: /tmp/setup_sogo_view.sql
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+
+# Holds the database password
+- name: Configure SOGo
+  template:
+    src: sogo.conf.j2
+    dest: /etc/sogo/sogo.conf
+    owner: root
+    group: sogo
+    mode: 0640
+  notify: restart sogo
+
+# sogod gets "-WOWorkersCount $PREFORK" on its command line, which overrides
+# WOWorkersCount in sogo.conf.
+- name: Set the number of SOGo processes
+  lineinfile:
+    path: /etc/default/sogo
+    regexp: ^#?\s*PREFORK=
+    line: PREFORK={{ sogo_workers }}
+  notify: restart sogo
+
+- name: Clean up SOGo sessions that have been idle for an hour
+  lineinfile:
+    path: /etc/cron.d/sogo
+    regexp: sogo-tool expire-sessions
+    line: "* * * * * sogo /usr/sbin/sogo-tool expire-sessions 60 > /dev/null 2>&1"
+
+- name: Start SOGo and memcached, which holds its sessions
+  service:
+    name: "{{ item }}"
+    state: started
+    enabled: yes
+  loop:
+    - memcached
+    - sogo
