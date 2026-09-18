@@ -14,14 +14,18 @@ def read(path: Path) -> str | None:
 
 
 def replace(path: Path, content: str) -> bool:
-    """Replaces the file in one step, so a program never reads half of it. Returns whether the content changed."""
+    """Replaces the file in one step, so a program never reads half of it. Returns whether the content changed.
+
+    The mode is set on the open file, not by name, so nothing swapped in for the temporary file gets it.
+    """
     if read(path) == content:
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=f".{path.name}.", delete=False) as file:
+    descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    with os.fdopen(descriptor, "w") as file:
         file.write(content)
-    os.chmod(file.name, 0o644)
-    os.replace(file.name, path)
+        os.fchmod(file.fileno(), 0o644)
+    os.replace(temporary, path)
     return True
 
 

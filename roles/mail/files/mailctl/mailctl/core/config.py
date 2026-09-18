@@ -43,6 +43,8 @@ class Config:
     sogo_resources: Path = Path("/usr/lib/GNUstep/SOGo/WebServerResources")
     ols_root: Path = Path("/usr/local/lsws")
     webmail_root: Path = Path("/var/www/webmail")
+    # The sites' own settings: root's, not in OpenLiteSpeed's conf directory, which belongs to lsadm.
+    webmail_sites: Path = Path("/etc/mailctl/webmail")
     letsencrypt_dir: Path = Path("/etc/letsencrypt")
     letsencrypt_email: str = ""  # for a new Let's Encrypt account; without it, one is made without an address
 

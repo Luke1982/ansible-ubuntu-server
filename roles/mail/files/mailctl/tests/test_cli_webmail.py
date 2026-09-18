@@ -20,7 +20,7 @@ class FakeDns:
 
 @pytest.fixture
 def config(config, tmp_path):
-    return replace(config, webmail_root=tmp_path / "www")
+    return replace(config, webmail_root=tmp_path / "www", webmail_sites=tmp_path / "mailctl" / "webmail")
 
 
 @pytest.fixture

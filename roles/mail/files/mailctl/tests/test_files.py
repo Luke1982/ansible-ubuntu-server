@@ -50,3 +50,15 @@ def test_remove_deletes_a_file_and_says_whether_there_was_one(tmp_path):
     assert files.remove(path)
     assert not path.exists()
     assert not files.remove(path)
+
+
+def test_replace_puts_a_file_in_place_of_a_link_and_leaves_its_target_alone(tmp_path):
+    target = tmp_path / "target"
+    target.write_text("keep\n")
+    link = tmp_path / "table"
+    link.symlink_to(target)
+
+    files.replace(link, "new\n")
+
+    assert not link.is_symlink() and link.read_text() == "new\n"
+    assert target.read_text() == "keep\n"

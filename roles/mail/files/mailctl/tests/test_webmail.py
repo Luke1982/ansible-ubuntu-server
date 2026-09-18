@@ -59,7 +59,8 @@ HERE = FakeResolver({"webmail.example.nl": ["203.0.113.5", "2001:db8::5"], "webm
 
 @pytest.fixture
 def config(config, tmp_path):
-    return replace(config, webmail_root=tmp_path / "www" / "webmail", sogo_resources=tmp_path / "sogo" / "resources")
+    return replace(config, webmail_root=tmp_path / "www" / "webmail", webmail_sites=tmp_path / "mailctl" / "webmail",
+                   sogo_resources=tmp_path / "sogo" / "resources")
 
 
 @pytest.fixture
@@ -102,7 +103,7 @@ pytestmark = pytest.mark.usefixtures("certbot", "lswsctrl", "served")
 
 def site(config, name):
     """The settings of a site, in the webmail directory."""
-    return (config.ols_root / "conf" / "webmail" / f"{name}.conf").read_text()
+    return (config.webmail_sites / f"{name}.conf").read_text()
 
 
 def httpd_config(config):
@@ -336,7 +337,7 @@ def test_sites_are_the_virtual_hosts_with_mailctls_note_and_others_are_left_alon
     sync(config, "example.nl", "other.nl")
 
     assert webmail.sites(config) == ["webmail.example.nl", "webmail.other.nl"]
-    assert sorted(path.name for path in (config.ols_root / "conf" / "webmail").iterdir()) == [
+    assert sorted(path.name for path in config.webmail_sites.iterdir()) == [
         "webmail.example.nl.conf", "webmail.other.nl.conf",
     ]
 
@@ -377,17 +378,14 @@ def test_a_sync_needs_openlitespeed_listening_on_both_ports(config, address, pro
         sync(config, "example.nl")
 
 
-def test_files_that_arent_webmail_sites_leave_the_webmail_directory(config):
-    """An earlier version included these files in OpenLiteSpeed's config."""
-    directory = config.ols_root / "conf" / "webmail"
-    directory.mkdir()
-    for name in ("vhosts.conf", "http-maps.conf", "https-maps.conf"):
-        (directory / name).write_text("# Written by mailctl webmail sync. Changes are overwritten.\n")
-
+def test_mailctl_writes_nothing_in_openlitespeeds_directory_but_its_config(config):
+    """OpenLiteSpeed's conf directory belongs to lsadm, and mailctl runs as root: a link lsadm planted there could
+    make root write or delete any file. The config itself is written without following links."""
     sync(config, "example.nl")
 
-    assert sorted(path.name for path in directory.iterdir()) == ["webmail.example.nl.conf"]
-
+    assert sorted(path.name for path in (config.ols_root / "conf").iterdir()) == [
+        "httpd_config.conf", "httpd_config.conf.mailctl.bak",
+    ]
 
 def test_domains_with_capitals_from_the_old_helper_script_get_their_site_in_lower_case(config):
     result = sync(config, "Example.NL")
@@ -403,3 +401,16 @@ def test_names_that_arent_domains_never_reach_openlitespeeds_configuration(confi
     assert result.outcomes == ()
     assert webmail.sites(config) == []
     assert httpd_config(config) == HTTPD_CONFIG
+
+
+def test_a_removed_site_takes_openlitespeeds_copy_of_its_settings_along(config):
+    """OpenLiteSpeed 1.9 writes a .txt copy of every config file it reads."""
+    sync(config, "example.nl", "other.nl")
+    for name in ("webmail.example.nl", "webmail.other.nl"):
+        (config.webmail_sites / f"{name}.conf.txt").write_text("copy\n")
+
+    sync(config, "other.nl")
+
+    assert sorted(path.name for path in config.webmail_sites.iterdir()) == [
+        "webmail.other.nl.conf", "webmail.other.nl.conf.txt",
+    ]

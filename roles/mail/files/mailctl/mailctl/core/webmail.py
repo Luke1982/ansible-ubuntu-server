@@ -6,8 +6,9 @@ offered without encryption.
 
 The sites are virtual hosts of their own in OpenLiteSpeed's config, marked with mailctl's note, and not members of a
 template: SOGo needs a request header with the site's own name, and OpenLiteSpeed doesn't fill in variables in request
-headers. Their settings are in the webmail directory. The note is the only record of which sites exist; mailctl
-leaves every other virtual host alone.
+headers. Their settings are in webmail_sites, a directory of root's: OpenLiteSpeed's own conf directory belongs to
+lsadm, and a link planted there could make mailctl, running as root, write or delete any file. The note is the only
+record of which sites exist; mailctl leaves every other virtual host alone.
 """
 
 import http.client
@@ -225,6 +226,7 @@ def _publish(config: Config, hosts: set[str]) -> bool:
     for path in _directory(config).glob("*.conf"):  # once the config no longer refers to them
         if path.stem not in hosts:
             changed |= files.remove(path)
+            files.remove(path.with_name(f"{path.name}.txt"))  # OpenLiteSpeed's copy of what it read
     if changed:
         openlitespeed.restart(config.ols_root)
     return changed
@@ -292,7 +294,7 @@ def _reason(message: str) -> str:
 
 
 def _directory(config: Config) -> Path:
-    return config.ols_root / "conf" / "webmail"
+    return config.webmail_sites
 
 
 def _site_file(config: Config, name: str) -> Path:

@@ -16,12 +16,19 @@
     quiet: yes
 
 # An earlier version of this role included files in OpenLiteSpeed's config,
-# which makes WebAdmin show all of it read-only. mailctl removes the files.
+# which makes WebAdmin show all of it read-only, and kept the sites in its conf
+# directory, which belongs to lsadm. mailctl keeps them in /etc/mailctl/webmail.
 - name: Remove the include lines of the earlier webmail setup
   replace:
     path: "{{ ols_root }}/conf/httpd_config.conf"
     regexp: ^# BEGIN webmail (sites|names for listener \S+), managed by Ansible\n.*\n# END webmail .*, managed by Ansible\n
   notify: restart openlitespeed
+
+# A link in its place is removed itself, not what it points to.
+- name: Remove the files of the earlier webmail setup
+  file:
+    path: "{{ ols_root }}/conf/webmail"
+    state: absent
 
 - name: Create the webmail document root, for Let's Encrypt's challenges
   file:
