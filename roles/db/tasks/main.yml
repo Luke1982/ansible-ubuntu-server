@@ -17,6 +17,8 @@
 
 - name: Run phpmyadmin installation script
   command: /tmp/install-phpmyadmin-openlitespeed.sh
+  args:
+    creates: /usr/local/lsws/Example/html/phpmyadmin
 
 - name: Copy custom mysql config file over
   copy:
