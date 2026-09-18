@@ -1,3 +1,7 @@
+import os
+import pty
+import sys
+import termios
 from datetime import datetime, timedelta, timezone
 from io import StringIO
 
@@ -65,3 +69,45 @@ def test_plural():
     assert ui.plural(1, "address", "addresses") == "1 address"
     assert ui.plural(2, "address", "addresses") == "2 addresses"
     assert ui.plural(0, "forward") == "0 forwards"
+
+
+class Terminal:
+    """A pseudo-terminal as standard input, noting whether it echoes typed text each time a line is read."""
+
+    def __init__(self, file) -> None:
+        self._file = file
+        self.echoing: list[bool] = []
+
+    def fileno(self) -> int:
+        return self._file.fileno()
+
+    def readline(self) -> str:
+        self.echoing.append(bool(termios.tcgetattr(self.fileno())[3] & termios.ECHO))
+        return self._file.readline()
+
+
+def test_ask_secret_lines_reads_pasted_lines_up_to_the_last_one_without_showing_them(monkeypatch):
+    main, secondary = pty.openpty()
+    with os.fdopen(secondary, "r") as file:
+        terminal = Terminal(file)
+        monkeypatch.setattr(sys, "stdin", terminal)
+        before = termios.tcgetattr(secondary)
+        os.write(main, b"-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----\nnot read\n")
+
+        pasted = ui.ask_secret_lines("Paste the key:", "-----END")
+
+        assert pasted == "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----\n"
+        assert terminal.echoing == [False, False, False]
+        assert termios.tcgetattr(secondary) == before
+    os.close(main)
+
+
+def test_ask_secret_lines_stops_at_a_key_pasted_as_one_line(monkeypatch):
+    main, secondary = pty.openpty()
+    with os.fdopen(secondary, "r") as file:
+        monkeypatch.setattr(sys, "stdin", Terminal(file))
+        os.write(main, b"-----BEGIN PRIVATE KEY-----MIIE-----END PRIVATE KEY-----\nnot read\n")
+
+        assert ui.ask_secret_lines("Paste the key:", "-----END") == \
+            "-----BEGIN PRIVATE KEY-----MIIE-----END PRIVATE KEY-----\n"
+    os.close(main)

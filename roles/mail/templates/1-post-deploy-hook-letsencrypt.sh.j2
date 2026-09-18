@@ -7,8 +7,8 @@ do
         fi
 done
 
-# The webmail sites (mailctl webmail sync): OpenLiteSpeed reads certificates
-# when it starts.
+# The webmail sites (mailctl webmail sync) and the autodiscover sites (mailctl
+# autodiscover publish): OpenLiteSpeed reads certificates when it starts.
 case "$RENEWED_LINEAGE" in
-        */webmail.*) {{ ols_root }}/bin/lswsctrl restart >/dev/null ;;
+        */webmail.*|*/autodiscover.*) {{ ols_root }}/bin/lswsctrl restart >/dev/null ;;
 esac

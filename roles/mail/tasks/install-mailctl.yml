@@ -53,6 +53,8 @@
     mode: 0755
 
 # The sending limits are the ones postfwd enforces (templates/postfwd.cf.j2).
+# mailctl asks for the TransIP login and key itself and keeps them next to this
+# file (transip.json, transip.key), so Ansible leaves those alone.
 - name: Write the mailctl configuration
   copy:
     dest: /etc/mailctl/config.json
@@ -63,6 +65,7 @@
       hostname: "{{ hostname }}"
       send_limits: "{{ mail_send_limits }}"
       send_limits_by_account: "{{ mail_send_limits_by_account }}"
+      autodiscover_root: "{{ autodiscover_root }}"
       sogo_address: "{{ sogo_address }}"
       sogo_resources: "{{ sogo_release.resources }}"
       ols_root: "{{ ols_root }}"

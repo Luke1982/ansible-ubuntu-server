@@ -188,3 +188,4 @@
 - include_tasks: install-mailctl.yml
 - include_tasks: configure-opendkim.yml
 - include_tasks: configure-webmail.yml
+- include_tasks: configure-autodiscover.yml

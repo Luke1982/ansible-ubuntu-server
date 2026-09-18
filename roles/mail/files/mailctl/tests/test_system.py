@@ -100,14 +100,36 @@ def test_remove_tree_reports_a_directory_it_cant_delete(tmp_path):
         locked.chmod(0o700)
 
 
-def test_parse_ip_addresses_collects_every_global_address():
-    output = """[
-        {"ifname": "eth0", "addr_info": [
-            {"family": "inet", "local": "203.0.113.5", "prefixlen": 24, "scope": "global"},
-            {},
-            {"family": "inet6", "local": "2001:db8::5", "prefixlen": 64, "scope": "global"}
-        ]},
-        {"ifname": "eth1"}
-    ]"""
+def test_parse_route_sources_reads_the_source_address_of_a_route():
+    output = '[{"dst":"1.1.1.1","gateway":"203.0.113.1","dev":"eth0","prefsrc":"203.0.113.5","flags":[],"cache":[]}]'
 
-    assert system.parse_ip_addresses(output) == {ip_address("203.0.113.5"), ip_address("2001:db8::5")}
+    assert system.parse_route_sources(output) == {ip_address("203.0.113.5")}
+
+
+def test_server_ips_are_the_sources_of_the_default_routes(fake_command):
+    fake_command("ip", """
+case "$4" in
+  1.1.1.1) echo '[{"dst":"1.1.1.1","dev":"eth0","prefsrc":"203.0.113.5"}]' ;;
+  *) echo '[{"dst":"2606:4700:4700::1111","dev":"eth0","prefsrc":"2001:db8::5"}]' ;;
+esac
+""")
+
+    assert system.server_ips() == {ip_address("203.0.113.5"), ip_address("2001:db8::5")}
+
+
+def test_server_ips_leave_out_a_kind_of_address_without_a_route(fake_command):
+    fake_command("ip", """
+case "$4" in
+  1.1.1.1) echo '[{"dst":"1.1.1.1","dev":"eth0","prefsrc":"203.0.113.5"}]' ;;
+  *) echo 'RTNETLINK answers: Network is unreachable' >&2; exit 2 ;;
+esac
+""")
+
+    assert system.server_ips() == {ip_address("203.0.113.5")}
+
+
+def test_server_ips_without_any_route_explain_why(fake_command):
+    fake_command("ip", "echo 'RTNETLINK answers: Network is unreachable' >&2; exit 2")
+
+    with pytest.raises(MailctlError, match="Can't tell which address this server sends mail from: .*unreachable"):
+        system.server_ips()

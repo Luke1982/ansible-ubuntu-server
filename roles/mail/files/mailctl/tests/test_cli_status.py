@@ -42,6 +42,12 @@ class FakeDns:
     def addresses(self, name):
         return {ip_address("203.0.113.5")} if name == "mail.example.nl" else set()
 
+    def srv(self, name):
+        return []
+
+    def ptr(self, address):
+        return []
+
 
 def test_status_of_an_account(mailctl, account, db_config, database):
     db_config.mail_logs[1].write_text(

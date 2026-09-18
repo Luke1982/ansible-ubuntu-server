@@ -6,6 +6,7 @@ characters are made visible, so a filter script or a DNS record can't steer the 
 
 import re
 import sys
+import termios
 from collections.abc import Iterable
 from datetime import datetime, timedelta
 
@@ -95,6 +96,27 @@ def ask_secret(prompt: str) -> str:
     return Prompt.ask(text(prompt), console=console, password=True)
 
 
+def ask_secret_lines(prompt: str, last_line: str) -> str:
+    """Pasted lines that aren't shown, like a private key, up to the line that holds last_line: also when the
+    line breaks got lost in copying, so it's all one line."""
+    console.print(text(prompt))
+    descriptor = sys.stdin.fileno()
+    shown = termios.tcgetattr(descriptor)
+    hidden = termios.tcgetattr(descriptor)
+    hidden[3] &= ~termios.ECHO
+    lines: list[str] = []
+    termios.tcsetattr(descriptor, termios.TCSADRAIN, hidden)
+    try:
+        while not lines or last_line not in lines[-1]:
+            pasted = sys.stdin.readline()
+            if not pasted:
+                break
+            lines.append(pasted)
+    finally:
+        termios.tcsetattr(descriptor, termios.TCSADRAIN, shown)
+    return "".join(lines)
+
+
 def decide(question: str, choice: bool | None, flags: str, default: bool = False) -> bool:
     """The yes/no choice given with flags, or else the user's answer."""
     if choice is not None:
@@ -145,6 +167,13 @@ def records(dns_records: Iterable[DnsRecord], indent: int = 2) -> None:
         line(text(record.value, "green"), indent=indent + 2)
 
 
+def record_change(added: bool, record: DnsRecord, indent: int = 2) -> None:
+    """A DNS record that is added (+) or removed (-), laid out like records()."""
+    sign, style = ("+", "green") if added else ("-", "red")
+    line(text(sign, style), " ", text(record.type, "bold"), " ", text(record.name, "cyan"), indent=indent)
+    line(text(record.value, style), indent=indent + 4)
+
+
 def size(byte_count: int) -> str:
     amount = float(byte_count)
     for unit in ("B", "KB", "MB", "GB"):
@@ -162,9 +191,19 @@ def moment(when: datetime, now: datetime) -> str:
 
 def period(seconds: int) -> str:
     """A length of time for phrases like 'the last hour' or 'the last 2 days'."""
-    unit_seconds, unit = next((length, unit) for length, unit in _UNITS if seconds % length == 0)
-    count = seconds // unit_seconds
+    count, unit = _in_units(seconds)
     return unit if count == 1 else plural(count, unit)
+
+
+def duration(seconds: int) -> str:
+    """A length of time like '1 hour' or '5 minutes'."""
+    return plural(*_in_units(seconds))
+
+
+def _in_units(seconds: int) -> tuple[int, str]:
+    """The length of time in the largest unit it's a whole number of."""
+    unit_seconds, unit = next((length, unit) for length, unit in _UNITS if seconds % length == 0)
+    return seconds // unit_seconds, unit
 
 
 def plural(count: int, singular: str, plural_form: str | None = None) -> str:

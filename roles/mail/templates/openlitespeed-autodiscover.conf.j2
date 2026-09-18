@@ -1,0 +1,75 @@
+# {{ ansible_managed }}
+# OpenLiteSpeed template for autoconfig.DOMAIN and autodiscover.DOMAIN: the
+# settings for mail.DOMAIN, for Thunderbird and Outlook. Each domain is a member
+# named autodiscover.DOMAIN with autoconfig.DOMAIN as alias, added by "mailctl
+# autodiscover publish DOMAIN".
+{% if item.https %}
+# On the HTTP and HTTPS listeners, with the member's own Let's Encrypt
+# certificate (certbot --cert-name autodiscover.DOMAIN).
+{% else %}
+# On the HTTP listeners only: for members that don't have their certificate yet.
+# certbot gets it through this site.
+{% endif %}
+allowSymbolLink           0
+enableScript              1
+restrained                1
+setUIDMode                0
+vhRoot                    {{ autodiscover_root }}/
+configFile                $SERVER_ROOT/conf/vhosts/$VH_NAME/vhconf.conf
+
+virtualHostConfig  {
+  docRoot                 $VH_ROOT
+  enableGzip              1
+
+  errorlog  {
+    useServer             1
+  }
+
+  index  {
+    useServer             0
+    autoIndex             0
+    indexFiles            index.html
+  }
+
+  # PHP answers the mail programs: the scripts only read the request.
+  # OpenLiteSpeed runs one of these for all the members.
+  extprocessor mailautodiscover-php {
+    type                  lsapi
+    address               uds://tmp/lshttpd/mailautodiscover.sock
+    maxConns              2
+    env                   PHP_LSAPI_CHILDREN=2
+    initTimeout           60
+    retryTimeout          0
+    persistConn           1
+    respBuffer            0
+    autoStart             1
+    path                  {{ autodiscover_lsphp }}
+    backlog               100
+    instances             1
+    memSoftLimit          256M
+    memHardLimit          320M
+  }
+
+  scripthandler  {
+    add                   lsapi:mailautodiscover-php php
+  }
+
+  # Outlook posts to /autodiscover/autodiscover.xml (in any case); Thunderbird
+  # asks for /mail/config-v1.1.xml. Besides the scripts, the web root only
+  # holds certbot's challenges.
+  rewrite  {
+    enable                1
+    rules                 <<<END_rules
+RewriteRule ^/autodiscover/autodiscover\.xml$ /autodiscover.php [NC,L]
+RewriteRule ^/(\.well-known/autoconfig/)?mail/config-v1\.1\.xml$ /autoconfig.php [NC,L]
+    END_rules
+  }
+{% if item.https %}
+
+  vhssl  {
+    keyFile               /etc/letsencrypt/live/$VH_NAME/privkey.pem
+    certFile              /etc/letsencrypt/live/$VH_NAME/fullchain.pem
+    certChain             1
+  }
+{% endif %}
+}

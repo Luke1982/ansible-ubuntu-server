@@ -15,7 +15,8 @@ COMMANDS = [
     ("address", "add"), ("address", "list"), ("address", "password"), ("address", "delete"),
     ("forward", "add"), ("forward", "list"), ("forward", "delete"),
     ("dkim", "show"), ("dkim", "create"),
-    ("status",),
+    ("dns", "show"), ("dns", "publish"), ("dns", "credentials"), ("autodiscover", "publish"),
+    ("status",), ("doctor",),
     ("spam", "show"), ("spam", "set"), ("spam", "unset"),
     ("filters", "show"),
 ]
@@ -54,7 +55,7 @@ def ansible_change_messages():
 def test_help_lists_the_command_groups(mailctl):
     output = mailctl.ok("--help")
 
-    for group in ("domain", "address", "forward", "dkim", "status", "spam", "filters"):
+    for group in ("domain", "address", "forward", "dkim", "dns", "status", "doctor", "spam", "filters"):
         assert re.search(rf"^\W*{group}\s{{2,}}\S", output, re.MULTILINE), group
 
 

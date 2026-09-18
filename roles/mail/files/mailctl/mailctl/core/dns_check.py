@@ -1,4 +1,5 @@
-"""Whether a domain's DNS delivers its mail to this server and vouches for mail sent from it."""
+"""Whether a domain's DNS delivers its mail to this server, vouches for mail sent from it and tells mail programs
+where to connect, and whether the server's own name and addresses point to each other."""
 
 import re
 from collections.abc import Callable
@@ -10,6 +11,7 @@ from typing import Protocol
 import dns.exception
 import dns.name
 import dns.resolver
+import dns.reversename
 
 from . import dkim
 
@@ -18,6 +20,8 @@ SPF_LOOKUP_LIMIT = 10
 # Valid SPF mechanisms that depend on the sender or on reverse DNS, so they can't be judged here.
 _UNEVALUABLE_MECHANISMS = ("exists", "ptr")
 _A_OR_MX = re.compile(r"(?P<kind>a|mx)(?::(?P<host>[^/]+))?(?:/(?P<ipv4>\d+))?(?://(?P<ipv6>\d+))?")
+# The services mail programs look up (RFC 6186 and 8314) as (name, priority, port). Implicit TLS comes first.
+MAIL_SERVICES = (("_imaps._tcp", 0, 993), ("_imap._tcp", 10, 143), ("_submissions._tcp", 0, 465), ("_submission._tcp", 10, 587))
 
 
 class Status(Enum):
@@ -41,6 +45,14 @@ class Check:
     fixes: tuple[DnsRecord, ...] = ()  # the records to publish when that would solve the problem
 
 
+@dataclass(frozen=True)
+class Srv:
+    priority: int
+    weight: int
+    port: int
+    target: str  # "." when the service isn't offered
+
+
 class LookupFailed(Exception):
     """A lookup failed for another reason than the record not existing."""
 
@@ -51,6 +63,10 @@ class Resolver(Protocol):
     def mx(self, name: str) -> list[str]: ...
 
     def addresses(self, name: str) -> set[IPAddress]: ...
+
+    def srv(self, name: str) -> list[Srv]: ...
+
+    def ptr(self, address: IPAddress) -> list[str]: ...
 
 
 class SystemResolver:
@@ -68,6 +84,17 @@ class SystemResolver:
 
     def addresses(self, name: str) -> set[IPAddress]:
         return {ip_address(answer.address) for kind in ("A", "AAAA") for answer in self._query(name, kind)}
+
+    def srv(self, name: str) -> list[Srv]:
+        return [
+            Srv(answer.priority, answer.weight, answer.port,
+                "." if answer.target == dns.name.root else answer.target.to_text(omit_final_dot=True))
+            for answer in self._query(name, "SRV")
+        ]
+
+    def ptr(self, address: IPAddress) -> list[str]:
+        name = dns.reversename.from_address(str(address)).to_text()
+        return [answer.target.to_text(omit_final_dot=True) for answer in self._query(name, "PTR")]
 
     def _query(self, name: str, kind: str) -> list:
         try:
@@ -88,7 +115,27 @@ def recommended_records(domain: str, server_ips: set[IPAddress], dkim_value: str
         _spf_record(domain),
         *dkim_records,
         _dmarc_record(domain),
+        *srv_records(domain),
     ]
+
+
+def srv_records(domain: str) -> list[DnsRecord]:
+    """The records that tell mail programs to use the mail host for IMAP and for sending."""
+    return [
+        DnsRecord("SRV", f"{service}.{domain}", f"{priority} 1 {port} {mail_host(domain)}")
+        for service, priority, port in MAIL_SERVICES
+    ]
+
+
+def autodetect_records(domain: str, server_ips: set[IPAddress]) -> list[DnsRecord]:
+    """The records for the site that hands Thunderbird (autoconfig) and Outlook (autodiscover) their settings."""
+    return [record for name in ("autoconfig", "autodiscover")
+            for record in _host_records(f"{name}.{domain}", _reachable(server_ips))]
+
+
+def mail_host(domain: str) -> str:
+    """The name mail for the domain is delivered to, and mail programs connect to."""
+    return f"mail.{domain}"
 
 
 def dkim_record(domain: str, value: str) -> DnsRecord:
@@ -110,8 +157,26 @@ _Finding = tuple[Status, str, tuple[DnsRecord, ...]]
 def check_domain(domain: str, *, server_ips: set[IPAddress], dkim_value: str | None, resolver: Resolver) -> list[Check]:
     target = _Domain(domain, server_ips, dkim_value, resolver)
     checks: list[tuple[str, Callable[[_Domain], _Finding]]] = [
-        ("MX", _check_mx), ("SPF", _check_spf), ("DKIM", _check_dkim), ("DMARC", _check_dmarc),
+        ("MX", _check_mx), ("SPF", _check_spf), ("DKIM", _check_dkim), ("DMARC", _check_dmarc), ("SRV", _check_srv),
     ]
+    return _run_checks(checks, target)
+
+
+@dataclass(frozen=True)
+class _Server:
+    hostname: str
+    ips: set[IPAddress]  # the addresses other servers reach this server on
+    resolver: Resolver
+
+
+def check_server(hostname: str, *, server_ips: set[IPAddress], resolver: Resolver) -> list[Check]:
+    """Whether the name this server sends mail as and its addresses point to each other, as receiving servers check."""
+    target = _Server(hostname.lower(), _reachable(server_ips), resolver)
+    checks: list[tuple[str, Callable[[_Server], _Finding]]] = [("Hostname", _check_hostname), ("Reverse DNS", _check_ptr)]
+    return _run_checks(checks, target)
+
+
+def _run_checks[T](checks: list[tuple[str, Callable[[T], _Finding]]], target: T) -> list[Check]:
     results = []
     for name, check in checks:
         try:
@@ -122,19 +187,21 @@ def check_domain(domain: str, *, server_ips: set[IPAddress], dkim_value: str | N
     return results
 
 
-def _mail_host(domain: str) -> str:
-    """The name mail for the domain is delivered to."""
-    return f"mail.{domain}"
-
-
 def _mx_record(domain: str) -> DnsRecord:
-    return DnsRecord("MX", domain, f"10 {_mail_host(domain)}")
+    return DnsRecord("MX", domain, f"10 {mail_host(domain)}")
 
 
 def _address_records(domain: str, server_ips: set[IPAddress]) -> tuple[DnsRecord, ...]:
     """The mail host's A and AAAA records, pointing to this server."""
-    ips = sorted(_reachable(server_ips), key=lambda ip: (ip.version, ip))
-    return tuple(DnsRecord("A" if ip.version == 4 else "AAAA", _mail_host(domain), str(ip)) for ip in ips)
+    return _host_records(mail_host(domain), _reachable(server_ips))
+
+
+def _host_records(host: str, ips: set[IPAddress]) -> tuple[DnsRecord, ...]:
+    return tuple(DnsRecord("A" if ip.version == 4 else "AAAA", host, str(ip)) for ip in _sorted(ips))
+
+
+def _sorted(ips: set[IPAddress]) -> list[IPAddress]:
+    return sorted(ips, key=lambda ip: (ip.version, ip))
 
 
 def _reachable(server_ips: set[IPAddress]) -> set[IPAddress]:
@@ -151,18 +218,18 @@ def _dmarc_record(domain: str) -> DnsRecord:
 
 
 def _check_mx(domain: _Domain) -> _Finding:
-    mail_host = _mail_host(domain.name)
+    host = mail_host(domain.name)
     hosts = domain.resolver.mx(domain.name)
     to_this_server = [host for host in hosts if domain.resolver.addresses(host) & domain.server_ips]
-    if mail_host in (host.lower() for host in to_this_server):
+    if host in (name.lower() for name in to_this_server):
         return Status.OK, f"Mail is delivered to {', '.join(hosts)}.", ()
     fixes = _address_records(domain.name, domain.server_ips)
-    if mail_host not in (host.lower() for host in hosts):
+    if host not in (name.lower() for name in hosts):
         fixes = (_mx_record(domain.name), *fixes)
     if not hosts:
         return Status.FAIL, "There is no MX record, so mail for the domain can't be delivered.", fixes
     if to_this_server:
-        return Status.WARN, f"Mail is delivered to this server as {', '.join(to_this_server)}, not as {mail_host}.", fixes
+        return Status.WARN, f"Mail is delivered to this server as {', '.join(to_this_server)}, not as {host}.", fixes
     return Status.FAIL, f"Mail is delivered to {', '.join(hosts)}, which isn't this server.", fixes
 
 
@@ -200,7 +267,7 @@ def _check_dmarc(domain: _Domain) -> _Finding:
     # A subdomain without a DMARC record of its own follows the policy of its parent domain.
     labels = domain.name.split(".")
     for name in (".".join(labels[start:]) for start in range(len(labels) - 1)):
-        records = [record for record in domain.resolver.txt(f"_dmarc.{name}") if _is_dmarc(record)]
+        records = [record for record in domain.resolver.txt(f"_dmarc.{name}") if is_dmarc(record)]
         if len(records) > 1:
             return Status.FAIL, f"There are {len(records)} DMARC records for {name}, so receiving servers ignore them.", fixes
         if records:
@@ -209,11 +276,57 @@ def _check_dmarc(domain: _Domain) -> _Finding:
     return Status.WARN, "There is no DMARC record. Mail still arrives, but some providers trust it less.", fixes
 
 
+def _check_srv(domain: _Domain) -> _Finding:
+    host = mail_host(domain.name)
+    fixes, missing, problems = [], [], []
+    for record, (_, _, port) in zip(srv_records(domain.name), MAIL_SERVICES):
+        published = domain.resolver.srv(record.name)
+        if not published:
+            missing.append(record.name)
+        elif not any(srv.target.lower() == host and srv.port == port for srv in published):
+            targets = ", ".join(f"{srv.target} port {srv.port}" for srv in published)
+            problems.append(f"{record.name} sends mail programs to {targets} instead of {host} port {port}.")
+        else:
+            continue
+        fixes.append(record)
+    if problems:
+        return Status.FAIL, problems[0], tuple(fixes)
+    if len(missing) == len(MAIL_SERVICES):
+        return Status.WARN, "There are no SRV records, so mail programs can't look up the server settings.", tuple(fixes)
+    if missing:
+        return Status.WARN, f"Mail programs can't look up every server setting. Missing: {', '.join(missing)}.", tuple(fixes)
+    return Status.OK, f"Mail programs can look up {host} for IMAP and sending.", ()
+
+
+def _check_hostname(server: _Server) -> _Finding:
+    missing = server.ips - server.resolver.addresses(server.hostname)
+    if not missing:
+        return Status.OK, f"{server.hostname} points to this server.", ()
+    addresses = ", ".join(map(str, _sorted(missing)))
+    detail = f"{server.hostname} doesn't point to this server's address {addresses}, so receiving servers may refuse its mail."
+    return Status.FAIL, detail, _host_records(server.hostname, missing)
+
+
+def _check_ptr(server: _Server) -> _Finding:
+    wrong = []
+    for ip in _sorted(server.ips):
+        names = server.resolver.ptr(ip)
+        if server.hostname not in (name.lower() for name in names):
+            wrong.append(f"the reverse DNS of {ip} is {', '.join(names)}" if names else f"{ip} has no reverse DNS")
+    if not wrong:
+        return Status.OK, f"This server's addresses point back to {server.hostname}.", ()
+    found = "; ".join(wrong)
+    return Status.FAIL, (
+        f"{found[0].upper()}{found[1:]}. Many receiving servers refuse mail from an address whose reverse DNS isn't "
+        f"{server.hostname}. The provider of the server can set it."
+    ), ()
+
+
 def _spf_records(domain: str, resolver: Resolver) -> list[str]:
     return [record for record in resolver.txt(domain) if record.lower().split()[:1] == ["v=spf1"]]
 
 
-def _is_dmarc(record: str) -> bool:
+def is_dmarc(record: str) -> bool:
     """Whether the record starts with the v=DMARC1 tag, as a DMARC record must."""
     return "".join(record.split(";", 1)[0].split()).upper() == "V=DMARC1"
 

@@ -128,7 +128,7 @@ The old helper script inserted a domain row every time it ran, so a domain name 
 
 - `add`: fails if the domain exists. Inserts into `virtual_domains`, then creates the DKIM key, updates OpenDKIM and reads the key's record. Failures after the insert are warnings, since the domain stands; without a key, a note gives the command to create it later. Prints the recommended records:
   - `MX  DOMAIN  10 mail.DOMAIN`
-  - `A` and `AAAA` for `mail.DOMAIN`: this server's public addresses (all of them when it has no public ones), from `ip -json address show scope global`. When they can't be read, these are left out with a warning.
+  - `A` and `AAAA` for `mail.DOMAIN`: this server's public addresses (all of them when it has no public ones), the source addresses of its default routes (see [the DNS design](2026-09-18-mailctl-dns-design.md)). When they can't be read, these are left out with a warning.
   - `TXT DOMAIN  v=spf1 mx ~all`
   - `TXT mail._domainkey.DOMAIN  <key record>` (when there is a key)
   - `TXT _dmarc.DOMAIN  v=DMARC1; p=quarantine`

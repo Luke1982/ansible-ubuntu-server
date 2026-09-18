@@ -1,17 +1,18 @@
 from ipaddress import ip_address
 
+import dns.name
 import pytest
 
 from mailctl.core import dns_check
-from mailctl.core.dns_check import DnsRecord, LookupFailed, Status
+from mailctl.core.dns_check import DnsRecord, LookupFailed, Srv, Status
 
 SERVER_IPS = {ip_address("203.0.113.5")}
 DKIM_VALUE = "v=DKIM1; h=sha256; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOC"
 
 
 class FakeResolver:
-    def __init__(self, txt, mx, addresses, failing=()):
-        self._records = {"txt": txt, "mx": mx, "addresses": addresses}
+    def __init__(self, txt, mx, addresses, srv, ptr, failing=()):
+        self._records = {"txt": txt, "mx": mx, "addresses": addresses, "srv": srv, "ptr": ptr}
         self._failing = failing
 
     def txt(self, name):
@@ -23,6 +24,12 @@ class FakeResolver:
     def addresses(self, name):
         return {ip_address(address) for address in self._lookup("addresses", name)}
 
+    def srv(self, name):
+        return [Srv(*(int(part) for part in value.split()[:3]), value.split()[3]) for value in self._lookup("srv", name)]
+
+    def ptr(self, address):
+        return self._lookup("ptr", str(address))
+
     def _lookup(self, kind, name):
         if name in self._failing:
             raise LookupFailed(f"The lookup for {name} timed out.")
@@ -30,7 +37,8 @@ class FakeResolver:
 
 
 def resolver(failing=(), **overrides):
-    """A resolver for a correctly set up example.nl; keyword arguments replace records per kind."""
+    """A resolver for a correctly set up example.nl on server.hosting.example; keyword arguments replace records
+    per kind."""
     records = {
         "txt": {
             "example.nl": ["v=spf1 mx ~all"],
@@ -38,7 +46,14 @@ def resolver(failing=(), **overrides):
             "_dmarc.example.nl": ["v=DMARC1; p=quarantine"],
         },
         "mx": {"example.nl": ["mail.example.nl"]},
-        "addresses": {"mail.example.nl": ["203.0.113.5"]},
+        "addresses": {"mail.example.nl": ["203.0.113.5"], "server.hosting.example": ["203.0.113.5"]},
+        "srv": {
+            "_imaps._tcp.example.nl": ["0 1 993 mail.example.nl"],
+            "_imap._tcp.example.nl": ["10 1 143 mail.example.nl"],
+            "_submissions._tcp.example.nl": ["0 1 465 mail.example.nl"],
+            "_submission._tcp.example.nl": ["10 1 587 mail.example.nl"],
+        },
+        "ptr": {"203.0.113.5": ["server.hosting.example"]},
     }
     for kind, changes in overrides.items():
         records[kind] = {**records[kind], **changes}
@@ -56,7 +71,7 @@ def check(dns, name, *, server_ips=SERVER_IPS, dkim_value=DKIM_VALUE):
 def test_a_correctly_set_up_domain_passes_every_check():
     checks = dns_check.check_domain("example.nl", server_ips=SERVER_IPS, dkim_value=DKIM_VALUE, resolver=resolver())
 
-    assert [result.name for result in checks] == ["MX", "SPF", "DKIM", "DMARC"]
+    assert [result.name for result in checks] == ["MX", "SPF", "DKIM", "DMARC", "SRV"]
     assert all(result.status is Status.OK and result.fixes == () for result in checks)
 
 
@@ -70,6 +85,10 @@ def test_recommended_records_deliver_mail_to_the_mail_host_at_the_servers_public
         DnsRecord("TXT", "example.nl", "v=spf1 mx ~all"),
         DnsRecord("TXT", "mail._domainkey.example.nl", DKIM_VALUE),
         DnsRecord("TXT", "_dmarc.example.nl", "v=DMARC1; p=quarantine"),
+        DnsRecord("SRV", "_imaps._tcp.example.nl", "0 1 993 mail.example.nl"),
+        DnsRecord("SRV", "_imap._tcp.example.nl", "10 1 143 mail.example.nl"),
+        DnsRecord("SRV", "_submissions._tcp.example.nl", "0 1 465 mail.example.nl"),
+        DnsRecord("SRV", "_submission._tcp.example.nl", "10 1 587 mail.example.nl"),
     ]
 
 
@@ -85,7 +104,7 @@ def test_the_mail_host_of_a_subdomain_is_in_the_subdomain():
 def test_recommended_records_leave_out_the_address_records_when_the_servers_addresses_are_unknown():
     records = dns_check.recommended_records("example.nl", set(), None)
 
-    assert [record.type for record in records] == ["MX", "TXT", "TXT"]
+    assert [record.type for record in records] == ["MX", "TXT", "TXT", "SRV", "SRV", "SRV", "SRV"]
 
 
 def test_missing_mx_fails_with_the_records_to_publish():
@@ -192,6 +211,31 @@ def test_spf_checks_private_addresses_when_the_server_has_no_public_one():
     dns = resolver(txt={"example.nl": ["v=spf1 ip4:10.0.0.5 -all"]})
 
     assert check(dns, "SPF", server_ips={ip_address("10.0.0.5")}).status is Status.OK
+
+
+def test_the_system_resolver_reads_srv_records_and_the_target_for_no_service(monkeypatch):
+    class Offered:
+        priority, weight, port, target = 0, 1, 993, dns.name.from_text("mail.example.nl.")
+
+    class NotOffered:
+        priority, weight, port, target = 0, 0, 0, dns.name.root
+
+    monkeypatch.setattr(dns_check.SystemResolver, "_query", lambda self, name, kind: [Offered(), NotOffered()])
+
+    assert dns_check.SystemResolver().srv("_imaps._tcp.example.nl") == [
+        Srv(0, 1, 993, "mail.example.nl"), Srv(0, 0, 0, "."),
+    ]
+
+
+def test_the_system_resolver_looks_up_reverse_dns_in_the_reverse_zone(monkeypatch):
+    class Answer:
+        target = dns.name.from_text("server.hosting.example.")
+
+    queries = []
+    monkeypatch.setattr(dns_check.SystemResolver, "_query", lambda self, name, kind: queries.append((name, kind)) or [Answer()])
+
+    assert dns_check.SystemResolver().ptr(ip_address("203.0.113.5")) == ["server.hosting.example"]
+    assert queries == [("5.113.0.203.in-addr.arpa.", "PTR")]
 
 
 def test_the_system_resolver_joins_the_strings_of_a_long_txt_record(monkeypatch):
@@ -302,3 +346,87 @@ def test_a_failed_lookup_is_a_warning():
 
     assert result.status is Status.WARN
     assert "timed out" in result.detail
+
+
+def test_srv_records_missing_for_some_services_are_a_warning_with_those_records():
+    result = check(resolver(srv={"_imap._tcp.example.nl": [], "_submission._tcp.example.nl": []}), "SRV")
+
+    assert result.status is Status.WARN
+    assert "_imap._tcp.example.nl, _submission._tcp.example.nl" in result.detail
+    assert [record.name for record in result.fixes] == ["_imap._tcp.example.nl", "_submission._tcp.example.nl"]
+
+
+def test_no_srv_records_at_all_is_a_warning():
+    services = ("_imaps", "_imap", "_submissions", "_submission")
+    result = check(resolver(srv={f"{service}._tcp.example.nl": [] for service in services}), "SRV")
+
+    assert result.status is Status.WARN
+    assert "There are no SRV records" in result.detail
+    assert len(result.fixes) == 4
+
+
+@pytest.mark.parametrize("published", [["0 1 993 imap.provider.nl"], ["0 1 143 mail.example.nl"], ["0 0 0 ."]])
+def test_srv_records_pointing_elsewhere_are_a_problem(published):
+    result = check(resolver(srv={"_imaps._tcp.example.nl": published}), "SRV")
+
+    assert result.status is Status.FAIL
+    assert result.detail.startswith("_imaps._tcp.example.nl sends mail programs to ")
+    assert "instead of mail.example.nl port 993" in result.detail
+    assert result.fixes == (DnsRecord("SRV", "_imaps._tcp.example.nl", "0 1 993 mail.example.nl"),)
+
+
+def test_srv_records_with_other_priorities_and_capitals_pass():
+    dns = resolver(srv={"_imaps._tcp.example.nl": ["5 0 993 Mail.Example.NL", "20 0 993 backup.provider.nl"]})
+
+    assert check(dns, "SRV").status is Status.OK
+
+
+def server_checks(dns, server_ips=SERVER_IPS):
+    return {result.name: result for result in dns_check.check_server("Server.Hosting.Example", server_ips=server_ips,
+                                                                      resolver=dns)}
+
+
+def test_a_server_whose_name_and_addresses_point_to_each_other_passes():
+    checks = server_checks(resolver())
+
+    assert [(name, result.status) for name, result in checks.items()] == [
+        ("Hostname", Status.OK), ("Reverse DNS", Status.OK),
+    ]
+
+
+def test_a_hostname_missing_an_address_of_the_server_fails_with_the_records_to_publish():
+    checks = server_checks(resolver(), server_ips={ip_address("203.0.113.5"), ip_address("2001:db8::5")})
+
+    assert checks["Hostname"].status is Status.FAIL
+    assert "2001:db8::5" in checks["Hostname"].detail
+    assert checks["Hostname"].fixes == (DnsRecord("AAAA", "server.hosting.example", "2001:db8::5"),)
+
+
+def test_reverse_dns_that_doesnt_point_to_the_hostname_fails():
+    checks = server_checks(resolver(ptr={"203.0.113.5": ["5.113.0.203.provider.net"]}))
+
+    assert checks["Reverse DNS"].status is Status.FAIL
+    assert checks["Reverse DNS"].detail.startswith("The reverse DNS of 203.0.113.5 is 5.113.0.203.provider.net. ")
+    assert "isn't server.hosting.example" in checks["Reverse DNS"].detail
+
+
+def test_missing_reverse_dns_fails_for_every_address_without_it():
+    server_ips = {ip_address("203.0.113.5"), ip_address("2001:db8::5")}
+    checks = server_checks(resolver(ptr={"203.0.113.5": []}), server_ips=server_ips)
+
+    assert checks["Reverse DNS"].status is Status.FAIL
+    assert checks["Reverse DNS"].detail.startswith("203.0.113.5 has no reverse DNS; 2001:db8::5 has no reverse DNS. ")
+
+
+def test_the_server_checks_leave_out_private_addresses():
+    checks = server_checks(resolver(addresses={"server.hosting.example": ["93.184.216.34"]},
+                                    ptr={"93.184.216.34": ["server.hosting.example"]}),
+                           server_ips={ip_address("93.184.216.34"), ip_address("10.0.0.5")})
+
+    assert all(result.status is Status.OK for result in checks.values())
+
+
+def test_a_failed_server_lookup_is_a_warning():
+    checks = server_checks(resolver(failing=("203.0.113.5",)))
+
+    assert checks["Reverse DNS"].status is Status.WARN

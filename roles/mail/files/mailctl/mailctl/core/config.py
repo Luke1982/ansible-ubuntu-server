@@ -32,6 +32,12 @@ class Config:
     dkim_user: str = "opendkim"
     mail_logs: tuple[Path, ...] = (Path("/var/log/mail.log.1"), Path("/var/log/mail.log"))
     sieve_after: Path = Path("/etc/dovecot/sieve-after")
+    certificate_file: Path | None = None  # by default the Let's Encrypt certificate of the hostname
+    # The web root of the autoconfig and autodiscover sites, where certbot puts its challenges too.
+    autodiscover_root: Path = Path("/var/www/mailautodiscover")
+    # The TransIP login and key, which mailctl asks for when it first needs them.
+    transip_settings: Path = Path("/etc/mailctl/transip.json")
+    transip_key: Path = Path("/etc/mailctl/transip.key")
     # Webmail: SOGo, behind a site at webmail.DOMAIN in OpenLiteSpeed with a Let's Encrypt certificate
     sogo_address: str = "127.0.0.1:20000"
     sogo_resources: Path = Path("/usr/lib/GNUstep/SOGo/WebServerResources")
@@ -39,6 +45,10 @@ class Config:
     webmail_root: Path = Path("/var/www/webmail")
     letsencrypt_dir: Path = Path("/etc/letsencrypt")
     letsencrypt_email: str = ""  # for a new Let's Encrypt account; without it, one is made without an address
+
+    def certificate(self) -> Path:
+        """The certificate Postfix and Dovecot present, for the hostname and every mail.DOMAIN."""
+        return self.certificate_file or self.letsencrypt_dir / "live" / self.hostname / "fullchain.pem"
 
     def limits_for(self, address: str) -> tuple[SendLimit, ...]:
         """The account's own limits if it has any (an empty tuple means no limit), else the defaults."""
@@ -92,6 +102,10 @@ def _limits(value) -> tuple[SendLimit, ...]:
     return tuple(SendLimit(recipients=int(limit["recipients"]), seconds=int(limit["seconds"])) for limit in value)
 
 
+def _optional(convert):
+    return lambda value: None if value is None else convert(value)
+
+
 def _paths(value) -> tuple[Path, ...]:
     if not isinstance(value, list):
         raise TypeError(value)
@@ -102,4 +116,5 @@ _CONVERTERS = {
     "send_limits": _limits,
     "send_limits_by_account": lambda value: {_text(account).lower(): _limits(limits) for account, limits in value.items()},
     "mail_logs": _paths,
+    "certificate_file": _optional(_path),
 }

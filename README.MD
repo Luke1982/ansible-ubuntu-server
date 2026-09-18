@@ -133,7 +133,7 @@ Each server has its own playbook (e.g. `web01.whservice.nl.yml`) in the project 
 
 ## Managing mail with mailctl
 
-Mail servers get `mailctl`, a command-line tool for the mail domains, addresses, forwards, DKIM keys and spam settings. Run it as root on the server; `mailctl --help` lists everything, and `--help` on a command explains it with an example.
+Mail servers get `mailctl`, a command-line tool for the mail domains, addresses, forwards, DKIM keys, DNS records and spam settings. Run it as root on the server; `mailctl --help` lists everything, and `--help` on a command explains it with an example.
 
 | Command | What it does |
 |---------|-------------|
@@ -141,12 +141,42 @@ Mail servers get `mailctl`, a command-line tool for the mail domains, addresses,
 | `mailctl address add info@example.nl` | Creates an account; asks for the password |
 | `mailctl forward add sales@example.nl info@example.nl` | Forwards mail for an address |
 | `mailctl status info@example.nl` | Folders, last logins, sending against the limits, recent bounces |
-| `mailctl status example.nl` | Checks the domain's MX, SPF, DKIM and DMARC records |
+| `mailctl status example.nl` | Checks the domain's DNS records and whether the certificate includes `mail.example.nl` |
+| `mailctl dns show example.nl` | Shows the DNS records the domain needs |
+| `mailctl dns publish example.nl` | Publishes those records at TransIP; shows the changes and asks first (`--dry-run` only shows them) |
+| `mailctl doctor` | Checks the server (hostname, reverse DNS, certificate) and every domain; exit status 1 when something is wrong |
+| `mailctl autodiscover publish example.nl` | Lets Thunderbird and Outlook find the domain's mail settings by themselves (below) |
 | `mailctl spam set example.nl required_score 4` | Changes a spam setting for an account, a domain or the whole server |
 | `mailctl filters show info@example.nl` | Shows an account's mail filters |
 | `mailctl webmail sync` | Sets up webmail at `https://webmail.DOMAIN` for the domains whose `webmail.DOMAIN` points here, and removes it for the others. Runs daily by itself |
 
 Last logins are recorded for IMAP, which webmail and phones on ActiveSync use too; accounts that only send mail show no logins.
+
+### How a domain's mail is set up
+
+- Mail for `example.nl` is delivered to `mail.example.nl` (the MX record), which points to the server.
+- Mail programs use `mail.example.nl` for IMAP and sending. SRV records tell them so, which lets many of them find their settings by themselves.
+- The server sends mail as its hostname. The hostname must point to the server, and the server's addresses back to the hostname (reverse DNS, set at the server's provider).
+- Postfix and Dovecot use the hostname's Let's Encrypt certificate for everyone, so it must include `mail.example.nl` for every domain. Add the name once `mail.example.nl` points to the server; `mailctl doctor` tells you when one is missing.
+
+A new domain: `mailctl domain add example.nl`, then `mailctl dns publish example.nl` (or publish the records by hand when the domain isn't at TransIP), add `mail.example.nl` to the certificate, and check with `mailctl doctor example.nl`.
+
+`dns publish` only touches the mail records: it replaces the MX, `mail`, DKIM and SRV records, removes a previous provider's `autoconfig` and `autodiscover` records, adds the server's addresses to an SPF record that doesn't allow the server yet (so the senders it allows keep working), and leaves an existing DMARC policy and every other record alone. A domain like `shop.example.nl` goes into the `example.nl` zone.
+
+### Autoconfig and autodiscover
+
+`mailctl autodiscover publish example.nl` sets up a site at `autodiscover.example.nl`, with `autoconfig.example.nl` as alias, which gives Thunderbird (autoconfig) and Outlook (autodiscover) the settings for `mail.example.nl`, and publishes both names at TransIP. The site is a member of an OpenLiteSpeed virtual host template the playbook installs, so it shows up in WebAdmin under Virtual Host Templates; mailctl adds the templates to `httpd_config.conf` the first time.
+
+It checks for HTTPS first. Without a certificate for both names, the site answers on HTTP only, so no mail program sees another site's certificate, and the command shows the certbot command and its web root (`/var/www/mailautodiscover`):
+
+```bash
+certbot certonly --webroot -w /var/www/mailautodiscover --cert-name autodiscover.example.nl -d autodiscover.example.nl -d autoconfig.example.nl
+mailctl autodiscover publish example.nl   # again: switches HTTPS on
+```
+
+Certbot renews the certificate by itself, and its deploy hook restarts OpenLiteSpeed so it uses the new one. `dns publish` keeps the two records of a domain that has the site, and removes a previous provider's for the other domains.
+
+The first time, `dns publish` asks for the TransIP login and a key pair's private key (`mailctl dns credentials` enters or replaces them). Make the key pair in TransIP's control panel, under the API settings of your account, and put the server's addresses on its whitelist; mailctl shows them. It checks that TransIP accepts the key and saves both in `/etc/mailctl` (`transip.json` and `transip.key`, readable only by root), where Ansible leaves them alone. Try it without changing anything: `mailctl dns publish example.nl --dry-run`.
 
 Every command asks for what you leave out. In scripts, pass everything on the command line and give passwords through standard input, never as an argument:
 

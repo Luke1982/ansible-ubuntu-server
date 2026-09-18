@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import pwd
@@ -25,7 +26,7 @@ os.environ["COLUMNS"] = "200"
 from typer.testing import CliRunner  # noqa: E402
 
 from mailctl import cli  # noqa: E402
-from mailctl.core import db, system  # noqa: E402
+from mailctl.core import db, system, transip  # noqa: E402
 from mailctl.core.config import Config, SendLimit  # noqa: E402
 
 SCHEMAS = {
@@ -61,7 +62,110 @@ def config(tmp_path) -> Config:
         dkim_user=user,
         mail_logs=(tmp_path / "mail.log.1", tmp_path / "mail.log"),
         sieve_after=tmp_path / "sieve-after",
+        certificate_file=tmp_path / "fullchain.pem",
+        transip_settings=tmp_path / "mailctl" / "transip.json",
+        transip_key=tmp_path / "mailctl" / "transip.key",
+        ols_root=tmp_path / "lsws",
+        autodiscover_root=tmp_path / "mailautodiscover",
+        letsencrypt_dir=tmp_path / "letsencrypt",
     )
+
+
+def make_certificate(path: Path, *names: str, days: int = 90) -> Path:
+    """A self-signed certificate like Let's Encrypt's: the names are its subject alternative names."""
+    subject_alt_names = ",".join(f"DNS:{name}" for name in names)
+    subprocess.run(
+        ["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
+         "-keyout", str(path.with_suffix(".key")), "-out", str(path), "-days", str(days),
+         "-subj", f"/CN={names[0]}", "-addext", f"subjectAltName={subject_alt_names}"],
+        check=True, capture_output=True,
+    )
+    return path
+
+
+@pytest.fixture(scope="session")
+def transip_key_pair(tmp_path_factory) -> tuple[Path, Path]:
+    """A private key like the ones TransIP's control panel makes, and its public half."""
+    directory = tmp_path_factory.mktemp("transip")
+    private, public = directory / "transip.key", directory / "transip.pub"
+    subprocess.run(["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", str(private)],
+                   check=True, capture_output=True)
+    subprocess.run(["openssl", "pkey", "-in", str(private), "-pubout", "-out", str(public)], check=True, capture_output=True)
+    return private, public
+
+
+class FakeTransip:
+    """TransIP's API with the domain example.nl. It checks login signatures with the public key, and records every
+    request as (method, path, body, headers). With whitelisted False, this server isn't on the API whitelist, so only
+    tokens that work anywhere work: others are refused when they're asked for, or with refused_on_use when they're
+    used."""
+
+    TOKEN = "fake-token"
+    WHITELIST_ONLY_TOKEN = "fake-whitelist-only-token"
+
+    def __init__(self, public_key: Path, workdir: Path) -> None:
+        self._public_key = public_key
+        self._workdir = workdir
+        self.whitelisted = True
+        self.refused_on_use = False
+        self.requests: list[tuple[str, str, dict | None, dict[str, str]]] = []
+        self.zones: dict[str, list[dict]] = {"example.nl": []}
+        self.nameservers = {"example.nl": ["ns0.transip.net", "ns1.transip.nl", "ns2.transip.eu"]}
+        self.answers: dict[tuple[str, str], list[tuple[int, dict]]] = {}  # answers to give first, per request
+
+    def entries(self, domain: str = "example.nl") -> list[tuple[str, int, str, str]]:
+        return [(entry["name"], entry["expire"], entry["type"], entry["content"]) for entry in self.zones[domain]]
+
+    def paths(self, method: str | None = None) -> list[str]:
+        return [path for requested, path, _, _ in self.requests if method in (None, requested)]
+
+    def send(self, method: str, url: str, headers: dict[str, str], body: bytes | None) -> tuple[int, bytes]:
+        path = url.removeprefix(transip.API)
+        self.requests.append((method, path, json.loads(body) if body else None, headers))
+        if self.answers.get((method, path)):
+            status, answer = self.answers[(method, path)].pop(0)
+            return status, json.dumps(answer).encode()
+        if path == "/auth":
+            if not self._signed(body, headers.get("Signature", "")):
+                return 401, b'{"error": "Signature invalid"}'
+            if not self.whitelisted and not json.loads(body)["global_key"]:
+                if not self.refused_on_use:
+                    return 403, b'{"error": "Remote IP 203.0.113.5 is not authorized for this request"}'
+                return 201, json.dumps({"token": self.WHITELIST_ONLY_TOKEN}).encode()
+            return 201, json.dumps({"token": self.TOKEN}).encode()
+        if headers.get("Authorization") == f"Bearer {self.WHITELIST_ONLY_TOKEN}":
+            return 403, b'{"error": "Remote IP 203.0.113.5 is not whitelisted"}'
+        if headers.get("Authorization") != f"Bearer {self.TOKEN}":
+            return 401, b'{"error": "Invalid token"}'
+        if path == "/api-test":
+            return 200, b'{"ping": "pong"}'
+        domain, resource = path.removeprefix("/domains/").split("/")
+        if domain not in self.zones:
+            return 404, json.dumps({"error": f"Domain with name '{domain}' not found"}).encode()
+        if (method, resource) == ("GET", "dns"):
+            return 200, json.dumps({"dnsEntries": self.zones[domain]}).encode()
+        if (method, resource) == ("PUT", "dns"):
+            self.zones[domain] = json.loads(body)["dnsEntries"]
+            return 204, b""
+        if (method, resource) == ("GET", "nameservers"):
+            names = [{"hostname": name, "ipv4": "", "ipv6": ""} for name in self.nameservers[domain]]
+            return 200, json.dumps({"nameservers": names}).encode()
+        return 405, b'{"error": "Method not allowed"}'
+
+    def _signed(self, body: bytes, signature: str) -> bool:
+        signed, signature_file = self._workdir / "signed", self._workdir / "signature"
+        signed.write_bytes(body)
+        signature_file.write_bytes(base64.b64decode(signature))
+        verify = ["openssl", "dgst", "-sha512", "-verify", str(self._public_key), "-signature", str(signature_file)]
+        return subprocess.run([*verify, str(signed)], capture_output=True).returncode == 0
+
+
+@pytest.fixture
+def fake_transip(transip_key_pair, tmp_path, monkeypatch) -> FakeTransip:
+    api = FakeTransip(transip_key_pair[1], tmp_path)
+    monkeypatch.setattr(transip, "_send", api.send)
+    monkeypatch.setattr(transip, "BUSY_WAIT", 0)
+    return api
 
 
 class FakeCommand:

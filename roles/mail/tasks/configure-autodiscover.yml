@@ -1,0 +1,54 @@
+---
+# autoconfig.<domain> and autodiscover.<domain>: a site that gives Thunderbird
+# and Outlook the settings for mail.<domain>. "mailctl autodiscover publish
+# DOMAIN" makes a domain a member of one of these OpenLiteSpeed templates: the
+# one on HTTP and HTTPS once the domain has a certificate, the one on HTTP only
+# until then. OpenLiteSpeed's listeners and other sites are set up in WebAdmin.
+
+- name: Check that OpenLiteSpeed and its PHP are installed
+  stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ ols_root }}/conf/httpd_config.conf"
+    - "{{ autodiscover_lsphp }}"
+  register: autodiscover_needs
+
+- name: Stop when OpenLiteSpeed or its PHP is missing
+  assert:
+    that: item.stat.exists
+    fail_msg: "{{ item.item }} doesn't exist. Run the web role first: it installs OpenLiteSpeed and its PHP."
+    quiet: yes
+  loop: "{{ autodiscover_needs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Install the OpenLiteSpeed templates for autoconfig and autodiscover
+  template:
+    src: openlitespeed-autodiscover.conf.j2
+    dest: "{{ ols_root }}/conf/templates/{{ item.name }}.conf"
+    mode: 0644
+  loop:
+    - name: mailautodiscover
+      https: true
+    - name: mailautodiscover-http
+      https: false
+  loop_control:
+    label: "{{ item.name }}"
+  notify: restart openlitespeed
+
+# Also certbot's web root for the autodiscover.<domain> certificates.
+- name: Create the web root of the autoconfig and autodiscover sites
+  file:
+    path: "{{ autodiscover_root }}"
+    state: directory
+    mode: 0755
+
+- name: Install the answers for Thunderbird and Outlook
+  copy:
+    src: mailautodiscover/{{ item }}
+    dest: "{{ autodiscover_root }}/{{ item }}"
+    mode: 0644
+  loop:
+    - autoconfig.php
+    - autodiscover.php
+    - mailsettings.php

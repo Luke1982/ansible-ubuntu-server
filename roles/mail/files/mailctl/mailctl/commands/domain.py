@@ -1,9 +1,12 @@
 """mailctl domain: add, list and delete mail domains."""
 
 from .. import ui
-from ..core import addresses, dkim, dns_check, domains, forwards, mailbox, system
+from ..core import addresses, dkim, domains, forwards, mailbox
 from ..session import Session, open_session
-from .shared import DeleteMail, Domain, Yes, ask_domain, attempt, decide_mail, group, warn_about_incoming_forwards
+from .checks import warn_if_not_in_certificate
+from .shared import (
+    DeleteMail, Domain, Yes, ask_domain, attempt, decide_mail, group, recommended_records, warn_about_incoming_forwards,
+)
 
 app = group("Add, list and delete mail domains.")
 
@@ -26,18 +29,17 @@ def create(session: Session, domain: str) -> None:
     problems: list[str] = []
     attempt(problems, "Couldn't create the DKIM key", lambda: dkim.create_key(session.config, domain))
     attempt(problems, "Couldn't update OpenDKIM", lambda: dkim.update_opendkim(session.config))
-    has_key = dkim.has_key(session.config, domain)
-    dkim_value = (
-        attempt(problems, "Couldn't read the DKIM key", lambda: dkim.record_value(session.config, domain))
-        if has_key else None
-    )
-    server_ips = attempt(problems, "Couldn't read this server's addresses", system.server_ips)
+    records = recommended_records(session, domain, problems)
     ui.success(f"Added {domain}. Publish these DNS records for it:")
-    ui.records(dns_check.recommended_records(domain, server_ips or set(), dkim_value))
+    ui.records(records)
     for problem in problems:
         ui.warn(problem)
-    if not has_key:
+    if not dkim.has_key(session.config, domain):
         ui.note(f"Create the DKIM key later with: mailctl dkim create {domain}")
+    if session.config.transip_settings.exists():
+        ui.note(f"Publish them at TransIP with: mailctl dns publish {domain}")
+    warn_if_not_in_certificate(session, domain)
+    ui.note(f"Check the domain's setup with: mailctl doctor {domain}")
 
 
 @app.command(name="list")

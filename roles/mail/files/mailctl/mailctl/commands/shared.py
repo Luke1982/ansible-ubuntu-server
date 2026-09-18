@@ -7,7 +7,8 @@ from typing import Annotated, Optional
 import typer
 
 from .. import ui
-from ..core import addresses, domains, names, spam
+from ..core import addresses, autodiscover, dkim, dns_check, domains, names, spam, system
+from ..core.dns_check import DnsRecord
 from ..core.errors import MailctlError
 from ..core.forwards import Forward
 from ..session import Session
@@ -75,6 +76,19 @@ def attempt[T](problems: list[str], failure: str, step: Callable[[], T]) -> T | 
     except MailctlError as problem:
         problems.append(f"{failure}: {problem.message}")
         return None
+
+
+def recommended_records(session: Session, domain: str, problems: list[str]) -> list[DnsRecord]:
+    """The DNS records the domain needs. What can't be read is added to problems and its records left out."""
+    dkim_value = (
+        attempt(problems, "Couldn't read the DKIM key", lambda: dkim.record_value(session.config, domain))
+        if dkim.has_key(session.config, domain) else None
+    )
+    server_ips = attempt(problems, "Couldn't read this server's addresses", system.server_ips) or set()
+    records = dns_check.recommended_records(domain, server_ips, dkim_value)
+    if attempt(problems, "Couldn't read OpenLiteSpeed's config", lambda: autodiscover.has_site(session.config, domain)):
+        records += dns_check.autodetect_records(domain, server_ips)
+    return records
 
 
 def warn_about_incoming_forwards(incoming: list[Forward]) -> None:
