@@ -119,7 +119,7 @@ def test_status_of_a_domain_shows_every_record_mail_delivery_needs(mailctl, acco
     output = mailctl.ok("status", "example.nl")
 
     assert "There is no MX record" in output
-    assert re.search(r"MX\s+example\.nl\n\s+10 mail\.example\.nl\n", output)
+    assert re.search(r"MX\s+example\.nl\n\s+10 mail\.example\.nl\.\n", output)
     assert re.search(r"A\s+mail\.example\.nl\n\s+203\.0\.113\.5\n", output)
 
 

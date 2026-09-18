@@ -94,10 +94,10 @@ def test_dns_show_prints_the_records_with_the_srv_records(mailctl, public_server
 
     output = mailctl.ok("dns", "show", "example.nl")
 
-    assert re.search(r"MX\s+example\.nl\n\s+10 mail\.example\.nl\n", output)
+    assert re.search(r"MX\s+example\.nl\n\s+10 mail\.example\.nl\.\n", output)
     assert re.search(rf"A\s+mail\.example\.nl\n\s+{re.escape(PUBLIC_IP)}\n", output)
-    assert re.search(r"SRV\s+_imaps\._tcp\.example\.nl\n\s+0 1 993 mail\.example\.nl\n", output)
-    assert re.search(r"SRV\s+_submission\._tcp\.example\.nl\n\s+10 1 587 mail\.example\.nl\n", output)
+    assert re.search(r"SRV\s+_imaps\._tcp\.example\.nl\n\s+0 1 993 mail\.example\.nl\.\n", output)
+    assert re.search(r"SRV\s+_submission\._tcp\.example\.nl\n\s+10 1 587 mail\.example\.nl\.\n", output)
     assert FAKE_KEY_RECORD_START in output
 
 
@@ -305,7 +305,7 @@ def test_doctor_counts_warnings(mailctl, healthy_dns, monkeypatch):
     output = mailctl.fails("doctor")
 
     assert "There are no SRV records" in output
-    assert re.search(r"SRV\s+_imaps\._tcp\.example\.nl\n\s+0 1 993 mail\.example\.nl\n", output)
+    assert re.search(r"SRV\s+_imaps\._tcp\.example\.nl\n\s+0 1 993 mail\.example\.nl\.\n", output)
     assert "Found 1 problem and 1 warning." in output  # without a DKIM record
 
 

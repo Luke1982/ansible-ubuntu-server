@@ -161,7 +161,9 @@ def _not_allowed(terms: list[str], mail_ips: set[IPAddress]) -> set[IPAddress]:
 
 def _entry(zone: str, record: DnsRecord) -> Entry:
     # Host names in content are written in full, with the final dot.
-    content = f"{record.value}." if record.type in ("MX", "SRV", "CNAME") else record.value
+    content = record.value
+    if record.type in ("MX", "SRV", "CNAME") and not content.endswith("."):
+        content += "."
     return Entry(_relative(zone, record.name), EXPIRE, record.type, content)
 
 

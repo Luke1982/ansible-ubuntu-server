@@ -122,7 +122,7 @@ def recommended_records(domain: str, server_ips: set[IPAddress], dkim_value: str
 def srv_records(domain: str) -> list[DnsRecord]:
     """The records that tell mail programs to use the mail host for IMAP and for sending."""
     return [
-        DnsRecord("SRV", f"{service}.{domain}", f"{priority} 1 {port} {mail_host(domain)}")
+        DnsRecord("SRV", f"{service}.{domain}", f"{priority} 1 {port} {mail_host(domain)}.")
         for service, priority, port in MAIL_SERVICES
     ]
 
@@ -188,7 +188,8 @@ def _run_checks[T](checks: list[tuple[str, Callable[[T], _Finding]]], target: T)
 
 
 def _mx_record(domain: str) -> DnsRecord:
-    return DnsRecord("MX", domain, f"10 {mail_host(domain)}")
+    # With the final dot: without it, DNS control panels like TransIP's add the domain again.
+    return DnsRecord("MX", domain, f"10 {mail_host(domain)}.")
 
 
 def _address_records(domain: str, server_ips: set[IPAddress]) -> tuple[DnsRecord, ...]:

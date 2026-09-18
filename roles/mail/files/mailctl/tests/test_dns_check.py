@@ -60,7 +60,7 @@ def resolver(failing=(), **overrides):
     return FakeResolver(**records, failing=failing)
 
 
-MAIL_HOST_RECORDS = (DnsRecord("MX", "example.nl", "10 mail.example.nl"), DnsRecord("A", "mail.example.nl", "203.0.113.5"))
+MAIL_HOST_RECORDS = (DnsRecord("MX", "example.nl", "10 mail.example.nl."), DnsRecord("A", "mail.example.nl", "203.0.113.5"))
 
 
 def check(dns, name, *, server_ips=SERVER_IPS, dkim_value=DKIM_VALUE):
@@ -79,16 +79,16 @@ def test_recommended_records_deliver_mail_to_the_mail_host_at_the_servers_public
     server_ips = {ip_address("93.184.216.34"), ip_address("2606:2800:220:1::5"), ip_address("10.0.0.5")}
 
     assert dns_check.recommended_records("example.nl", server_ips, DKIM_VALUE) == [
-        DnsRecord("MX", "example.nl", "10 mail.example.nl"),
+        DnsRecord("MX", "example.nl", "10 mail.example.nl."),
         DnsRecord("A", "mail.example.nl", "93.184.216.34"),
         DnsRecord("AAAA", "mail.example.nl", "2606:2800:220:1::5"),
         DnsRecord("TXT", "example.nl", "v=spf1 mx ~all"),
         DnsRecord("TXT", "mail._domainkey.example.nl", DKIM_VALUE),
         DnsRecord("TXT", "_dmarc.example.nl", "v=DMARC1; p=quarantine"),
-        DnsRecord("SRV", "_imaps._tcp.example.nl", "0 1 993 mail.example.nl"),
-        DnsRecord("SRV", "_imap._tcp.example.nl", "10 1 143 mail.example.nl"),
-        DnsRecord("SRV", "_submissions._tcp.example.nl", "0 1 465 mail.example.nl"),
-        DnsRecord("SRV", "_submission._tcp.example.nl", "10 1 587 mail.example.nl"),
+        DnsRecord("SRV", "_imaps._tcp.example.nl", "0 1 993 mail.example.nl."),
+        DnsRecord("SRV", "_imap._tcp.example.nl", "10 1 143 mail.example.nl."),
+        DnsRecord("SRV", "_submissions._tcp.example.nl", "0 1 465 mail.example.nl."),
+        DnsRecord("SRV", "_submission._tcp.example.nl", "10 1 587 mail.example.nl."),
     ]
 
 
@@ -96,7 +96,7 @@ def test_the_mail_host_of_a_subdomain_is_in_the_subdomain():
     records = dns_check.recommended_records("shop.example.nl", SERVER_IPS, None)
 
     assert records[:2] == [
-        DnsRecord("MX", "shop.example.nl", "10 mail.shop.example.nl"),
+        DnsRecord("MX", "shop.example.nl", "10 mail.shop.example.nl."),
         DnsRecord("A", "mail.shop.example.nl", "203.0.113.5"),
     ]
 
@@ -372,7 +372,7 @@ def test_srv_records_pointing_elsewhere_are_a_problem(published):
     assert result.status is Status.FAIL
     assert result.detail.startswith("_imaps._tcp.example.nl sends mail programs to ")
     assert "instead of mail.example.nl port 993" in result.detail
-    assert result.fixes == (DnsRecord("SRV", "_imaps._tcp.example.nl", "0 1 993 mail.example.nl"),)
+    assert result.fixes == (DnsRecord("SRV", "_imaps._tcp.example.nl", "0 1 993 mail.example.nl."),)
 
 
 def test_srv_records_with_other_priorities_and_capitals_pass():
