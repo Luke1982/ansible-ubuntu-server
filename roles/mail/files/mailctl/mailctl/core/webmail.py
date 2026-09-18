@@ -6,9 +6,10 @@ offered without encryption.
 
 The sites are virtual hosts of their own in OpenLiteSpeed's config, marked with mailctl's note, and not members of a
 template: SOGo needs a request header with the site's own name, and OpenLiteSpeed doesn't fill in variables in request
-headers. Their settings are in webmail_sites, a directory of root's: OpenLiteSpeed's own conf directory belongs to
-lsadm, and a link planted there could make mailctl, running as root, write or delete any file. The note is the only
-record of which sites exist; mailctl leaves every other virtual host alone.
+headers. Their settings are where WebAdmin keeps a virtual host's, conf/vhosts/NAME/vhconf.conf, and belong to the
+same user, lsadm. mailctl writes and deletes them as lsadm: the directory is lsadm's, and a link planted there must not
+make mailctl, running as root, write or delete anything lsadm couldn't. The note is the only record of which sites
+exist; mailctl leaves every other virtual host alone.
 """
 
 import http.client
@@ -200,18 +201,19 @@ def _publish(config: Config, hosts: set[str]) -> bool:
     ordered = sorted(hosts)
     certified = {name for name in ordered if has_certificate(config, name)}
     changed = False
-    for name in ordered:  # before the config refers to them
-        changed |= files.replace(_site_file(config, name), _site(config, name, name in certified))
+    with system.as_user(config.ols_user):
+        for name in ordered:  # before the config refers to them
+            changed |= files.replace(_site_file(config, name), _site(config, name, name in certified))
     lines = openlitespeed.read(config.ols_root)
     http, https = openlitespeed.listeners(lines)
     updated = lines
-    for name in _ours(lines):
-        if name not in hosts:
-            updated = openlitespeed.without_virtual_host(updated, name)
-            for listener in http + https:
-                updated = openlitespeed.without_map(updated, listener, name)
+    gone = [name for name in _ours(lines) if name not in hosts]
+    for name in gone:
+        updated = openlitespeed.without_virtual_host(updated, name)
+        for listener in http + https:
+            updated = openlitespeed.without_map(updated, listener, name)
     for name in ordered:
-        site = VirtualHost(name, f"{config.webmail_root}/", str(_site_file(config, name)), _NOTE)
+        site = VirtualHost(name, f"{config.webmail_root}/", f"$SERVER_ROOT/conf/vhosts/{name}/vhconf.conf", _NOTE)
         updated = openlitespeed.with_virtual_host(updated, site)
         for listener in http:
             updated = openlitespeed.with_map(updated, listener, name, name)
@@ -223,10 +225,11 @@ def _publish(config: Config, hosts: set[str]) -> bool:
     if updated != lines:
         openlitespeed.write(config.ols_root, updated)
         changed = True
-    for path in _directory(config).glob("*.conf"):  # once the config no longer refers to them
-        if path.stem not in hosts:
-            changed |= files.remove(path)
-            files.remove(path.with_name(f"{path.name}.txt"))  # OpenLiteSpeed's copy of what it read
+    # Once the config no longer refers to them; with OpenLiteSpeed's copy of what it read (vhconf.conf.txt).
+    with system.as_user(config.ols_user):
+        for name in gone:
+            changed |= _site_file(config, name).exists()
+            system.remove_tree(_site_file(config, name).parent)
     if changed:
         openlitespeed.restart(config.ols_root)
     return changed
@@ -293,12 +296,9 @@ def _reason(message: str) -> str:
     return " ".join(details) or message
 
 
-def _directory(config: Config) -> Path:
-    return config.webmail_sites
-
-
 def _site_file(config: Config, name: str) -> Path:
-    return _directory(config) / f"{name}.conf"
+    """Where WebAdmin keeps a virtual host's settings."""
+    return config.ols_root / "conf" / "vhosts" / name / "vhconf.conf"
 
 
 def _live(config: Config, name: str) -> Path:

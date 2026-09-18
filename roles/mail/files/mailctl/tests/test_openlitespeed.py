@@ -70,7 +70,7 @@ vhTemplate centralConfigLog {
 HTTPS = Template("mailautodiscover", "conf/templates/mailautodiscover.conf", ("HTTP", "HTTPS", "HTTPS6"), "Managed")
 HTTP_ONLY = Template("mailautodiscover-http", "conf/templates/mailautodiscover-http.conf", ("HTTP",), "Managed, HTTP")
 MEMBER = Member("autodiscover.example.nl", "autodiscover.example.nl", ("autoconfig.example.nl",))
-WEBMAIL = VirtualHost("webmail.example.nl", "/var/www/webmail/", "/etc/mailctl/webmail/webmail.example.nl.conf",
+WEBMAIL = VirtualHost("webmail.example.nl", "/var/www/webmail/", "$SERVER_ROOT/conf/vhosts/webmail.example.nl/vhconf.conf",
                       "Managed by mailctl")
 
 
@@ -258,7 +258,7 @@ def test_with_virtual_host_adds_it_like_webadmin_does():
     assert "\n".join(config[len(lines()):]) == """
 virtualhost webmail.example.nl {
   vhRoot                  /var/www/webmail/
-  configFile              /etc/mailctl/webmail/webmail.example.nl.conf
+  configFile              $SERVER_ROOT/conf/vhosts/webmail.example.nl/vhconf.conf
   allowSymbolLink         0
   enableScript            0
   restrained              1

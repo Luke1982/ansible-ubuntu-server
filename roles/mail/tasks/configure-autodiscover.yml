@@ -26,6 +26,7 @@
   template:
     src: openlitespeed-autodiscover.conf.j2
     dest: "{{ ols_root }}/conf/templates/{{ item.name }}.conf"
+    owner: lsadm  # like everything in OpenLiteSpeed's conf directory
     mode: 0644
   loop:
     - name: mailautodiscover

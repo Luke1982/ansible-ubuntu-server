@@ -56,6 +56,7 @@ def config(tmp_path) -> Config:
         db_socket="",
         vmail_root=tmp_path / "vmail",
         vmail_user=user,
+        ols_user=user,
         dkim_keys=tmp_path / "opendkim" / "keys",
         dkim_key_table=tmp_path / "opendkim" / "KeyTable",
         dkim_signing_table=tmp_path / "opendkim" / "SigningTable",

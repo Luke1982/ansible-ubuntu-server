@@ -16,8 +16,8 @@
     quiet: yes
 
 # An earlier version of this role included files in OpenLiteSpeed's config,
-# which makes WebAdmin show all of it read-only, and kept the sites in its conf
-# directory, which belongs to lsadm. mailctl keeps them in /etc/mailctl/webmail.
+# which makes WebAdmin show all of it read-only. mailctl now keeps each site's
+# settings where WebAdmin does, conf/vhosts/<site>/vhconf.conf, as lsadm.
 - name: Remove the include lines of the earlier webmail setup
   replace:
     path: "{{ ols_root }}/conf/httpd_config.conf"
@@ -70,6 +70,13 @@
   command: mailctl webmail sync
   register: webmail_sync
   changed_when: "'Changed the webmail sites.' in webmail_sync.stdout"
+
+# Where another earlier version kept the sites' settings; the sync above has
+# moved them to conf/vhosts.
+- name: Remove the site settings of an earlier version
+  file:
+    path: /etc/mailctl/webmail
+    state: absent
 
 # Its warnings: domains waiting for their webmail record, refused certificates.
 # (With --check the sync doesn't run, so there's no output.)

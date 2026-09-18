@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from dataclasses import replace
 from ipaddress import ip_address
 
@@ -5,7 +6,7 @@ import pytest
 from conftest import FakeCommand
 from test_openlitespeed import HTTPD_CONFIG
 
-from mailctl.core import openlitespeed, webmail
+from mailctl.core import files, openlitespeed, system, webmail
 from mailctl.core.errors import MailctlError
 from mailctl.core.dns_check import LookupFailed
 from mailctl.core.webmail import Outcome, State
@@ -59,7 +60,7 @@ HERE = FakeResolver({"webmail.example.nl": ["203.0.113.5", "2001:db8::5"], "webm
 
 @pytest.fixture
 def config(config, tmp_path):
-    return replace(config, webmail_root=tmp_path / "www" / "webmail", webmail_sites=tmp_path / "mailctl" / "webmail",
+    return replace(config, webmail_root=tmp_path / "www" / "webmail",
                    sogo_resources=tmp_path / "sogo" / "resources")
 
 
@@ -102,8 +103,12 @@ pytestmark = pytest.mark.usefixtures("certbot", "lswsctrl", "served")
 
 
 def site(config, name):
-    """The settings of a site, in the webmail directory."""
-    return (config.webmail_sites / f"{name}.conf").read_text()
+    """The settings of a site, where WebAdmin keeps a virtual host's."""
+    return (vhosts(config) / name / "vhconf.conf").read_text()
+
+
+def vhosts(config):
+    return config.ols_root / "conf" / "vhosts"
 
 
 def httpd_config(config):
@@ -337,9 +342,7 @@ def test_sites_are_the_virtual_hosts_with_mailctls_note_and_others_are_left_alon
     sync(config, "example.nl", "other.nl")
 
     assert webmail.sites(config) == ["webmail.example.nl", "webmail.other.nl"]
-    assert sorted(path.name for path in config.webmail_sites.iterdir()) == [
-        "webmail.example.nl.conf", "webmail.other.nl.conf",
-    ]
+    assert sorted(path.name for path in vhosts(config).iterdir()) == ["webmail.example.nl", "webmail.other.nl"]
 
     sync(config)
 
@@ -378,14 +381,31 @@ def test_a_sync_needs_openlitespeed_listening_on_both_ports(config, address, pro
         sync(config, "example.nl")
 
 
-def test_mailctl_writes_nothing_in_openlitespeeds_directory_but_its_config(config):
-    """OpenLiteSpeed's conf directory belongs to lsadm, and mailctl runs as root: a link lsadm planted there could
-    make root write or delete any file. The config itself is written without following links."""
-    sync(config, "example.nl")
+def test_the_sites_settings_are_written_and_deleted_as_openlitespeeds_user(config, monkeypatch):
+    """OpenLiteSpeed's conf directory belongs to lsadm, and mailctl runs as root: a link lsadm planted there must not
+    make root write or delete anything lsadm couldn't. The config itself is written without following links."""
+    as_user = []
 
-    assert sorted(path.name for path in (config.ols_root / "conf").iterdir()) == [
-        "httpd_config.conf", "httpd_config.conf.mailctl.bak",
-    ]
+    @contextmanager
+    def recording(name):
+        as_user.append(name)
+        yield
+        as_user.append(None)
+
+    touched = []
+    for module, function in ((files, "replace"), (system, "remove_tree")):
+        original = getattr(module, function)
+        monkeypatch.setattr(module, function, lambda path, *rest, original=original: (
+            touched.append((path, as_user[-1] if as_user else None)), original(path, *rest))[1])
+    monkeypatch.setattr(system, "as_user", recording)
+
+    sync(config, "example.nl", "other.nl")
+    sync(config, "other.nl")
+
+    under_conf = [(path, user) for path, user in touched if (config.ols_root / "conf") in path.parents]
+    assert {path.parent.name for path, _ in under_conf} == {"webmail.example.nl", "webmail.other.nl", "vhosts"}
+    assert all(user == config.ols_user for _, user in under_conf)
+    assert "$SERVER_ROOT/conf/vhosts/webmail.other.nl/vhconf.conf" in httpd_config(config)
 
 def test_domains_with_capitals_from_the_old_helper_script_get_their_site_in_lower_case(config):
     result = sync(config, "Example.NL")
@@ -407,10 +427,11 @@ def test_a_removed_site_takes_openlitespeeds_copy_of_its_settings_along(config):
     """OpenLiteSpeed 1.9 writes a .txt copy of every config file it reads."""
     sync(config, "example.nl", "other.nl")
     for name in ("webmail.example.nl", "webmail.other.nl"):
-        (config.webmail_sites / f"{name}.conf.txt").write_text("copy\n")
+        (vhosts(config) / name / "vhconf.conf.txt").write_text("copy\n")
 
     sync(config, "other.nl")
 
-    assert sorted(path.name for path in config.webmail_sites.iterdir()) == [
-        "webmail.other.nl.conf", "webmail.other.nl.conf.txt",
+    assert sorted(path.name for path in vhosts(config).iterdir()) == ["webmail.other.nl"]
+    assert sorted(path.name for path in (vhosts(config) / "webmail.other.nl").iterdir()) == [
+        "vhconf.conf", "vhconf.conf.txt",
     ]
