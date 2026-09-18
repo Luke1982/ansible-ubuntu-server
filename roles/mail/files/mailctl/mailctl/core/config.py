@@ -32,6 +32,13 @@ class Config:
     dkim_user: str = "opendkim"
     mail_logs: tuple[Path, ...] = (Path("/var/log/mail.log.1"), Path("/var/log/mail.log"))
     sieve_after: Path = Path("/etc/dovecot/sieve-after")
+    # Webmail: SOGo, behind a site at webmail.DOMAIN in OpenLiteSpeed with a Let's Encrypt certificate
+    sogo_address: str = "127.0.0.1:20000"
+    sogo_resources: Path = Path("/usr/lib/GNUstep/SOGo/WebServerResources")
+    ols_root: Path = Path("/usr/local/lsws")
+    webmail_root: Path = Path("/var/www/webmail")
+    letsencrypt_dir: Path = Path("/etc/letsencrypt")
+    letsencrypt_email: str = ""  # for a new Let's Encrypt account; without it, one is made without an address
 
     def limits_for(self, address: str) -> tuple[SendLimit, ...]:
         """The account's own limits if it has any (an empty tuple means no limit), else the defaults."""

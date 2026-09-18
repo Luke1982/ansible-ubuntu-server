@@ -45,10 +45,11 @@
     mode: 0755
 
 # Placeholders, so OpenLiteSpeed starts before "mailctl webmail sync" fills
-# them. A comment, because it warns about empty files.
+# them: what it writes while there are no sites. OpenLiteSpeed warns about
+# empty files.
 - name: Create the files for the webmail sites
   copy:
-    content: "# Written by mailctl webmail sync\n"
+    content: "# Written by mailctl webmail sync. Changes are overwritten.\n"
     dest: "{{ ols_root }}/conf/webmail/{{ item }}"
     force: no
     mode: 0644
