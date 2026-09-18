@@ -12,6 +12,12 @@ if [ -d "$target" ]; then
     exit 0
 fi
 
+# phpMyAdmin is served by that site; servers where it was removed don't get it.
+if [ ! -d "$site" ]; then
+    echo "Skipped phpMyAdmin: OpenLiteSpeed's Example site ($site) doesn't exist."
+    exit 0
+fi
+
 # Left in the site by earlier versions of this script that stopped halfway
 rm -rf "$site"/phpMyAdmin-*-all-languages "$site"/phpMyAdmin-latest-all-languages.zip
 
