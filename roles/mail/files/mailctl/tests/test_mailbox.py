@@ -24,7 +24,12 @@ def test_home_dir_is_the_local_part_under_the_domain(config):
 
 
 def test_create_maildir_makes_the_folders_and_their_aliases(maildir):
-    assert sorted(path.name for path in maildir.iterdir() if not path.is_symlink()) == [".Junk", ".Sent", ".Trash"]
+    assert sorted(path.name for path in maildir.iterdir() if not path.is_symlink()) == [
+        ".Junk", ".Sent", ".Trash", "cur", "new", "tmp",
+    ]
+    # Complete Maildir folders, so Dovecot doesn't have to create them when they're first opened.
+    for folder in (".Junk", ".Sent", ".Trash"):
+        assert sorted(path.name for path in (maildir / folder).iterdir()) == ["cur", "new", "tmp"]
     assert os.readlink(maildir / ".Verzonden items") == ".Sent"
     assert os.readlink(maildir / ".Sent Items") == ".Sent"
     assert os.readlink(maildir / ".Deleted Messages") == ".Trash"
@@ -231,7 +236,6 @@ def test_server_scripts_without_the_directory(config):
 
 
 def test_disk_usage_counts_files_but_not_symlinked_folders_twice(maildir):
-    (maildir / "cur").mkdir()
     (maildir / "cur" / "1").write_bytes(b"x" * 100)
     (maildir / ".Sent" / "2").write_bytes(b"x" * 50)
 

@@ -56,10 +56,18 @@ def create_maildir(config: Config, address: str) -> None:
         folder = _MailFolder.root(config, opened)
         for name in (domain, local_part, "Maildir"):
             folder = folder.enter(name, create=True)
+        _complete(folder)  # INBOX
         for standard, aliases in FOLDER_ALIASES.items():
-            folder.enter(f".{standard}", create=True)
+            _complete(folder.enter(f".{standard}", create=True))
             for alias in aliases:
                 folder.link(f".{alias}", f".{standard}")
+
+
+def _complete(folder: "_MailFolder") -> None:
+    """Gives a Maildir folder its cur, new and tmp directories, so it exists for Dovecot: otherwise Dovecot has to
+    create the folder when it's first opened, and that can be refused (seen with Dovecot 2.4 and its acl plugin)."""
+    for name in ("cur", "new", "tmp"):
+        folder.enter(name, create=True)
 
 
 def delete_mail(config: Config, directory: Path) -> None:
