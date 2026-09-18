@@ -61,7 +61,7 @@ class _Plan:
         self.outcomes[outcome.host] = outcome
         self.kept.add(outcome.host)
 
-    def remove(self, name: str, reason: str) -> None:
+    def drop(self, name: str, reason: str) -> None:
         self.outcomes[name] = Outcome(name, State.REMOVED, reason)
         self.removed.add(name)
 
@@ -101,7 +101,6 @@ def resolve_to_this_server(resolver: Resolver, name: str, server_ips: set[IPAddr
 def sync(config: Config, domains: Iterable[str], server_ips: set[IPAddress], resolver: Resolver) -> Result:
     """Gives every domain whose webmail name points here a site with a certificate, and removes the other sites."""
     plan = _plan(config, domains, server_ips, resolver)
-    outcomes = plan.outcomes
     changed = _publish(config, plan.kept)
     for name in sorted(plan.removed):
         changed |= _delete_certificate(config, name)
@@ -110,13 +109,13 @@ def sync(config: Config, domains: Iterable[str], server_ips: set[IPAddress], res
             _wait_until_served(config, name, addresses)
             _request_certificate(config, name)
         except MailctlError as problem:
-            outcomes[name] = Outcome(name, State.FAILED, " ".join(filter(None, (problem.message, problem.hint))))
+            plan.outcomes[name] = Outcome(name, State.FAILED, " ".join(filter(None, (problem.message, problem.hint))))
         else:
-            outcomes[name] = Outcome(name, State.NEW)
+            plan.outcomes[name] = Outcome(name, State.NEW)
             changed = True
     # Moves the sites that got their certificate to the HTTPS listeners.
     _publish(config, plan.kept)
-    return Result(tuple(outcomes[name] for name in sorted(outcomes)), changed)
+    return Result(tuple(plan.outcomes[name] for name in sorted(plan.outcomes)), changed)
 
 
 def _plan(config: Config, domains: Iterable[str], server_ips: set[IPAddress], resolver: Resolver) -> _Plan:
@@ -128,13 +127,13 @@ def _plan(config: Config, domains: Iterable[str], server_ips: set[IPAddress], re
     plan = _Plan()
     for name in sorted(wanted | existing):
         if name not in wanted:
-            plan.remove(name, "Its domain is no longer on this server.")
+            plan.drop(name, "Its domain is no longer on this server.")
             continue
         try:
             addresses = resolve_to_this_server(resolver, name, server_ips)
         except NotPointingHere as problem:
             if name in existing:
-                plan.remove(name, str(problem))
+                plan.drop(name, str(problem))
             else:
                 plan.wait(name, str(problem))
         except LookupFailed as problem:
@@ -163,14 +162,14 @@ def remove(config: Config, domain: str) -> bool:
 def _publish(config: Config, hosts: set[str]) -> bool:
     """Writes the sites, and has OpenLiteSpeed read them if anything changed. Returns whether it did. A site is on
     the HTTPS listeners once its certificate exists."""
-    hosts = sorted(hosts)
-    certified = [name for name in hosts if has_certificate(config, name)]
+    ordered = sorted(hosts)
+    certified = [name for name in ordered if has_certificate(config, name)]
     directory = _directory(config)
-    changes = [files.replace(directory / f"{name}.conf", _site(config, name, name in certified)) for name in hosts]
+    changes = [files.replace(directory / f"{name}.conf", _site(config, name, name in certified)) for name in ordered]
     changes += [files.remove(directory / f"{name}.conf") for name in sites(config) if name not in hosts]
     changes += [
-        files.replace(directory / "vhosts.conf", _HEADER + "".join(_virtual_host(config, name) for name in hosts)),
-        files.replace(directory / "http-maps.conf", _HEADER + "".join(_map(name) for name in hosts)),
+        files.replace(directory / "vhosts.conf", _HEADER + "".join(_virtual_host(config, name) for name in ordered)),
+        files.replace(directory / "http-maps.conf", _HEADER + "".join(_map(name) for name in ordered)),
         files.replace(directory / "https-maps.conf", _HEADER + "".join(_map(name) for name in certified)),
     ]
     if not any(changes):
