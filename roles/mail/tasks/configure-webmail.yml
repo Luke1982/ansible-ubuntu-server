@@ -108,7 +108,11 @@
   register: webmail_sync
   changed_when: "'Changed the webmail sites.' in webmail_sync.stdout"
 
+# Its warnings: domains waiting for their webmail record, refused certificates.
+# (With --check the sync doesn't run, so there's no output.)
 - name: Show the webmail sites that need attention
   debug:
-    msg: "{{ webmail_sync.stdout_lines | select('match', '^!') | list }}"
-  when: webmail_sync.stdout_lines | select('match', '^!') | list | length > 0
+    msg: "{{ webmail_warnings }}"
+  when: webmail_warnings | length > 0
+  vars:
+    webmail_warnings: "{{ webmail_sync.stdout_lines | default([]) | select('match', '^!') | list }}"

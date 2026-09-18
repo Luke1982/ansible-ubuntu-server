@@ -9,11 +9,11 @@ import http.client
 import secrets
 import time
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from . import files, system
+from . import files, names, system
 from .config import Config
 from .dns_check import IPAddress, LookupFailed, Resolver
 from .errors import MailctlError
@@ -50,12 +50,23 @@ class Result:
     changed: bool
 
 
-@dataclass(frozen=True)
+@dataclass
 class _Plan:
-    outcomes: dict[str, Outcome]
-    kept: set[str]  # the sites that stay or come
-    removed: set[str]  # the sites that go, with their certificates
-    uncertified: dict[str, set[IPAddress]]  # the sites to get a certificate for, with their addresses
+    outcomes: dict[str, Outcome] = field(default_factory=dict)
+    kept: set[str] = field(default_factory=set)  # the sites that stay or come
+    removed: set[str] = field(default_factory=set)  # the sites that go, with their certificates
+    uncertified: dict[str, set[IPAddress]] = field(default_factory=dict)  # sites to certify, with their addresses
+
+    def keep(self, outcome: Outcome) -> None:
+        self.outcomes[outcome.host] = outcome
+        self.kept.add(outcome.host)
+
+    def remove(self, name: str, reason: str) -> None:
+        self.outcomes[name] = Outcome(name, State.REMOVED, reason)
+        self.removed.add(name)
+
+    def wait(self, name: str, reason: str) -> None:
+        self.outcomes[name] = Outcome(name, State.WAITING, reason)
 
 
 class NotPointingHere(Exception):
@@ -110,26 +121,30 @@ def sync(config: Config, domains: Iterable[str], server_ips: set[IPAddress], res
 
 def _plan(config: Config, domains: Iterable[str], server_ips: set[IPAddress], resolver: Resolver) -> _Plan:
     """What sync() does for each site, from the domains and their webmail names' DNS."""
-    wanted = {host(domain) for domain in domains}
+    # The old helper script stored domains as it was given them, capitals and all. What isn't a domain name can't
+    # have a site, and must never reach OpenLiteSpeed's configuration.
+    wanted = {name for name in (host(domain.lower()) for domain in domains) if names.valid_domain(name)}
     existing = set(sites(config))
-    plan = _Plan(outcomes={}, kept=set(), removed=set(), uncertified={})
+    plan = _Plan()
     for name in sorted(wanted | existing):
+        if name not in wanted:
+            plan.remove(name, "Its domain is no longer on this server.")
+            continue
         try:
-            if name not in wanted:
-                raise NotPointingHere("Its domain is no longer on this server.")
             addresses = resolve_to_this_server(resolver, name, server_ips)
         except NotPointingHere as problem:
-            plan.outcomes[name] = Outcome(name, State.REMOVED if name in existing else State.WAITING, str(problem))
             if name in existing:
-                plan.removed.add(name)
+                plan.remove(name, str(problem))
+            else:
+                plan.wait(name, str(problem))
         except LookupFailed as problem:
-            # A site stays as it is, and one that doesn't exist yet waits for the next run.
-            plan.outcomes[name] = Outcome(name, State.UNCHECKED if name in existing else State.WAITING, str(problem))
+            # A site stays as it is; one that doesn't exist yet waits for the next run.
             if name in existing:
-                plan.kept.add(name)
+                plan.keep(Outcome(name, State.UNCHECKED, str(problem)))
+            else:
+                plan.wait(name, str(problem))
         else:
-            plan.outcomes[name] = Outcome(name, State.LIVE)
-            plan.kept.add(name)
+            plan.keep(Outcome(name, State.LIVE))
             if not has_certificate(config, name):
                 plan.uncertified[name] = addresses
     return plan
@@ -145,17 +160,17 @@ def remove(config: Config, domain: str) -> bool:
     return True
 
 
-def _publish(config: Config, names: set[str]) -> bool:
+def _publish(config: Config, hosts: set[str]) -> bool:
     """Writes the sites, and has OpenLiteSpeed read them if anything changed. Returns whether it did. A site is on
     the HTTPS listeners once its certificate exists."""
-    names = sorted(names)
-    certified = [name for name in names if has_certificate(config, name)]
+    hosts = sorted(hosts)
+    certified = [name for name in hosts if has_certificate(config, name)]
     directory = _directory(config)
-    changes = [files.replace(directory / f"{name}.conf", _site(config, name, name in certified)) for name in names]
-    changes += [files.remove(directory / f"{name}.conf") for name in sites(config) if name not in names]
+    changes = [files.replace(directory / f"{name}.conf", _site(config, name, name in certified)) for name in hosts]
+    changes += [files.remove(directory / f"{name}.conf") for name in sites(config) if name not in hosts]
     changes += [
-        files.replace(directory / "vhosts.conf", _HEADER + "".join(_virtual_host(config, name) for name in names)),
-        files.replace(directory / "http-maps.conf", _HEADER + "".join(_map(name) for name in names)),
+        files.replace(directory / "vhosts.conf", _HEADER + "".join(_virtual_host(config, name) for name in hosts)),
+        files.replace(directory / "http-maps.conf", _HEADER + "".join(_map(name) for name in hosts)),
         files.replace(directory / "https-maps.conf", _HEADER + "".join(_map(name) for name in certified)),
     ]
     if not any(changes):
@@ -190,7 +205,7 @@ def _serves(address: IPAddress, name: str, file_name: str, token: str) -> bool:
     try:
         connection.request("GET", f"/{_CHALLENGES}/{file_name}", headers={"Host": name})
         response = connection.getresponse()
-        return response.status == 200 and response.read().decode(errors="replace").strip() == token
+        return response.status == 200 and response.read(len(token) + 2).decode(errors="replace").strip() == token
     except OSError:
         return False
     finally:

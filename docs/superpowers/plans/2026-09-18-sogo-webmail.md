@@ -111,7 +111,7 @@ Start: rebase `sogo-webmail` on master; run both test suites; read the committed
 ### Task B2: Webmail records and "points here"
 
 - [ ] `dns_check.webmail_host(domain) -> str` (`webmail.DOMAIN`); `recommended_records` adds A/AAAA for it and SRV `_caldavs._tcp`, `_carddavs._tcp` `0 1 443 webmail.DOMAIN`; the SRV check covers them.
-- [ ] `dns_check.points_here(resolver, name, server_ips) -> set[IPAddress]`: the addresses of `name` that aren't the server's; raises `LookupFailed`; empty result only when the name has addresses and all are the server's (`NotPointing` otherwise, carrying `foreign` and `missing`). Final shape follows what reads best next to the committed code.
+- [x] Built as `webmail.resolve_to_this_server(resolver, name, server_ips) -> set[IPAddress]` (in `core/webmail.py`, not `dns_check`): the name's addresses when all are the server's; raises `NotPointingHere` or `LookupFailed`.
 - [ ] Zone rules (TransIP): A/AAAA at `webmail` replace A, AAAA, CNAME at that name.
 - [ ] Tests first, both venvs.
 

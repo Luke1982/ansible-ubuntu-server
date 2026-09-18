@@ -42,6 +42,7 @@ Defaults in `roles/mail/defaults/main.yml`; override them in `mailvars.yml` or t
 | `sogo_language` | `Dutch` | Language new webmail users start with |
 | `sogo_timezone` | `Europe/Amsterdam` | Time zone new webmail users start with |
 | `sogo_workers` | `10` | SOGo processes. Every phone using ActiveSync keeps one busy while it waits for changes: raise it when many phones do |
+| `letsencrypt_email` | none | Email address for the Let's Encrypt account of the webmail certificates, used when certbot has no account on the server yet |
 
 ## Sending limits (optional)
 

@@ -19,9 +19,9 @@ def sync() -> None:
     [dim]Example:[/] mailctl webmail sync
     """
     with open_session() as session:
-        names = [domain.name for domain in domains.list_domains(session.db)]
+        mail_domains = [domain.name for domain in domains.list_domains(session.db)]
         with ui.console.status("Setting up the webmail sites…"):
-            result = webmail.sync(session.config, names, system.server_ips(), dns_check.SystemResolver())
+            result = webmail.sync(session.config, mail_domains, system.server_ips(), dns_check.SystemResolver())
     for outcome in result.outcomes:
         _show(outcome)
     # Ansible reads this line to tell whether anything changed.

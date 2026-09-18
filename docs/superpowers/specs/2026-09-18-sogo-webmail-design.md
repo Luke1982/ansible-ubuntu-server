@@ -141,7 +141,7 @@ For each domain in `virtual_domains`, sync checks that `webmail.<domain>` resolv
 | Points here | http only | none | Tries the certificate again |
 | Points here | https | present | Nothing (certbot's own timer renews) |
 | Points elsewhere or doesn't exist | any | any | Removes the site and deletes the certificate (`certbot delete`) |
-| Lookup fails | any | any | Leaves it as it is and warns |
+| Lookup fails | any | any | Leaves it as it is and warns; a domain without a site waits for the next run |
 
 A site whose domain is no longer in `virtual_domains` is removed the same way, and `mailctl domain delete` removes the domain's site and certificate straight away.
 
@@ -178,7 +178,9 @@ These build on the TransIP and `doctor` work, which adds SRV records, the resolv
 | `status <domain>`, `doctor` | A **Webmail** check: webmail.<domain> points here and the site is live on https, or what's missing. A warning, because mail works without it. The CalDAV and CardDAV SRV records are checked with the other SRV records |
 | `status <address>` | The logins heading becomes "Last login (IMAP, webmail and phones)": SOGo logs in over IMAP from 127.0.0.1 for webmail and ActiveSync |
 
-`Config` gets `letsencrypt_email` (optional), `sogo_address` and `sogo_resources` (written by Ansible), and path defaults for the OpenLiteSpeed webmail directory, `lswsctrl`, the document root and the Let's Encrypt directory, so tests can point them at temporary directories. The new code is `core/webmail.py` (which sites should exist, writing and removing them, certbot and OpenLiteSpeed calls through `system.run`) and `commands/webmail.py`. The "points here" test is one function in `dns_check`, used by sync and by the Webmail check.
+`Config` gets `letsencrypt_email` (optional), `sogo_address`, `sogo_resources`, `ols_root` and `webmail_root` (written by Ansible), and `letsencrypt_dir`, so tests can point them at temporary directories. The new code is `core/webmail.py` (which sites should exist, writing and removing them, certbot and OpenLiteSpeed calls through `system.run`) and `commands/webmail.py`. The "points here" test is `webmail.resolve_to_this_server()`, used by sync and by the Webmail check.
+
+Domain names come from the database, where the old helper script stored whatever it was given. They're lowercased, and a name whose `webmail.` name isn't a valid domain name gets no site: nothing but domain names reaches OpenLiteSpeed's configuration.
 
 ## Security
 

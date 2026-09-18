@@ -340,3 +340,19 @@ def test_sites_are_the_generated_site_files_only(config, ready):
         "http-maps.conf", "https-maps.conf", "vhosts.conf", "webmail.example.nl.conf",
     ]
     assert webmail.sites(config) == ["webmail.example.nl"]
+
+
+def test_domains_with_capitals_from_the_old_helper_script_get_their_site_in_lower_case(config, ready):
+    result = sync(config, "Example.NL")
+
+    assert [outcome.host for outcome in result.outcomes] == ["webmail.example.nl"]
+    assert webmail.sites(config) == ["webmail.example.nl"]
+
+
+def test_names_that_arent_domains_never_reach_openlitespeeds_configuration(config, ready):
+    """The old helper script stored any text it was given."""
+    result = sync(config, "not a domain", "evil.nl\n}\nextprocessor x {", "a" * 250 + ".nl")
+
+    assert result.outcomes == ()
+    assert webmail.sites(config) == []
+    assert "evil" not in conf(config, "vhosts.conf")

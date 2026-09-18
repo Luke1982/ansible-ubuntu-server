@@ -80,6 +80,8 @@ The mail role installs SOGo for webmail, calendars, address books and phone sync
 - OpenLiteSpeed needs a listener on port 443. The playbook adds a few `include` lines to `/usr/local/lsws/conf/httpd_config.conf` for the webmail sites, between `# BEGIN webmail` and `# END webmail` markers; keep them when you change that file by hand.
 - A site you set up by hand in OpenLiteSpeed for Roundcube stops working: remove it.
 
+Webmail, calendar and contact sync and ActiveSync are at `https://webmail.DOMAIN` for every mail domain whose `webmail.DOMAIN` A and AAAA records all point to the server. `mailctl webmail sync` sets up each such site with a Let's Encrypt certificate of its own; it runs every day and at the end of every playbook run, so a new domain gets its webmail within a day of its records being published. `mail.DOMAIN` stays the name for IMAP and sending.
+
 Roundcube's database stays, with the contacts people saved in it. Filters made in Roundcube keep working until someone saves filters or a vacation reply in SOGo; from then on SOGo's apply. `mailctl filters show ADDRESS` shows both.
 
 #### Ubuntu release upgrades
@@ -140,6 +142,7 @@ Mail servers get `mailctl`, a command-line tool for the mail domains, addresses,
 | `mailctl status example.nl` | Checks the domain's MX, SPF, DKIM and DMARC records |
 | `mailctl spam set example.nl required_score 4` | Changes a spam setting for an account, a domain or the whole server |
 | `mailctl filters show info@example.nl` | Shows an account's mail filters |
+| `mailctl webmail sync` | Sets up webmail at `https://webmail.DOMAIN` for the domains whose `webmail.DOMAIN` points here, and removes it for the others. Runs daily by itself |
 
 Last logins are recorded for IMAP, which webmail and phones on ActiveSync use too; accounts that only send mail show no logins.
 
