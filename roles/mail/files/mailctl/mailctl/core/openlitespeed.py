@@ -225,9 +225,12 @@ def virtual_hosts(lines: list[str]) -> dict[str, str | None]:
 
 
 def with_virtual_host(lines: list[str], host: VirtualHost) -> list[str]:
-    """The config with the virtual host, added or brought up to date. It runs no scripts and follows no links."""
-    settings = {"vhRoot": host.root, "configFile": host.config_file, "allowSymbolLink": "0", "enableScript": "0",
-                "restrained": "1", "note": host.note}
+    """The config with the virtual host, added or brought up to date. It runs no scripts."""
+    # Links are followed when the link and its target have the same owner (2), and not restrained to vhRoot: Ubuntu's
+    # SOGo package links the JavaScript libraries in its web files to /usr/share/javascript, and without them its
+    # pages stay blank. The site runs no scripts.
+    settings = {"vhRoot": host.root, "configFile": host.config_file, "allowSymbolLink": "2", "enableScript": "0",
+                "restrained": "0", "note": host.note}
     return _with_block(lines, "virtualhost", host.name, settings)
 
 

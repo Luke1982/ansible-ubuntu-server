@@ -259,9 +259,9 @@ def test_with_virtual_host_adds_it_like_webadmin_does():
 virtualhost webmail.example.nl {
   vhRoot                  /var/www/webmail/
   configFile              $SERVER_ROOT/conf/vhosts/webmail.example.nl/vhconf.conf
-  allowSymbolLink         0
+  allowSymbolLink         2
   enableScript            0
-  restrained              1
+  restrained              0
   note                    Managed by mailctl
 }"""
     assert openlitespeed.virtual_hosts(config) == {"shop": None, "webmail.example.nl": "Managed by mailctl"}
