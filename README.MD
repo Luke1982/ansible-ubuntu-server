@@ -88,6 +88,8 @@ Webmail, calendar and contact sync, and ActiveSync are at `https://webmail.DOMAI
 
 It runs at the end of every playbook run; run it yourself after adding a domain or changing a `webmail.DOMAIN` record. `mail.DOMAIN` stays the name for IMAP and sending.
 
+`mailctl domain add`, `dns show` and `dns publish` include the `webmail.DOMAIN` records and the `_caldavs._tcp` and `_carddavs._tcp` SRV records, which point calendar and contact apps at `https://webmail.DOMAIN` by themselves. `mailctl doctor` shows how a domain's webmail is doing, and `mailctl domain delete` takes its site and certificate along.
+
 Calendars, address books and SOGo's settings live in the MariaDB database `sogo`: back it up along with the mail.
 
 Roundcube's database stays, with the contacts people saved in it. Filters made in Roundcube keep working until someone saves filters or a vacation reply in SOGo; from then on SOGo's apply. `mailctl filters show ADDRESS` shows both.

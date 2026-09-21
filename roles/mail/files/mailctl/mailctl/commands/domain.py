@@ -1,7 +1,7 @@
 """mailctl domain: add, list and delete mail domains."""
 
 from .. import ui
-from ..core import addresses, autodiscover, dkim, domains, forwards, mailbox
+from ..core import addresses, autodiscover, dkim, domains, forwards, mailbox, webmail
 from ..session import Session, open_session
 from .checks import warn_if_not_in_certificate
 from .shared import (
@@ -38,6 +38,7 @@ def create(session: Session, domain: str) -> None:
         ui.note(f"Create the DKIM key later with: mailctl dkim create {domain}")
     if session.config.transip_settings.exists():
         ui.note(f"Publish them at TransIP with: mailctl dns publish {domain}")
+    ui.note(f"Once {webmail.host(domain)} points to this server, give it webmail with: mailctl webmail sync")
     warn_if_not_in_certificate(session, domain)
     ui.note(f"Check the domain's setup with: mailctl doctor {domain}")
 
@@ -92,10 +93,14 @@ def delete(domain: Domain = None, delete_mail: DeleteMail = None, yes: Yes = Fal
         attempt(problems, "Couldn't update OpenDKIM", lambda: dkim.update_opendkim(session.config))
         had_site = attempt(problems, "Couldn't remove the autodiscover site",
                            lambda: autodiscover.remove(session.config, domain))
+        had_webmail = attempt(problems, "Couldn't remove the webmail site",
+                              lambda: webmail.remove(session.config, domain))
     ui.success(f"Deleted {domain}.")
     if had_site:
         site = autodiscover.names(domain)[0]
         ui.note(f"Removed its site {site}. Its certificate stays; delete it with: certbot delete --cert-name {site}")
+    if had_webmail:
+        ui.note(f"Removed its webmail site {webmail.host(domain)}, with that site's certificate.")
     if mail.exists() and not delete_mail:
         ui.note(f"Its mail is kept in {mail}.")
     for problem in problems:

@@ -17,12 +17,13 @@ import secrets
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
-from . import files, names, openlitespeed, system
+from . import certificate, files, names, openlitespeed, system
 from .config import Config
-from .dns_check import IPAddress, LookupFailed, Resolver
+from .dns_check import Check, IPAddress, LookupFailed, Resolver, Status, webmail_records
 from .errors import MailctlError
 from .openlitespeed import VirtualHost
 
@@ -193,6 +194,28 @@ def remove(config: Config, domain: str) -> bool:
     _publish(config, set(sites(config)) - {name})
     _delete_certificate(config, name)
     return True
+
+
+def check(config: Config, domain: str, server_ips: set[IPAddress], resolver: Resolver, now: datetime) -> Check | None:
+    """How the domain's webmail site is doing, or None when it has none. A domain without one is no problem:
+    'mailctl webmail sync' says which domains are waiting for their webmail name."""
+    name = host(domain)
+    if name not in sites(config):
+        return None
+    try:
+        resolve_to_this_server(resolver, name, server_ips)
+    except LookupFailed as failure:
+        return Check("Webmail", Status.WARN, str(failure))
+    except NotPointingHere as problem:
+        detail = f"{problem} The next 'mailctl webmail sync' takes the site away. Publish these records to keep it:"
+        return Check("Webmail", Status.WARN, detail, tuple(webmail_records(domain, server_ips)))
+    if not has_certificate(config, name):
+        return Check("Webmail", Status.WARN, f"{name} has no certificate yet, so it only answers Let's Encrypt's "
+                                             f"challenges. Get one with: mailctl webmail sync")
+    invalid = certificate.problem(_live(config, name) / "fullchain.pem", [name], now)
+    if invalid:
+        return Check("Webmail", Status.WARN, f"{invalid} Renew it with: certbot renew")
+    return Check("Webmail", Status.OK, f"Webmail is at https://{name}.")
 
 
 def _publish(config: Config, hosts: set[str]) -> bool:

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from .. import ui
-from ..core import autodiscover, certificate, dkim, dns_check, system
+from ..core import autodiscover, certificate, dkim, dns_check, system, webmail
 from ..core.certificate import Certificate
 from ..core.dns_check import Check, IPAddress, Status
 from ..core.errors import MailctlError
@@ -58,9 +58,10 @@ def domain_checks(session: Session, facts: Server, domain: str, now: datetime | 
         checks.append(certificate.check_domain(facts.certificate, domain))
     else:
         checks.append(Check("Certificate", Status.WARN, f"Can't check the certificate: {facts.certificate_problem}"))
-    site = attempt_check(lambda: autodiscover.check(session.config, domain, facts.ips, facts.resolver,
-                                                    now or datetime.now().astimezone()))
-    return checks + ([site] if site else [])
+    moment = now or datetime.now().astimezone()
+    site = attempt_check(lambda: autodiscover.check(session.config, domain, facts.ips, facts.resolver, moment))
+    webmail_site = attempt_check(lambda: webmail.check(session.config, domain, facts.ips, facts.resolver, moment))
+    return checks + [found for found in (site, webmail_site) if found]
 
 
 def attempt_check(check: Callable[[], Check | None]) -> Check | None:

@@ -20,7 +20,7 @@ It must work on both supported releases: Ubuntu 24.04 (Dovecot 2.3) and Ubuntu 2
 | User directory | The mail accounts in MariaDB, read by SOGo through a view. No LDAP server |
 | ActiveSync | On (`sogo-activesync`). Replaces the old, unused Z-Push template |
 | Web address | `webmail.<domain>` for every mail domain, each with its own Let's Encrypt certificate |
-| Keeping the domains up to date | `mailctl webmail sync`, run daily by a systemd timer and at the end of every playbook run |
+| Keeping the domains up to date | `mailctl webmail sync`, run at the end of every playbook run, and by hand after adding a domain or changing a record |
 | Roundcube's database | Kept. Nothing is migrated from it |
 | Webmail language | Dutch, time zone Europe/Amsterdam; users can change both |
 
@@ -123,11 +123,11 @@ The `web` role installs OpenLiteSpeed, but its config (listeners and sites) is s
 
 1. Fail with a clear message when `/usr/local/lsws/conf/httpd_config.conf` doesn't exist (the `web` role must run first).
 2. Remove the `include` lines an earlier version of this role added (between `# BEGIN webmail` and `# END webmail` markers), and the files it kept in `conf/webmail` (a link there is removed itself, not what it points to). WebAdmin shows a config with any `include` read-only (`ConfigDataLoader::loadPlainRoot`), so the sites are virtual hosts in the config itself.
-3. Create `/var/www/webmail` (the document root, holding only Let's Encrypt's challenges), install the daily timer, and run `mailctl webmail sync`.
+3. Create `/var/www/webmail` (the document root, holding only Let's Encrypt's challenges) and run `mailctl webmail sync`.
 
 ### Per domain, by `mailctl webmail sync`
 
-The generated files under `/usr/local/lsws/conf/webmail/` are the record of which domains have webmail. Nothing else is stored.
+The virtual hosts carrying mailctl's note in `httpd_config.conf` are the record of which domains have webmail. Their settings are where WebAdmin keeps a virtual host's, `conf/vhosts/webmail.<domain>/vhconf.conf`, written as `lsadm`. Nothing else is stored.
 
 For each domain in `virtual_domains`, sync checks that `webmail.<domain>` resolves to this server: every A and AAAA record must be one of the server's addresses. One pointing elsewhere is enough for Let's Encrypt, or a visitor, to end up at the wrong server.
 
@@ -159,7 +159,6 @@ The port 80 listeners map every site; the port 443 listeners only the sites with
 
 The existing certbot deploy hook (`templates/1-post-deploy-hook-letsencrypt.sh.j2`) also restarts OpenLiteSpeed gracefully when a `webmail.*` certificate is renewed.
 
-The timer is `mailctl-webmail-sync.timer`: daily with a random delay of up to an hour, `Persistent=true`. Its service runs `mailctl webmail sync`, which logs to the journal.
 
 ## mailctl changes
 
@@ -168,10 +167,10 @@ These build on the TransIP and `doctor` work, which adds SRV records, the resolv
 | Command | Change |
 |---|---|
 | `webmail sync` | New. Does the above and prints one line per domain: live, waiting for DNS (with the records to publish), certificate failed (with certbot's reason), removed. A line saying what changed, so Ansible can tell a run that changed something from one that didn't |
-| `domain add`, `dns show` | The recommended records gain A/AAAA for `webmail.<domain>` and the SRV records `_caldavs._tcp` and `_carddavs._tcp` (`0 1 443 webmail.<domain>`), so apps set up from just an email address find the server. `domain add` then says: "Webmail comes up at https://webmail.<domain> within a day of these records being published. To do it now: mailctl webmail sync" |
+| `domain add`, `dns show` | The recommended records gain A/AAAA for `webmail.<domain>` and the SRV records `_caldavs._tcp` and `_carddavs._tcp` (`0 1 443 webmail.<domain>`), so apps set up from just an email address find the server. `domain add` then says: "Once webmail.<domain> points to this server, give it webmail with: mailctl webmail sync" |
 | `dns publish` | Publishes those records too. At TransIP, A/AAAA for `webmail` replace every A, AAAA and CNAME at that name, as for `mail` |
 | `domain delete` | Also removes the domain's webmail site and certificate |
-| `status <domain>`, `doctor` | A **Webmail** check: webmail.<domain> points here and the site is live on https, or what's missing. A warning, because mail works without it. The CalDAV and CardDAV SRV records are checked with the other SRV records |
+| `status <domain>`, `doctor` | A **Webmail** check for a domain that has a site: it says where the webmail is, or warns that the name stopped pointing here (with the records that keep the site) or that the certificate is missing or expired. A domain without a site gets no check: `webmail sync` already says which domains are waiting for their name |
 | `status <address>` | The logins heading becomes "Last login (IMAP, webmail and phones)": SOGo logs in over IMAP from 127.0.0.1 for webmail and ActiveSync |
 
 `Config` gets `letsencrypt_email` (optional), `sogo_address`, `sogo_resources`, `ols_root` and `webmail_root` (written by Ansible), and `letsencrypt_dir`, so tests can point them at temporary directories. The new code is `core/webmail.py` (which sites should exist, writing and removing them, certbot and OpenLiteSpeed calls through `system.run`) and `commands/webmail.py`. The "points here" test is `webmail.resolve_to_this_server()`, used by sync and by the Webmail check.
@@ -192,7 +191,7 @@ Domain names come from the database, where the old helper script stored whatever
 | `roles/mail/tasks/main.yml` | Package list; asserts; `remove-roundcube.yml`, `configure-sogo.yml` and, after mailctl, `configure-webmail.yml` instead of `configure-roundcube.yml` |
 | `roles/mail/tasks/remove-roundcube.yml` | New |
 | `roles/mail/tasks/configure-sogo.yml` | New: repository (24.04), packages, database, view, `sogo.conf`, `/etc/default/sogo`, cron, services |
-| `roles/mail/tasks/configure-webmail.yml` | New: removal of the earlier include lines, document root, timer, first sync |
+| `roles/mail/tasks/configure-webmail.yml` | New: removal of the earlier include lines, document root, first sync |
 | `roles/mail/tasks/configure-fail2ban.yml` | SOGo jail and filter instead of Roundcube's; removes the old jail file |
 | `roles/mail/templates/dovecot-local-2.3.conf.j2`, `dovecot-local-2.4.conf.j2` | `acl` and `imap_acl` plugins, `vfile` driver; `mail_max_userip_connections` for IMAP at twice `sogo_workers` |
 | `roles/mail/tasks/install-mailctl.yml` | `letsencrypt_email`, `sogo_address`, `sogo_resources` in config.json |
@@ -201,7 +200,6 @@ Domain names come from the database, where the old helper script stored whatever
 | `roles/mail/files/sogo-archive-key.asc` | New: SOGo's signing key |
 | `roles/mail/files/setup_sogo_view.sql` | New |
 | `roles/mail/files/jail-sogo-auth.conf`, `filter-sogo-auth.local` | New |
-| `roles/mail/files/mailctl-webmail-sync.service`, `.timer` | New |
 | `roles/mail/handlers/main.yml` | `restart sogo`, `restart openlitespeed` |
 | `roles/mail/defaults/main.yml` | `sogo_releases`, `sogo_address`, `sogo_workers`, `sogo_language`, `sogo_timezone`, `letsencrypt_email` |
 | `roles/mail/files/mailctl/…` | `core/webmail.py`, `commands/webmail.py`, changes to `dns_check`, `config`, `domain`, `status` and the domain checks, and tests |

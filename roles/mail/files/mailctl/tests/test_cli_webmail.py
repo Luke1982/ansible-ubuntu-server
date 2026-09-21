@@ -4,10 +4,10 @@ from ipaddress import ip_address
 from pathlib import Path
 
 import pytest
-from conftest import FakeCommand
+from conftest import FakeCommand, make_certificate
 from test_openlitespeed import HTTPD_CONFIG
 from test_webmail import FAKE_CERTBOT, REFUSING_CERTBOT
-from test_cli_dns import PUBLIC_IP
+from test_cli_dns import PUBLIC_IP, FakeDns as HealthyDns
 
 from mailctl.commands import webmail as webmail_command
 from mailctl.core import dns_check, openlitespeed, system, transip, webmail
@@ -37,6 +37,18 @@ def webmail_ready(mailctl, db_config, fake_command, monkeypatch):
     monkeypatch.setattr(webmail, "_serves", lambda address, name, file_name, token: True)
     mailctl.ok("domain", "add", "example.nl")
     return mailctl
+
+
+class DoctorDns(HealthyDns):
+    """The DNS of a domain that is set up, on this server's address, with webmail.example.nl pointing here too."""
+
+    def addresses(self, name):
+        here = ("mail.example.nl", "server.hosting.example", "webmail.example.nl")
+        return {ip_address("203.0.113.5")} if name in here else set()
+
+
+def certificate_of(config, name):
+    return config.letsencrypt_dir / "live" / name / "fullchain.pem"
 
 
 def test_webmail_sync_explains_itself_with_an_example(mailctl):
@@ -90,15 +102,6 @@ def test_webmail_sync_says_what_to_do_when_openlitespeed_doesnt_serve_the_site(w
 
     assert "OpenLiteSpeed doesn't serve webmail.example.nl on port 80 at 203.0.113.5." in output
     assert "Run the Ansible playbook" in output
-
-
-def test_webmail_sync_removes_the_site_of_a_deleted_domain(webmail_ready):
-    webmail_ready.ok("webmail", "sync")
-    webmail_ready.ok("domain", "delete", "example.nl", "--yes", "--keep-mail")
-
-    output = webmail_ready.ok("webmail", "sync")
-
-    assert "Removed https://webmail.example.nl: Its domain is no longer on this server." in output
 
 
 class NoWebmailRecord:
@@ -184,3 +187,50 @@ def test_the_playbook_runs_webmail_sync_where_it_cant_ask_anything():
     task = Path(__file__).resolve().parents[3] / "tasks" / "configure-webmail.yml"
 
     assert re.search(r"^\s*shell: mailctl webmail sync </dev/null$", task.read_text(), re.MULTILINE)
+
+
+def test_doctor_says_where_a_domains_webmail_is(webmail_ready, db_config, monkeypatch):
+    webmail_ready.ok("webmail", "sync")
+    make_certificate(certificate_of(db_config, "webmail.example.nl"), "webmail.example.nl")
+    monkeypatch.setattr(dns_check, "SystemResolver", DoctorDns)
+
+    assert "Webmail is at https://webmail.example.nl." in webmail_ready.fails("doctor", "example.nl")
+
+
+def test_doctor_leaves_out_the_webmail_of_a_domain_without_a_site(webmail_ready, monkeypatch):
+    monkeypatch.setattr(dns_check, "SystemResolver", DoctorDns)
+
+    assert "Webmail" not in webmail_ready.fails("doctor", "example.nl")
+
+
+def test_doctor_shows_the_records_that_keep_a_site_whose_name_stopped_pointing_here(webmail_ready, monkeypatch):
+    webmail_ready.ok("webmail", "sync")
+    monkeypatch.setattr(dns_check, "SystemResolver", HealthyDns)  # the same DNS, without the webmail record
+
+    output = webmail_ready.fails("doctor", "example.nl")
+
+    assert "webmail.example.nl has no A or AAAA record." in output
+    assert "_caldavs._tcp.example.nl" in output
+
+
+def test_domain_add_says_how_to_give_the_new_domain_webmail(webmail_ready):
+    output = webmail_ready.ok("domain", "add", "other.nl")
+
+    assert "Once webmail.other.nl points to this server, give it webmail with: mailctl webmail sync" in output
+
+
+def test_domain_delete_removes_the_domains_webmail_site(webmail_ready, db_config):
+    webmail_ready.ok("webmail", "sync")
+
+    output = webmail_ready.ok("domain", "delete", "example.nl", "--yes", "--keep-mail")
+
+    assert "Removed its webmail site webmail.example.nl, with that site's certificate." in output
+    assert webmail.sites(db_config) == []
+    assert not webmail.has_certificate(db_config, "webmail.example.nl")
+    assert "Nothing changed." in webmail_ready.ok("webmail", "sync")  # the next sync has nothing left to do
+
+
+def test_domain_delete_says_nothing_about_webmail_for_a_domain_without_a_site(webmail_ready):
+    output = webmail_ready.ok("domain", "delete", "example.nl", "--yes", "--keep-mail")
+
+    assert "webmail site" not in output

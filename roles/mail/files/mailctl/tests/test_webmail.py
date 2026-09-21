@@ -1,14 +1,15 @@
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import datetime, timedelta
 from ipaddress import ip_address
 
 import pytest
-from conftest import FakeCommand
+from conftest import FakeCommand, make_certificate
 from test_openlitespeed import HTTPD_CONFIG
 
 from mailctl.core import files, openlitespeed, system, webmail
 from mailctl.core.errors import MailctlError
-from mailctl.core.dns_check import LookupFailed
+from mailctl.core.dns_check import LookupFailed, Status
 from mailctl.core.webmail import Outcome, State
 
 SERVER_IPS = {ip_address("203.0.113.5"), ip_address("2001:db8::5")}
@@ -123,6 +124,15 @@ def mapped(config, listener):
 
 def sync(config, *domains, resolver=HERE):
     return webmail.sync(config, domains, SERVER_IPS, resolver)
+
+
+def check(config, domain="example.nl", resolver=HERE, now=None):
+    return webmail.check(config, domain, SERVER_IPS, resolver, now or datetime.now().astimezone())
+
+
+def certify(config, name, *, days=90):
+    """A real certificate where certbot leaves an empty one, so it can be read."""
+    return make_certificate(config.letsencrypt_dir / "live" / name / "fullchain.pem", name, days=days)
 
 
 def test_a_domain_whose_webmail_name_points_here_gets_a_site_with_a_certificate(config, certbot, lswsctrl, served):
@@ -435,3 +445,62 @@ def test_a_removed_site_takes_openlitespeeds_copy_of_its_settings_along(config):
     assert sorted(path.name for path in (vhosts(config) / "webmail.other.nl").iterdir()) == [
         "vhconf.conf", "vhconf.conf.txt",
     ]
+
+
+def test_check_says_where_the_webmail_of_a_live_site_is(config):
+    sync(config, "example.nl")
+    certify(config, "webmail.example.nl")
+
+    found = check(config)
+
+    assert found.status is Status.OK
+    assert found.detail == "Webmail is at https://webmail.example.nl."
+
+
+def test_check_says_which_records_keep_a_site_whose_name_no_longer_points_here(config):
+    sync(config, "example.nl")
+
+    found = check(config, resolver=FakeResolver({}))
+
+    assert found.status is Status.WARN
+    assert found.detail.startswith("webmail.example.nl has no A or AAAA record.")
+    assert "takes the site away" in found.detail
+    assert [(record.type, record.name) for record in found.fixes] == [
+        ("A", "webmail.example.nl"), ("AAAA", "webmail.example.nl"),
+        ("SRV", "_caldavs._tcp.example.nl"), ("SRV", "_carddavs._tcp.example.nl"),
+    ]
+
+
+def test_check_says_nothing_about_a_domain_without_a_site(config):
+    assert check(config) is None
+
+
+def test_check_says_a_site_without_a_certificate_doesnt_serve_webmail_yet(config, fake_command):
+    fake_command("certbot", REFUSING_CERTBOT)
+    sync(config, "example.nl")
+
+    found = check(config)
+
+    assert found.status is Status.WARN
+    assert found.detail.startswith("webmail.example.nl has no certificate yet")
+    assert "mailctl webmail sync" in found.detail
+
+
+def test_check_says_to_renew_an_expired_certificate(config):
+    sync(config, "example.nl")
+    certify(config, "webmail.example.nl", days=1)
+
+    found = check(config, now=datetime.now().astimezone() + timedelta(days=2))
+
+    assert found.status is Status.WARN
+    assert "expired on" in found.detail
+    assert found.detail.endswith("Renew it with: certbot renew")
+
+
+def test_check_warns_when_the_lookup_for_the_webmail_name_fails(config):
+    sync(config, "example.nl")
+
+    found = check(config, resolver=FakeResolver({}, failing={"webmail.example.nl"}))
+
+    assert found.status is Status.WARN
+    assert found.detail == "The A lookup for webmail.example.nl failed: timed out"

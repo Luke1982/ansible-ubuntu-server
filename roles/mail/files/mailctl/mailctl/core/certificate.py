@@ -1,6 +1,7 @@
 """The certificate Postfix and Dovecot present: one for the hostname and every mail.DOMAIN."""
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -45,6 +46,20 @@ def covers(certificate: Certificate, host: str) -> bool:
     host = host.lower()
     parent = host.partition(".")[2]
     return any(name == host or (name.startswith("*.") and name[2:] == parent) for name in certificate.names)
+
+
+def problem(path: Path, names: Iterable[str], now: datetime) -> str | None:
+    """Why the certificate at the path can't be used for the names, or None when it's valid for all of them."""
+    try:
+        found = read(path)
+    except MailctlError as failure:
+        return failure.message
+    if found.expires <= now:
+        return f"The certificate at {path} expired on {found.expires:%Y-%m-%d}."
+    missing = [name for name in names if not covers(found, name)]
+    if missing:
+        return f"The certificate at {path} doesn't include {', '.join(missing)}."
+    return None
 
 
 def check_server(certificate: Certificate, hostname: str, now: datetime) -> Check:

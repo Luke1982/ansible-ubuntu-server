@@ -12,7 +12,7 @@ from pathlib import Path
 
 from . import certificate, openlitespeed
 from .config import Config
-from .dns_check import Check, IPAddress, Resolver, Status
+from .dns_check import Check, IPAddress, LookupFailed, Resolver, Status
 from .errors import MailctlError
 from .openlitespeed import Member, Template
 
@@ -32,17 +32,7 @@ def certificate_path(config: Config, domain: str) -> Path:
 
 def https_problem(config: Config, domain: str, now: datetime) -> str | None:
     """Why the site can't use HTTPS yet, or None when its certificate is valid for both names."""
-    path = certificate_path(config, domain)
-    try:
-        found = certificate.read(path)
-    except MailctlError as problem:
-        return problem.message
-    if found.expires <= now:
-        return f"The certificate at {path} expired on {found.expires:%Y-%m-%d}."
-    missing = [name for name in names(domain) if not certificate.covers(found, name)]
-    if missing:
-        return f"The certificate at {path} doesn't include {', '.join(missing)}."
-    return None
+    return certificate.problem(certificate_path(config, domain), names(domain), now)
 
 
 def certbot_command(config: Config, domain: str) -> str:
@@ -113,7 +103,10 @@ def check(config: Config, domain: str, server_ips: set[IPAddress], resolver: Res
     site, alias = names(domain)
     if not has_site(config, domain):
         return None
-    elsewhere = [name for name in (site, alias) if not resolver.addresses(name) & server_ips]
+    try:
+        elsewhere = [name for name in (site, alias) if not resolver.addresses(name) & server_ips]
+    except LookupFailed as failure:
+        return Check("Autodiscover", Status.WARN, str(failure))
     if elsewhere:
         detail = (f"{', '.join(elsewhere)} doesn't point to this server, so mail programs don't find the settings "
                   f"here. Publish it with: mailctl autodiscover publish {domain}")
