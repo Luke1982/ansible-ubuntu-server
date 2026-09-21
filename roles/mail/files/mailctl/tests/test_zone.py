@@ -21,6 +21,10 @@ MAIL_ENTRIES = [
     Entry("_imap._tcp", 3600, "SRV", "10 1 143 mail.example.nl."),
     Entry("_submissions._tcp", 3600, "SRV", "0 1 465 mail.example.nl."),
     Entry("_submission._tcp", 3600, "SRV", "10 1 587 mail.example.nl."),
+    Entry("webmail", 3600, "A", IPV4),
+    Entry("webmail", 3600, "AAAA", IPV6),
+    Entry("_caldavs._tcp", 3600, "SRV", "0 1 443 webmail.example.nl."),
+    Entry("_carddavs._tcp", 3600, "SRV", "0 1 443 webmail.example.nl."),
 ]
 WEBSITE = [Entry("@", 300, "A", "198.51.100.80"), Entry("www", 300, "CNAME", "@")]
 

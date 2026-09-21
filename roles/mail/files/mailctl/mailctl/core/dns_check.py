@@ -22,6 +22,10 @@ _UNEVALUABLE_MECHANISMS = ("exists", "ptr")
 _A_OR_MX = re.compile(r"(?P<kind>a|mx)(?::(?P<host>[^/]+))?(?:/(?P<ipv4>\d+))?(?://(?P<ipv6>\d+))?")
 # The services mail programs look up (RFC 6186 and 8314) as (name, priority, port). Implicit TLS comes first.
 MAIL_SERVICES = (("_imaps._tcp", 0, 993), ("_imap._tcp", 10, 143), ("_submissions._tcp", 0, 465), ("_submission._tcp", 10, 587))
+# What calendar and contact apps look up to find the webmail site from an email address alone (RFC 6764).
+DAV_SERVICES = ("_caldavs._tcp", "_carddavs._tcp")
+DAV_PORT = 443
+WEBMAIL_PREFIX = "webmail."
 
 
 class Status(Enum):
@@ -116,6 +120,7 @@ def recommended_records(domain: str, server_ips: set[IPAddress], dkim_value: str
         *dkim_records,
         _dmarc_record(domain),
         *srv_records(domain),
+        *webmail_records(domain, server_ips),
     ]
 
 
@@ -124,6 +129,15 @@ def srv_records(domain: str) -> list[DnsRecord]:
     return [
         DnsRecord("SRV", f"{service}.{domain}", f"{priority} 1 {port} {mail_host(domain)}.")
         for service, priority, port in MAIL_SERVICES
+    ]
+
+
+def webmail_records(domain: str, server_ips: set[IPAddress]) -> list[DnsRecord]:
+    """The records for the webmail site: its addresses, and what calendar and contact apps look up to find it."""
+    return [
+        *_host_records(webmail_host(domain), _reachable(server_ips)),
+        *(DnsRecord("SRV", f"{service}.{domain}", f"0 1 {DAV_PORT} {webmail_host(domain)}.")
+          for service in DAV_SERVICES),
     ]
 
 
@@ -136,6 +150,11 @@ def autodetect_records(domain: str, server_ips: set[IPAddress]) -> list[DnsRecor
 def mail_host(domain: str) -> str:
     """The name mail for the domain is delivered to, and mail programs connect to."""
     return f"mail.{domain}"
+
+
+def webmail_host(domain: str) -> str:
+    """The name of the domain's webmail site, which calendar and contact apps sync with too."""
+    return f"{WEBMAIL_PREFIX}{domain}"
 
 
 def dkim_record(domain: str, value: str) -> DnsRecord:

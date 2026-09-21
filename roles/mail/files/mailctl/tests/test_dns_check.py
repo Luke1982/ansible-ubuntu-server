@@ -89,6 +89,10 @@ def test_recommended_records_deliver_mail_to_the_mail_host_at_the_servers_public
         DnsRecord("SRV", "_imap._tcp.example.nl", "10 1 143 mail.example.nl."),
         DnsRecord("SRV", "_submissions._tcp.example.nl", "0 1 465 mail.example.nl."),
         DnsRecord("SRV", "_submission._tcp.example.nl", "10 1 587 mail.example.nl."),
+        DnsRecord("A", "webmail.example.nl", "93.184.216.34"),
+        DnsRecord("AAAA", "webmail.example.nl", "2606:2800:220:1::5"),
+        DnsRecord("SRV", "_caldavs._tcp.example.nl", "0 1 443 webmail.example.nl."),
+        DnsRecord("SRV", "_carddavs._tcp.example.nl", "0 1 443 webmail.example.nl."),
     ]
 
 
@@ -104,7 +108,7 @@ def test_the_mail_host_of_a_subdomain_is_in_the_subdomain():
 def test_recommended_records_leave_out_the_address_records_when_the_servers_addresses_are_unknown():
     records = dns_check.recommended_records("example.nl", set(), None)
 
-    assert [record.type for record in records] == ["MX", "TXT", "TXT", "SRV", "SRV", "SRV", "SRV"]
+    assert [record.type for record in records] == ["MX", "TXT", "TXT", "SRV", "SRV", "SRV", "SRV", "SRV", "SRV"]
 
 
 def test_missing_mx_fails_with_the_records_to_publish():
@@ -430,3 +434,14 @@ def test_a_failed_server_lookup_is_a_warning():
     checks = server_checks(resolver(failing=("203.0.113.5",)))
 
     assert checks["Reverse DNS"].status is Status.WARN
+
+
+def test_the_webmail_records_point_calendar_and_contact_apps_at_the_webmail_site():
+    records = dns_check.webmail_records("example.nl", {ip_address("93.184.216.34"), ip_address("10.0.0.5")})
+
+    assert records == [
+        DnsRecord("A", "webmail.example.nl", "93.184.216.34"),
+        DnsRecord("SRV", "_caldavs._tcp.example.nl", "0 1 443 webmail.example.nl."),
+        DnsRecord("SRV", "_carddavs._tcp.example.nl", "0 1 443 webmail.example.nl."),
+    ]
+    assert dns_check.webmail_host("shop.example.nl") == "webmail.shop.example.nl"
