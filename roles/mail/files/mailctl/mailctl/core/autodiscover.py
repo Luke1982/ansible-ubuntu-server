@@ -12,6 +12,7 @@ from pathlib import Path
 
 from . import certificate, openlitespeed
 from .config import Config
+from .dns_check import Check, IPAddress, Resolver, Status
 from .errors import MailctlError
 from .openlitespeed import Member, Template
 
@@ -89,6 +90,39 @@ def planned_config(config: Config, domain: str, https: bool) -> tuple[list[str],
     others = tuple(template for name, template in templates.items() if name != target)
     site, alias = names(domain)
     return lines, openlitespeed.with_member(lines, Member(site, site, (alias,)), templates[target], others)
+
+
+def remove(config: Config, domain: str) -> bool:
+    """Takes the domain's site out of OpenLiteSpeed. Returns whether it had one. Its certificate stays: certbot
+    deletes that."""
+    if not has_site(config, domain):
+        return False
+    lines = openlitespeed.read(config.ols_root)
+    site = names(domain)[0]
+    updated = lines
+    for template in (TEMPLATE, WAITING_TEMPLATE):
+        updated = openlitespeed.without_member(updated, site, template)
+    if updated != lines:
+        openlitespeed.write(config.ols_root, updated)
+        openlitespeed.restart(config.ols_root)
+    return True
+
+
+def check(config: Config, domain: str, server_ips: set[IPAddress], resolver: Resolver, now: datetime) -> Check | None:
+    """How the domain's site is doing, or None when it has none."""
+    site, alias = names(domain)
+    if not has_site(config, domain):
+        return None
+    elsewhere = [name for name in (site, alias) if not resolver.addresses(name) & server_ips]
+    if elsewhere:
+        detail = (f"{', '.join(elsewhere)} doesn't point to this server, so mail programs don't find the settings "
+                  f"here. Publish it with: mailctl autodiscover publish {domain}")
+        return Check("Autodiscover", Status.WARN, detail)
+    problem = https_problem(config, domain, now)
+    if problem:
+        return Check("Autodiscover", Status.WARN, f"{site} has no HTTPS yet, which Outlook needs: {problem} "
+                                                  f"Get it with: {certbot_command(config, domain)}")
+    return Check("Autodiscover", Status.OK, f"Mail programs find the settings at https://{site}.")
 
 
 def _template_file(template: str) -> str:

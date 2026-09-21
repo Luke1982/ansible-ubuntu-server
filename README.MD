@@ -180,7 +180,7 @@ certbot certonly --webroot -w /var/www/mailautodiscover --cert-name autodiscover
 mailctl autodiscover publish example.nl   # again: switches HTTPS on
 ```
 
-Certbot renews the certificate by itself, and its deploy hook restarts OpenLiteSpeed so it uses the new one. `dns publish` keeps the two records of a domain that has the site, and removes a previous provider's for the other domains.
+Certbot renews the certificate by itself, and its deploy hook restarts OpenLiteSpeed so it uses the new one. `mailctl doctor` shows how a domain's site is doing, and `mailctl domain delete` takes the site along. `dns publish` keeps the two records of a domain that has the site, and removes a previous provider's for the other domains.
 
 The first time, `dns publish` asks for the TransIP login and a key pair's private key (`mailctl dns credentials` enters or replaces them). Make the key pair in TransIP's control panel, under the API settings of your account, and put the server's addresses on its whitelist; mailctl shows them. It checks that TransIP accepts the key and saves both in `/etc/mailctl` (`transip.json` and `transip.key`, readable only by root), where Ansible leaves them alone. Try it without changing anything: `mailctl dns publish example.nl --dry-run`.
 

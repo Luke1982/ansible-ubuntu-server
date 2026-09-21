@@ -163,8 +163,8 @@ The domain comes from the `Host` header (`autodiscover.`/`autoconfig.` stripped,
 
 `dns publish` and `dns show` include the two records for a domain that has the site (it's in either template), and otherwise remove a previous provider's.
 
+`domain delete` takes the domain's site along and says how to delete its certificate (`certbot delete`). `doctor` and `status DOMAIN` show an **Autodiscover** check for a domain that has a site: a warning when one of the two names doesn't point here or the site has no certificate yet (with the certbot command), and otherwise the address mail programs find. A domain without a site doesn't get the check.
+
 ### Not done
 
-- Removing a domain's site (`domain delete` leaves it; remove its `member` block from the `mailautodiscover` templates in `httpd_config.conf`, or in WebAdmin once the config has no `include` lines).
-- `doctor` checks for the site.
 - ActiveSync autodiscover for phones, which could point them to SOGo at `webmail.DOMAIN`.

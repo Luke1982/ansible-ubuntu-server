@@ -1,10 +1,11 @@
 """Checks of the server's and a domain's setup, and how they're shown. Used by 'status' and 'doctor'."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
 from .. import ui
-from ..core import certificate, dkim, dns_check, system
+from ..core import autodiscover, certificate, dkim, dns_check, system
 from ..core.certificate import Certificate
 from ..core.dns_check import Check, IPAddress, Status
 from ..core.errors import MailctlError
@@ -45,7 +46,7 @@ def server_checks(facts: Server, now: datetime) -> list[Check]:
     return checks
 
 
-def domain_checks(session: Session, facts: Server, domain: str) -> list[Check]:
+def domain_checks(session: Session, facts: Server, domain: str, now: datetime | None = None) -> list[Check]:
     dkim_value = None
     if dkim.has_key(session.config, domain):
         try:
@@ -57,7 +58,17 @@ def domain_checks(session: Session, facts: Server, domain: str) -> list[Check]:
         checks.append(certificate.check_domain(facts.certificate, domain))
     else:
         checks.append(Check("Certificate", Status.WARN, f"Can't check the certificate: {facts.certificate_problem}"))
-    return checks
+    site = attempt_check(lambda: autodiscover.check(session.config, domain, facts.ips, facts.resolver,
+                                                    now or datetime.now().astimezone()))
+    return checks + ([site] if site else [])
+
+
+def attempt_check(check: Callable[[], Check | None]) -> Check | None:
+    """A check that can't be made, because OpenLiteSpeed's config can't be read, is left out."""
+    try:
+        return check()
+    except MailctlError:
+        return None
 
 
 def show(checks: list[Check]) -> None:

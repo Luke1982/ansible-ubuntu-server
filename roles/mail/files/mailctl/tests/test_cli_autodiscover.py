@@ -1,11 +1,14 @@
 import re
+from ipaddress import ip_address
 
 import pytest
 from conftest import FakeCommand, make_certificate
-from test_cli_dns import PUBLIC_IP, public_server, transip_account, transip_zone  # noqa: F401 (fixtures)
+from test_cli_dns import (  # noqa: F401 (fixtures)
+    PUBLIC_IP, FakeDns, public_server, transip_account, transip_zone,
+)
 
 from mailctl import ui
-from mailctl.core import autodiscover, openlitespeed
+from mailctl.core import autodiscover, dns_check, openlitespeed
 
 HTTPD_CONFIG = """\
 listener HTTP {
@@ -172,3 +175,51 @@ def test_publish_changes_nothing_when_the_config_changed_meanwhile(mailctl, publ
 
     assert "changed in the meantime" in mailctl.fails("autodiscover", "publish", "example.nl", "--no-dns")
     assert config.read_text() == HTTPD_CONFIG + "\n# edited\n"
+
+
+def test_domain_delete_removes_the_site(mailctl, transip_account, ols, db_config):
+    mailctl.ok("autodiscover", "publish", "example.nl", "--yes")
+
+    output = mailctl.ok("domain", "delete", "example.nl", "--yes", "--keep-mail")
+
+    assert members(db_config) == {"mailautodiscover": [], "mailautodiscover-http": []}
+    assert "Removed its site autodiscover.example.nl" in output
+    assert "certbot delete --cert-name autodiscover.example.nl" in output
+    assert ols.calls == [["restart"], ["restart"]]
+
+
+def test_domain_delete_says_nothing_about_a_domain_without_a_site(mailctl, public_server, ols):
+    mailctl.ok("domain", "add", "other.nl")
+
+    output = mailctl.ok("domain", "delete", "other.nl", "--yes", "--keep-mail")
+
+    assert "site" not in output
+    assert ols.calls == []
+
+
+def test_doctor_shows_the_site_of_a_domain_that_has_one(mailctl, transip_account, ols, db_config, monkeypatch):
+    class WithAutodiscover(FakeDns):
+        def addresses(self, name):
+            known = name in ("autodiscover.example.nl", "autoconfig.example.nl")
+            return {ip_address(PUBLIC_IP)} if known else super().addresses(name)
+
+    dkim_value = re.search(r"v=DKIM1; [^\n]+", mailctl.ok("dkim", "show", "example.nl")).group()
+    monkeypatch.setattr(dns_check, "SystemResolver", lambda: WithAutodiscover(dkim_value))
+    make_certificate(db_config.certificate(), "server.hosting.example", "mail.example.nl")
+    mailctl.ok("autodiscover", "publish", "example.nl", "--yes")
+
+    waiting = mailctl.ok("doctor", "example.nl")  # a site without HTTPS is a warning, not a problem
+    assert "autodiscover.example.nl has no HTTPS yet" in waiting
+    assert "certbot certonly --webroot" in waiting
+
+    certify(db_config, "autodiscover.example.nl", "autoconfig.example.nl")
+    mailctl.ok("autodiscover", "publish", "example.nl", "--yes")
+
+    assert "Mail programs find the settings at https://autodiscover.example.nl" in mailctl.ok("doctor", "example.nl")
+
+
+def test_doctor_leaves_out_the_site_of_a_domain_without_one(mailctl, public_server, ols, db_config, monkeypatch):
+    mailctl.ok("domain", "add", "example.nl")
+    monkeypatch.setattr(dns_check, "SystemResolver", FakeDns)
+
+    assert "Autodiscover" not in mailctl.fails("doctor", "example.nl")

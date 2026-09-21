@@ -1,7 +1,7 @@
 """mailctl domain: add, list and delete mail domains."""
 
 from .. import ui
-from ..core import addresses, dkim, domains, forwards, mailbox
+from ..core import addresses, autodiscover, dkim, domains, forwards, mailbox
 from ..session import Session, open_session
 from .checks import warn_if_not_in_certificate
 from .shared import (
@@ -90,7 +90,12 @@ def delete(domain: Domain = None, delete_mail: DeleteMail = None, yes: Yes = Fal
             attempt(problems, "Couldn't delete the mail", lambda: mailbox.delete_mail(session.config, mail))
         attempt(problems, "Couldn't delete the DKIM key", lambda: dkim.delete_key(session.config, domain))
         attempt(problems, "Couldn't update OpenDKIM", lambda: dkim.update_opendkim(session.config))
+        had_site = attempt(problems, "Couldn't remove the autodiscover site",
+                           lambda: autodiscover.remove(session.config, domain))
     ui.success(f"Deleted {domain}.")
+    if had_site:
+        site = autodiscover.names(domain)[0]
+        ui.note(f"Removed its site {site}. Its certificate stays; delete it with: certbot delete --cert-name {site}")
     if mail.exists() and not delete_mail:
         ui.note(f"Its mail is kept in {mail}.")
     for problem in problems:
