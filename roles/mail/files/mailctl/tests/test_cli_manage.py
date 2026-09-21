@@ -1,5 +1,7 @@
 import base64
+import io
 import re
+import tarfile
 import subprocess
 from pathlib import Path
 
@@ -10,6 +12,9 @@ from mailctl import ui
 from mailctl.core import system
 from mailctl.core.errors import MailctlError
 
+ROUNDCUBE = 'require ["fileinto"];\nif header :contains "subject" "invoice" { fileinto "Invoices"; }\n'
+VACATION = 'require ["vacation"];\nvacation :days 1 "Away";\n'
+
 COMMANDS = [
     ("domain", "add"), ("domain", "list"), ("domain", "delete"),
     ("address", "add"), ("address", "list"), ("address", "password"), ("address", "delete"),
@@ -18,7 +23,7 @@ COMMANDS = [
     ("dns", "show"), ("dns", "publish"), ("dns", "credentials"), ("autodiscover", "publish"),
     ("status",), ("doctor",),
     ("spam", "show"), ("spam", "set"), ("spam", "unset"),
-    ("filters", "show"),
+    ("filters", "show"), ("filters", "import"),
 ]
 
 
@@ -500,3 +505,68 @@ def test_dkim_show_prints_the_record(mailctl):
 
 def test_dkim_show_without_a_key_explains_how_to_create_one(mailctl):
     assert "mailctl dkim create example.nl" in mailctl.fails("dkim", "show", "example.nl")
+
+
+@pytest.fixture
+def sieve_archive(tmp_path):
+    """A tar of an account's sieve directory on another server, with two filters and the active one linked."""
+    path = tmp_path / "sieve.tar.gz"
+    with tarfile.open(path, "w:gz") as tar:
+        for name, content in (("info/sieve/roundcube.sieve", ROUNDCUBE), ("info/sieve/vacation.sieve", VACATION)):
+            info = tarfile.TarInfo(name)
+            info.size = len(content.encode())
+            tar.addfile(info, io.BytesIO(content.encode()))
+        link = tarfile.TarInfo("info/.dovecot.sieve")
+        link.type, link.linkname = tarfile.SYMTYPE, "sieve/roundcube.sieve"
+        tar.addfile(link)
+    return path
+
+
+def test_filters_import_writes_the_scripts_and_activates_the_one_that_was_active(mailctl, example_domain,
+                                                                                 sieve_archive, fake_command):
+    doveadm = fake_command("doveadm", 'if [ "$2" = "list" ]; then echo; fi')
+    add_account(mailctl, "info@example.nl")
+
+    output = mailctl.ok("filters", "import", "info@example.nl", str(sieve_archive))
+
+    assert "Imported roundcube for info@example.nl" in output
+    assert "roundcube is the active filter" in output
+    assert ["sieve", "put", "-u", "info@example.nl", "roundcube"] in [call[:5] for call in doveadm.calls]
+    assert ["sieve", "put", "-u", "info@example.nl", "vacation"] in [call[:5] for call in doveadm.calls]
+    assert ["sieve", "activate", "-u", "info@example.nl", "roundcube"] in [call[:5] for call in doveadm.calls]
+
+
+def test_filters_import_keeps_the_filters_the_account_has_unless_replace(mailctl, example_domain, sieve_archive,
+                                                                        fake_command):
+    doveadm = fake_command("doveadm", 'if [ "$2" = "list" ]; then echo "roundcube ACTIVE"; fi')
+    add_account(mailctl, "info@example.nl")
+
+    output = mailctl.ok("filters", "import", "info@example.nl", str(sieve_archive))
+
+    assert "already has a filter roundcube; --replace overwrites it" in output
+    assert ["sieve", "put", "-u", "info@example.nl", "roundcube"] not in [call[:5] for call in doveadm.calls]
+
+    assert "Imported roundcube" in mailctl.ok("filters", "import", "info@example.nl", str(sieve_archive), "--replace")
+
+
+def test_filters_import_dry_run_changes_nothing(mailctl, example_domain, sieve_archive, fake_command):
+    doveadm = fake_command("doveadm", 'if [ "$2" = "list" ]; then echo; fi')
+    add_account(mailctl, "info@example.nl")
+
+    output = mailctl.ok("filters", "import", "info@example.nl", str(sieve_archive), "--dry-run")
+
+    assert "Would import roundcube and make it active." in output
+    assert "Nothing was changed (--dry-run)." in output
+    assert not [call for call in doveadm.calls if call[:2] == ["sieve", "put"]]
+
+
+def test_filters_import_refuses_an_account_that_isnt_here_and_an_archive_without_filters(mailctl, example_domain,
+                                                                                        sieve_archive, tmp_path):
+    assert "isn't an account on this server" in mailctl.fails("filters", "import", "gone@example.nl",
+                                                              str(sieve_archive))
+    empty = tmp_path / "empty.tar"
+    with tarfile.open(empty, "w"):
+        pass
+    add_account(mailctl, "info@example.nl")
+
+    assert "holds no filters" in mailctl.fails("filters", "import", "info@example.nl", str(empty))

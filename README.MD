@@ -94,6 +94,15 @@ Calendars, address books and SOGo's settings live in the MariaDB database `sogo`
 
 Roundcube's database stays, with the contacts people saved in it. Filters made in Roundcube keep working until someone saves filters or a vacation reply in SOGo; from then on SOGo's apply. `mailctl filters show ADDRESS` shows both.
 
+Moving an account from another server: tar its sieve directory there (`tar czf sieve.tar.gz -C /var/vmail/example.nl/info sieve .dovecot.sieve`) and import it here:
+
+```bash
+mailctl filters import info@example.nl sieve.tar.gz --dry-run   # what it would do
+mailctl filters import info@example.nl sieve.tar.gz
+```
+
+It takes the `.sieve` files from the archive and makes active the one `.dovecot.sieve` pointed to. Filters the account already has are kept, unless you add `--replace`. Filters imported from Roundcube stop applying as soon as that user saves filters or a vacation reply in SOGo.
+
 #### Ubuntu release upgrades
 
 The mail role supports Ubuntu 24.04 (Dovecot 2.3) and Ubuntu 26.04 (Dovecot 2.4), but not upgrading a mail server from one to the other in place: the package upgrade keeps the Dovecot config files the role changed, and Dovecot 2.4 doesn't accept them. Set up a new 26.04 server with the playbook and move the mail and databases to it instead.
@@ -156,6 +165,7 @@ Mail servers get `mailctl`, a command-line tool for the mail domains, addresses,
 | `mailctl autodiscover publish example.nl` | Lets Thunderbird and Outlook find the domain's mail settings by themselves (below) |
 | `mailctl spam set example.nl required_score 4` | Changes a spam setting for an account, a domain or the whole server |
 | `mailctl filters show info@example.nl` | Shows an account's mail filters |
+| `mailctl filters import info@example.nl sieve.tar.gz` | Imports an account's filters from a tar of its sieve directory on another server |
 | `mailctl webmail sync` | Publishes missing `webmail.DOMAIN` records at TransIP, sets up webmail with a certificate for the domains whose `webmail.DOMAIN` points here, and removes it for the others. The playbook runs it too |
 
 Last logins are recorded for IMAP, which webmail and phones on ActiveSync use too; accounts that only send mail show no logins.

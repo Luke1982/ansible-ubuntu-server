@@ -111,6 +111,15 @@ def sieve_scripts(address: str) -> list[SieveScript]:
     ]
 
 
+def put_sieve(address: str, name: str, content: str) -> None:
+    """Writes a filter for the account, replacing one of the same name."""
+    system.run("doveadm", "sieve", "put", "-u", address, name, stdin=content)
+
+
+def activate_sieve(address: str, name: str) -> None:
+    system.run("doveadm", "sieve", "activate", "-u", address, name)
+
+
 def parse_sieve_list(output: str) -> list[tuple[str, bool]]:
     """Reads 'doveadm sieve list', which marks the active script with ' ACTIVE'."""
     scripts = []
