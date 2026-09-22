@@ -104,3 +104,16 @@ def test_sync_needs_the_template_ansible_installs(server, db_config, fake_comman
     output = server.fails("certificate", "sync", "--yes")
 
     assert "is missing" in output and "Run the Ansible playbook" in output
+
+
+def test_sync_waits_for_a_listener_instead_of_stopping_a_playbook_run(server, db_config, fake_command):
+    certbot = fake_command("certbot")
+    # OpenLiteSpeed as it comes: one listener on 8088, none on 80, so Let's Encrypt can't check a name here.
+    openlitespeed.config_file(db_config.ols_root).write_text(
+        "listener Default{\n  address                 *:8088\n  secure                  0\n}\n"
+    )
+
+    output = server.ok("certificate", "sync", "--yes")
+
+    assert "OpenLiteSpeed has no listener on port 80 yet" in output
+    assert certbot.calls == [] and members(db_config) == []

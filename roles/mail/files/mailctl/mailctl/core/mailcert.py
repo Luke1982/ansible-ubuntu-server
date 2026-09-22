@@ -60,6 +60,12 @@ def _reason(config: Config, names: list[str], now: datetime) -> str:
     return ""
 
 
+def can_be_proved(config: Config) -> bool:
+    """Whether OpenLiteSpeed has a listener on port 80, where Let's Encrypt checks each name. A server that is
+    still being set up has none, and then there is nothing to do rather than anything wrong."""
+    return bool(openlitespeed.listeners(openlitespeed.read(config.ols_root))[0])
+
+
 def planned_config(config: Config, names: list[str]) -> tuple[list[str], list[str]]:
     """The OpenLiteSpeed config now, and with a member for each name, so Let's Encrypt can reach their challenges."""
     path = config.ols_root / f"conf/templates/{TEMPLATE}.conf"

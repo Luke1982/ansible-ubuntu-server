@@ -24,6 +24,12 @@ def sync(dry_run: DryRun = False, yes: Yes = False) -> None:
     """
     now = datetime.now().astimezone()
     with open_session() as session:
+        # On a server still being set up there is no listener yet: nothing to do, rather than a playbook run
+        # stopped over a certificate that can't be asked for.
+        if not mailcert.can_be_proved(session.config):
+            ui.warn("OpenLiteSpeed has no listener on port 80 yet, where Let's Encrypt checks each name. "
+                    "The certificate is left as it is; add the listener in WebAdmin and run this again.")
+            return
         mail_domains = [domain.name for domain in domains.list_domains(session.db)]
         plan = mailcert.plan(session.config, mail_domains, system.server_ips(), dns_check.SystemResolver(), now)
         for line in plan.left_out:
