@@ -188,7 +188,11 @@ class FakeCommand:
 
 @pytest.fixture(autouse=True)
 def lock_file(tmp_path, monkeypatch):
-    """The lock OpenLiteSpeed's config is changed under, in the test's own directory instead of /run."""
+    """The lock OpenLiteSpeed's config is changed under, in the test's own directory instead of /run.
+
+    This has to patch the module the code calls: patching another one passes just as quietly and leaves the tests
+    taking the real lock. tests/test_locking.py checks that it didn't.
+    """
     monkeypatch.setattr(openlitespeed, "LOCK_FILE", tmp_path / "openlitespeed.lock")
 
 
