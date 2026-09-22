@@ -66,6 +66,11 @@ webmail_root: /var/www/webmail
 autodiscover_root: /var/www/mailautodiscover
 autodiscover_lsphp: "{{ ols_root }}/lsphp83/bin/lsphp"
 
+# Where Let's Encrypt checks the names in the mail certificate: this server's
+# hostname and every mail.DOMAIN (mailctl certificate sync). It holds nothing
+# but the challenges.
+mailcert_root: /var/www/mailcert
+
 # Email address for the Let's Encrypt account of the webmail certificates, used
 # when certbot has no account yet. Without it, the account has no address.
 letsencrypt_email: ""

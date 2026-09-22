@@ -21,6 +21,7 @@ COMMANDS = [
     ("forward", "add"), ("forward", "list"), ("forward", "delete"),
     ("dkim", "show"), ("dkim", "create"),
     ("dns", "show"), ("dns", "publish"), ("dns", "credentials"), ("autodiscover", "publish"),
+    ("certificate", "sync"),
     ("status",), ("doctor",),
     ("spam", "show"), ("spam", "set"), ("spam", "unset"),
     ("filters", "show"), ("filters", "import"),

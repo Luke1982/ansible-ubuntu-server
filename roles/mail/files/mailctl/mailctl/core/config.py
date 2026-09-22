@@ -35,6 +35,8 @@ class Config:
     certificate_file: Path | None = None  # by default the Let's Encrypt certificate of the hostname
     # The web root of the autoconfig and autodiscover sites, where certbot puts its challenges too.
     autodiscover_root: Path = Path("/var/www/mailautodiscover")
+    # The web root where certbot proves the hostname and the mail.DOMAIN names of the mail certificate.
+    mailcert_root: Path = Path("/var/www/mailcert")
     # The TransIP login and key, which mailctl asks for when it first needs them.
     transip_settings: Path = Path("/etc/mailctl/transip.json")
     transip_key: Path = Path("/etc/mailctl/transip.key")

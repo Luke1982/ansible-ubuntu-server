@@ -1,0 +1,35 @@
+# {{ ansible_managed }}
+# OpenLiteSpeed template for the names in the mail certificate: this server's
+# hostname and every mail.DOMAIN. Postfix and Dovecot present that one
+# certificate to every mail program, and Let's Encrypt checks each name over
+# HTTP, which this answers. "mailctl certificate sync" adds a member per name.
+# The site serves nothing but the challenges.
+allowSymbolLink           0
+enableScript              0
+restrained                1
+setUIDMode                0
+vhRoot                    {{ mailcert_root }}/
+configFile                $SERVER_ROOT/conf/vhosts/$VH_NAME/vhconf.conf
+
+virtualHostConfig  {
+  docRoot                 $VH_ROOT
+  enableGzip              0
+
+  errorlog  {
+    useServer             1
+  }
+
+  index  {
+    useServer             0
+    autoIndex             0
+  }
+
+  context /.well-known/acme-challenge/ {
+    location              $VH_ROOT/.well-known/acme-challenge/
+    allowBrowse           1
+  }
+
+  context / {
+    allowBrowse           0
+  }
+}

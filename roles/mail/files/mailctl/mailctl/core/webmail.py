@@ -292,31 +292,18 @@ def _serves(address: IPAddress, name: str, file_name: str, token: str) -> bool:
 
 
 def _request_certificate(config: Config, name: str) -> None:
-    email = config.letsencrypt_email
-    account = ["--email", email] if email else ["--register-unsafely-without-email"]
     try:
-        _certbot(config, "certonly", "--webroot", "--webroot-path", str(config.webmail_root), "--cert-name", name,
-                 "--domains", name, "--agree-tos", *account)
+        certificate.run_certbot(config, "certonly", "--webroot", "--webroot-path", str(config.webmail_root),
+                                "--cert-name", name, "--domains", name)
     except MailctlError as problem:
-        raise MailctlError(f"No certificate for {name}: {_reason(problem.message)}") from None
+        raise MailctlError(f"No certificate for {name}: {certificate.reason(problem.message)}") from None
 
 
 def _delete_certificate(config: Config, name: str) -> bool:
     if not has_certificate(config, name):
         return False
-    _certbot(config, "delete", "--cert-name", name)
+    certificate.run_certbot(config, "delete", "--cert-name", name)
     return True
-
-
-def _certbot(config: Config, *args: str) -> None:
-    # --config-dir, so certbot keeps the certificates where has_certificate() looks.
-    system.run("certbot", *args, "--non-interactive", "--config-dir", str(config.letsencrypt_dir))
-
-
-def _reason(message: str) -> str:
-    """What Let's Encrypt reported (certbot's "Detail:" lines), or else all of certbot's error."""
-    details = [line.partition("Detail:")[2].strip() for line in message.splitlines() if "Detail:" in line]
-    return " ".join(details) or message
 
 
 def _site_file(config: Config, name: str) -> Path:

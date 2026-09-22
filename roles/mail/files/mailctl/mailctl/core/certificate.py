@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from . import system
+from .config import Config
 from .dns_check import Check, Status, mail_host
 from .errors import MailctlError
 
@@ -39,6 +40,20 @@ def parse(output: str) -> Certificate:
     except (AttributeError, ValueError):
         raise MailctlError("openssl didn't show when the certificate expires.") from None
     return Certificate(tuple(name.lower() for name in re.findall(r"DNS:([^\s,]+)", output)), expires)
+
+
+def run_certbot(config: Config, *args: str) -> None:
+    """certbot, with this server's Let's Encrypt account and the directory the certificates are looked for in."""
+    email = config.letsencrypt_email
+    account = ["--email", email] if email else ["--register-unsafely-without-email"]
+    system.run("certbot", *args, "--agree-tos", *account, "--non-interactive",
+               "--config-dir", str(config.letsencrypt_dir))
+
+
+def reason(message: str) -> str:
+    """What Let's Encrypt reported (certbot's "Detail:" lines), or else all of certbot's error."""
+    details = [line.partition("Detail:")[2].strip() for line in message.splitlines() if "Detail:" in line]
+    return " ".join(details) or message
 
 
 def covers(certificate: Certificate, host: str) -> bool:

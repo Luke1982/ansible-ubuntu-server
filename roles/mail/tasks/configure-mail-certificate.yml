@@ -1,0 +1,46 @@
+---
+# The certificate Postfix and Dovecot present holds this server's hostname and
+# every mail.DOMAIN, so no mail program gets a certificate warning. Let's
+# Encrypt checks each of those names over HTTP: this OpenLiteSpeed template
+# answers for them, with a web root that holds nothing but the challenges.
+# "mailctl certificate sync" keeps the members and the certificate in step.
+
+- name: Check that OpenLiteSpeed is installed
+  stat:
+    path: "{{ ols_root }}/conf/httpd_config.conf"
+  register: ols_config_for_mail_certificate
+
+- name: Stop when OpenLiteSpeed isn't installed
+  assert:
+    that: ols_config_for_mail_certificate.stat.exists
+    fail_msg: "{{ ols_root }}/conf/httpd_config.conf doesn't exist. Run the web role first: it installs OpenLiteSpeed."
+    quiet: yes
+
+- name: Create the web root for Let's Encrypt's checks of the mail names
+  file:
+    path: "{{ mailcert_root }}/.well-known/acme-challenge"
+    state: directory
+    mode: 0755
+
+- name: Install the OpenLiteSpeed template for the mail names
+  template:
+    src: openlitespeed-mailnames.conf.j2
+    dest: "{{ ols_root }}/conf/templates/mailnames.conf"
+    owner: lsadm  # like everything in OpenLiteSpeed's conf directory
+    mode: 0644
+  notify: restart openlitespeed
+
+# Ansible gives commands a terminal, and mailctl asks questions in one, which
+# nobody would answer: --yes and input from /dev/null keep it going by itself.
+- name: Put the hostname and the mail names in one certificate
+  shell: mailctl certificate sync --yes </dev/null
+  register: mail_certificate_sync
+  changed_when: "'Postfix and Dovecot serve a certificate' in mail_certificate_sync.stdout"
+
+# Its warnings: names that don't point here yet, a refused certificate.
+- name: Show the mail names that need attention
+  debug:
+    msg: "{{ mail_certificate_warnings }}"
+  when: mail_certificate_warnings | length > 0
+  vars:
+    mail_certificate_warnings: "{{ mail_certificate_sync.stdout_lines | default([]) | select('match', '^!') | list }}"

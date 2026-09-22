@@ -138,7 +138,12 @@
     owner: root
     group: root
 
-- name: Install post-deploy hook in Letsencrypt to reload dovecot
+# Certbot skips a hook it can't execute, and then mail programs keep getting the
+# certificate that was renewed but never read: it has to be executable.
+- name: Install post-deploy hook in Letsencrypt to reload the mail and web services
   template:
     src: "1-post-deploy-hook-letsencrypt.sh.j2"
     dest: /etc/letsencrypt/renewal-hooks/deploy/1-post-deploy-hook.sh
+    owner: root
+    group: root
+    mode: 0755

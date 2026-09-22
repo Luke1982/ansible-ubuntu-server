@@ -163,6 +163,7 @@ Mail servers get `mailctl`, a command-line tool for the mail domains, addresses,
 | `mailctl dns publish example.nl` | Publishes those records at TransIP; shows the changes and asks first (`--dry-run` only shows them) |
 | `mailctl doctor` | Checks the server (hostname, reverse DNS, certificate) and every domain; exit status 1 when something is wrong |
 | `mailctl autodiscover publish example.nl` | Lets Thunderbird and Outlook find the domain's mail settings by themselves (below) |
+| `mailctl certificate sync` | Puts the hostname and every `mail.DOMAIN` that points here in one certificate, and makes Postfix and Dovecot read it (below). The playbook runs it too |
 | `mailctl spam set example.nl required_score 4` | Changes a spam setting for an account, a domain or the whole server |
 | `mailctl filters show info@example.nl` | Shows an account's mail filters |
 | `mailctl filters import info@example.nl sieve.tar.gz` | Imports an account's filters from a tar of its sieve directory on another server |
@@ -175,11 +176,19 @@ Last logins are recorded for IMAP, which webmail and phones on ActiveSync use to
 - Mail for `example.nl` is delivered to `mail.example.nl` (the MX record), which points to the server.
 - Mail programs use `mail.example.nl` for IMAP and sending. SRV records tell them so, which lets many of them find their settings by themselves.
 - The server sends mail as its hostname. The hostname must point to the server, and the server's addresses back to the hostname (reverse DNS, set at the server's provider).
-- Postfix and Dovecot use the hostname's Let's Encrypt certificate for everyone, so it must include `mail.example.nl` for every domain. Add the name once `mail.example.nl` points to the server; `mailctl doctor` tells you when one is missing.
+- Postfix and Dovecot use the hostname's Let's Encrypt certificate for everyone, so it must include `mail.example.nl` for every domain. `mailctl certificate sync` adds the names that point to the server (below); `mailctl doctor` tells you when one is missing.
 
-A new domain: `mailctl domain add example.nl`, then `mailctl dns publish example.nl` (or publish the records by hand when the domain isn't at TransIP), add `mail.example.nl` to the certificate, and check with `mailctl doctor example.nl`.
+A new domain: `mailctl domain add example.nl`, then `mailctl dns publish example.nl` (or publish the records by hand when the domain isn't at TransIP), `mailctl certificate sync`, and check with `mailctl doctor example.nl`.
 
 `dns publish` only touches the mail records: it replaces the MX, `mail`, DKIM and SRV records, removes a previous provider's `autoconfig` and `autodiscover` records, adds the server's addresses to an SPF record that doesn't allow the server yet (so the senders it allows keep working), and leaves an existing DMARC policy and every other record alone. A domain like `shop.example.nl` goes into the `example.nl` zone.
+
+### The certificate for mail programs
+
+Postfix and Dovecot present one certificate to everyone, so it has to hold every name mail programs connect to: the server's hostname and `mail.DOMAIN` of each domain. `mailctl certificate sync` keeps it that way. It asks certbot for a certificate with those names under the hostname's name, and afterwards Postfix and Dovecot read it again, without a restart. A name is only taken along once `mail.DOMAIN` points to this server; the others are named in the output, so publish their records first (`mailctl dns publish example.nl`).
+
+Let's Encrypt checks each name over HTTP. Answering that is all an OpenLiteSpeed template of mailctl's does: the playbook installs it, its web root (`/var/www/mailcert`) holds nothing but the challenges, and each name is a member, so they show up in WebAdmin under Virtual Host Templates. A name another site in OpenLiteSpeed already answers for is left to that site, with a warning.
+
+The playbook runs `mailctl certificate sync` on every run, and it only asks certbot when a name is missing or the certificate is about to expire. Certbot renews it by itself after that, and its deploy hook reloads Postfix and Dovecot, so mail programs never get an expired certificate.
 
 ### Autoconfig and autodiscover
 
