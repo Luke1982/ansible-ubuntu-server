@@ -26,7 +26,7 @@ os.environ["COLUMNS"] = "200"
 from typer.testing import CliRunner  # noqa: E402
 
 from mailctl import cli  # noqa: E402
-from mailctl.core import db, system, transip  # noqa: E402
+from mailctl.core import db, openlitespeed, system, transip  # noqa: E402
 from mailctl.core.config import Config, SendLimit  # noqa: E402
 
 SCHEMAS = {
@@ -184,6 +184,12 @@ class FakeCommand:
         if not self._log.exists():
             return []
         return [re.findall(r"\[([^]]*)\]", line) for line in self._log.read_text().splitlines()]
+
+
+@pytest.fixture(autouse=True)
+def lock_file(tmp_path, monkeypatch):
+    """The lock OpenLiteSpeed's config is changed under, in the test's own directory instead of /run."""
+    monkeypatch.setattr(openlitespeed, "LOCK_FILE", tmp_path / "openlitespeed.lock")
 
 
 @pytest.fixture

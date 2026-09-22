@@ -3,13 +3,25 @@
 The config is set up by hand in WebAdmin, so mailctl only adds and removes its own virtual hosts, template members and
 the listeners' names for them, in the layout WebAdmin writes, and leaves everything else as it is. It doesn't use 'include': WebAdmin makes a config with
 includes read-only.
+
+A change is made by reading the config, editing the lines and renaming a new file into place, so two tools doing that
+at the same time would lose one another's changes: the second writes what it read before the first saved. Everything
+that changes the config therefore runs inside locked(), over the whole of the read, the edit and the write; locking
+only the write would let the loser read before the winner saved. Reading without changing needs no lock.
+
+domainctl (roles/web) takes the same lock, from its copy of this module in shared/serverctl. The two only shut each
+other out while both use the same LOCK_FILE, so it stays what it is here until mailctl imports that module.
 """
 
 import errno
+import fcntl
 import os
 import re
 import stat
 import tempfile
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +31,14 @@ from .errors import MailctlError
 # A value spanning lines, like rewrite rules: "rules <<<END_rules", up to a line holding just "END_rules".
 _HEREDOC = re.compile(r"<<<\s*(\S+)\s*$")
 _VALUE_COLUMN = 26  # where WebAdmin lines up values
+# Every tool that changes OpenLiteSpeed's config waits for this one lock, so the path must be the same in all of them.
+# It is outside OpenLiteSpeed's config directory, which belongs to WebAdmin's user, and on a tmpfs, so a lock never
+# outlives the reboot that killed whatever held it.
+LOCK_FILE = Path("/run/serverctl-openlitespeed.lock")
+LOCK_TIMEOUT = 300.0  # seconds; long enough for another tool to finish a certbot run
+_LOCK_POLL = 0.2
+_held = 0  # how deep this process is inside locked(); the lock itself is taken once
+_holder = None
 
 
 @dataclass(frozen=True)
@@ -52,6 +72,56 @@ class VirtualHost:
     root: str
     config_file: str
     note: str
+
+
+@contextmanager
+def locked(path: Path | None = None, timeout: float = LOCK_TIMEOUT) -> Iterator[None]:
+    """Holds the lock for the whole of a read, edit and write, so no other tool's change is lost.
+
+    Nesting is allowed: the lock is taken by the outermost block and released when it ends, so a function that
+    locks can be called from one that already has. The path is looked up here, not fixed when this is defined,
+    so the tests can put the lock somewhere a normal user may write.
+    """
+    global _held, _holder
+    path = path or LOCK_FILE
+    if _held:
+        _held += 1
+        try:
+            yield
+        finally:
+            _held -= 1
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _holder = os.open(path, os.O_CREAT | os.O_RDWR | os.O_CLOEXEC, 0o600)
+    try:
+        _wait_for(_holder, path, timeout)
+        _held = 1
+        try:
+            yield
+        finally:
+            _held = 0
+            fcntl.flock(_holder, fcntl.LOCK_UN)
+    finally:
+        os.close(_holder)
+        _holder = None
+
+
+def _wait_for(descriptor: int, path: Path, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except OSError as error:
+            if error.errno not in (errno.EACCES, errno.EAGAIN):
+                raise MailctlError(f"Can't lock {path}: {error.strerror}.") from None
+            if time.monotonic() >= deadline:
+                raise MailctlError(
+                    f"Another command has been changing OpenLiteSpeed's configuration for over "
+                    f"{int(timeout)} seconds.",
+                    hint="Wait for it to finish, or look for a command that is stuck, and try again.",
+                ) from None
+            time.sleep(_LOCK_POLL)
 
 
 def config_file(root: Path) -> Path:

@@ -87,14 +87,15 @@ def remove(config: Config, domain: str) -> bool:
     deletes that."""
     if not has_site(config, domain):
         return False
-    lines = openlitespeed.read(config.ols_root)
     site = names(domain)[0]
-    updated = lines
-    for template in (TEMPLATE, WAITING_TEMPLATE):
-        updated = openlitespeed.without_member(updated, site, template)
-    if updated != lines:
-        openlitespeed.write(config.ols_root, updated)
-        openlitespeed.restart(config.ols_root)
+    with openlitespeed.locked():
+        lines = openlitespeed.read(config.ols_root)
+        updated = lines
+        for template in (TEMPLATE, WAITING_TEMPLATE):
+            updated = openlitespeed.without_member(updated, site, template)
+        if updated != lines:
+            openlitespeed.write(config.ols_root, updated)
+            openlitespeed.restart(config.ols_root)
     return True
 
 

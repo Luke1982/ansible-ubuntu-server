@@ -46,10 +46,14 @@ def sync(dry_run: DryRun = False, yes: Yes = False) -> None:
             ui.note("Nothing was changed (--dry-run).")
             return
         ui.confirm("Get that certificate?", yes)
-        if before != after:
-            openlitespeed.write(session.config.ols_root, after)
-            openlitespeed.restart(session.config.ols_root)
-            ui.success("OpenLiteSpeed answers Let's Encrypt for these names.")
+        # The config is read again under the lock: nobody waits for the question, and another tool may have
+        # changed it while it stood there.
+        with openlitespeed.locked():
+            before, after = mailcert.planned_config(session.config, plan.names)
+            if before != after:
+                openlitespeed.write(session.config.ols_root, after)
+                openlitespeed.restart(session.config.ols_root)
+                ui.success("OpenLiteSpeed answers Let's Encrypt for these names.")
         if not plan.reason:
             return
         with ui.console.status("Asking certbot for the certificate…"):

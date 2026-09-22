@@ -1,9 +1,10 @@
+import fcntl
 import os
 import stat
 
 import pytest
 
-from mailctl.core import openlitespeed
+from mailctl.core import autodiscover, openlitespeed
 from mailctl.core.errors import MailctlError
 from mailctl.core.openlitespeed import Member, Template, VirtualHost
 
@@ -309,3 +310,70 @@ def test_with_map_adds_the_name_once_and_without_map_takes_it_away():
 
     assert openlitespeed.without_map(config, "HTTPS6", WEBMAIL.name) == lines()
     assert openlitespeed.maps(openlitespeed.without_map(lines(), "HTTP", "shop"), "HTTP") == {}
+
+
+# The lock every tool changing the config takes: domainctl (roles/web) waits for the same file.
+
+def test_the_lock_can_be_taken_again_inside_itself(tmp_path):
+    with openlitespeed.locked(tmp_path / "lock"):
+        with openlitespeed.locked(tmp_path / "lock"):
+            pass
+        assert openlitespeed._held == 1  # still held by the outer block
+
+    assert openlitespeed._held == 0
+
+
+def test_another_tool_waits_for_the_lock_and_is_told_who_it_waits_for(tmp_path):
+    path = tmp_path / "lock"
+    held = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)  # another process's file description
+    fcntl.flock(held, fcntl.LOCK_EX)
+    try:
+        with pytest.raises(MailctlError, match="changing OpenLiteSpeed's configuration for over 0 seconds"):
+            with openlitespeed.locked(path, timeout=0.3):
+                pytest.fail("the lock was taken while another tool held it")
+    finally:
+        os.close(held)
+
+    with openlitespeed.locked(path, timeout=0.3):  # free again now the other one let go
+        pass
+
+
+def test_the_lock_is_let_go_when_the_change_fails(tmp_path):
+    path = tmp_path / "lock"
+    with pytest.raises(ZeroDivisionError):
+        with openlitespeed.locked(path):
+            1 / 0
+
+    assert openlitespeed._held == 0
+    second = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(second, fcntl.LOCK_EX | fcntl.LOCK_NB)  # nothing holds it: this would raise if it did
+    finally:
+        os.close(second)
+
+
+def test_a_change_takes_the_lock_over_the_whole_read_and_write(config, monkeypatch):
+    """The read has to be inside it too: locking only the write would let the loser read before the winner saved."""
+    root = config.ols_root
+    (root / "conf" / "templates").mkdir(parents=True)
+    openlitespeed.config_file(root).write_text(HTTPD_CONFIG)
+    for template in (autodiscover.TEMPLATE, autodiscover.WAITING_TEMPLATE):
+        (root / "conf" / "templates" / f"{template}.conf").write_text("")
+    _, after = autodiscover.planned_config(config, "example.nl", https=False)
+    openlitespeed.write(root, after)
+    held_while = []
+    monkeypatch.setattr(openlitespeed, "read", _watching(openlitespeed.read, held_while))
+    monkeypatch.setattr(openlitespeed, "write", _watching(openlitespeed.write, held_while))
+    monkeypatch.setattr(openlitespeed, "restart", lambda root: None)
+
+    autodiscover.remove(config, "example.nl")
+
+    # has_site() only looks, which needs no lock; the read and the write that make the change are both under it.
+    assert held_while == [False, True, True]
+
+
+def _watching(function, held_while):
+    def watched(*args, **kwargs):
+        held_while.append(openlitespeed._held > 0)
+        return function(*args, **kwargs)
+    return watched

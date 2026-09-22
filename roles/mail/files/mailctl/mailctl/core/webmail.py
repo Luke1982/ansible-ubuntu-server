@@ -227,27 +227,28 @@ def _publish(config: Config, hosts: set[str]) -> bool:
     with system.as_user(config.ols_user):
         for name in ordered:  # before the config refers to them
             changed |= files.replace(_site_file(config, name), _site(config, name, name in certified))
-    lines = openlitespeed.read(config.ols_root)
-    http, https = openlitespeed.listeners(lines)
-    updated = lines
-    gone = [name for name in _ours(lines) if name not in hosts]
-    for name in gone:
-        updated = openlitespeed.without_virtual_host(updated, name)
-        for listener in http + https:
-            updated = openlitespeed.without_map(updated, listener, name)
-    for name in ordered:
-        site = VirtualHost(name, f"{config.webmail_root}/", f"$SERVER_ROOT/conf/vhosts/{name}/vhconf.conf", _NOTE)
-        updated = openlitespeed.with_virtual_host(updated, site)
-        for listener in http:
-            updated = openlitespeed.with_map(updated, listener, name, name)
-        for listener in https:
-            if name in certified:
-                updated = openlitespeed.with_map(updated, listener, name, name)
-            else:
+    with openlitespeed.locked():  # the whole read, edit and write, so no other tool's change is lost
+        lines = openlitespeed.read(config.ols_root)
+        http, https = openlitespeed.listeners(lines)
+        updated = lines
+        gone = [name for name in _ours(lines) if name not in hosts]
+        for name in gone:
+            updated = openlitespeed.without_virtual_host(updated, name)
+            for listener in http + https:
                 updated = openlitespeed.without_map(updated, listener, name)
-    if updated != lines:
-        openlitespeed.write(config.ols_root, updated)
-        changed = True
+        for name in ordered:
+            site = VirtualHost(name, f"{config.webmail_root}/", f"$SERVER_ROOT/conf/vhosts/{name}/vhconf.conf", _NOTE)
+            updated = openlitespeed.with_virtual_host(updated, site)
+            for listener in http:
+                updated = openlitespeed.with_map(updated, listener, name, name)
+            for listener in https:
+                if name in certified:
+                    updated = openlitespeed.with_map(updated, listener, name, name)
+                else:
+                    updated = openlitespeed.without_map(updated, listener, name)
+        if updated != lines:
+            openlitespeed.write(config.ols_root, updated)
+            changed = True
     # Once the config no longer refers to them; with OpenLiteSpeed's copy of what it read (vhconf.conf.txt).
     with system.as_user(config.ols_user):
         for name in gone:

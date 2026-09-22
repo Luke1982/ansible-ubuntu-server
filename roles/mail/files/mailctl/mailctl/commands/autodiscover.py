@@ -90,13 +90,15 @@ def _dns_change(
 
 
 def _update_site(root: Path, before: list[str], after: list[str]) -> None:
-    if openlitespeed.read(root) != before:
-        raise MailctlError("OpenLiteSpeed's config changed in the meantime. Nothing was changed.",
-                           hint="Run the command again to see the changes it makes now.")
-    openlitespeed.write(root, after)
-    try:
-        openlitespeed.restart(root)
-    except MailctlError:
-        # The old config goes back, so the next run sees the change again and tries again.
-        openlitespeed.write(root, before)
-        raise
+    # Under the lock, so another tool can't save between the check and the write, which is what the check is for.
+    with openlitespeed.locked():
+        if openlitespeed.read(root) != before:
+            raise MailctlError("OpenLiteSpeed's config changed in the meantime. Nothing was changed.",
+                               hint="Run the command again to see the changes it makes now.")
+        openlitespeed.write(root, after)
+        try:
+            openlitespeed.restart(root)
+        except MailctlError:
+            # The old config goes back, so the next run sees the change again and tries again.
+            openlitespeed.write(root, before)
+            raise
