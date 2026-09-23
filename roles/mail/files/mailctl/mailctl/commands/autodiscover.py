@@ -86,7 +86,9 @@ def _certify(session: Session, domain: str) -> None:
     try:
         addresses = _pointing_here(session, (site, alias))
         with ui.console.status(f"Asking certbot for a certificate for {site} and {alias}…"):
-            autodiscover.request_certificate(config, domain, addresses)
+            worked_around = autodiscover.request_certificate(config, domain, addresses)
+        for line in worked_around:
+            ui.warn(line)
     except MailctlError as problem:
         ui.warn(problem.message)
         if problem.hint:

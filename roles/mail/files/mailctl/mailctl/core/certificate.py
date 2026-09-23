@@ -18,6 +18,10 @@ from .errors import MailctlError
 EXPIRY_WARNING_DAYS = 14
 # Where Let's Encrypt asks for its challenge, under a site's web root.
 CHALLENGES = ".well-known/acme-challenge"
+# What an address answers when asked for a challenge.
+SERVED = "served"  # the challenge folder is served for the name at that address
+NO_ANSWER = "no answer"  # nothing accepted the connection: Let's Encrypt falls back to the other family
+ANOTHER_SITE = "another site"  # something answered, but not this site's challenge
 
 
 @dataclass(frozen=True)
@@ -55,32 +59,50 @@ def run_certbot(config: Config, *args: str) -> None:
                "--config-dir", str(config.letsencrypt_dir))
 
 
-def wait_until_served(root: Path, name: str, addresses: set[IPAddress], hint: str, timeout: float) -> None:
-    """Waits until OpenLiteSpeed serves a test file from the challenge folder under the name at each of its
-    addresses, as Let's Encrypt asks for its challenge at any of them. Failed validations count against Let's
-    Encrypt's limits, so this is checked first."""
+def wait_until_served(root: Path, name: str, addresses: set[IPAddress], hint: str, timeout: float) -> list[str]:
+    """Waits until OpenLiteSpeed serves a test file from the challenge folder under the name. Failed validations
+    count against Let's Encrypt's limits, so this is checked first.
+
+    Let's Encrypt asks at one address and falls back to the other family when nothing answers there at all, so an
+    address that refuses the connection is reported, not an error; a returned line says so. An address that
+    answers with something else is another site, and Let's Encrypt fails on that instead of falling back.
+    """
     token = secrets.token_hex(16)
     probe = root / CHALLENGES / f"mailctl-{token}"
     files.replace(probe, token)
     try:
         deadline = time.monotonic() + timeout
+        answers = {}
         for address in sorted(addresses, key=lambda ip: (ip.version, ip)):
-            while not serves(address, name, probe.name, token):
-                if time.monotonic() >= deadline:
-                    raise MailctlError(f"OpenLiteSpeed doesn't serve {name} on port 80 at {address}.", hint=hint)
+            answer = serves(address, name, probe.name, token)
+            while answer != SERVED and time.monotonic() < deadline:
                 time.sleep(0.5)
+                answer = serves(address, name, probe.name, token)
+            answers[address] = answer
     finally:
         files.remove(probe)
+    elsewhere = [address for address, answer in answers.items() if answer == ANOTHER_SITE]
+    if elsewhere:
+        raise MailctlError(f"Another site answers for {name} on port 80 at {', '.join(map(str, elsewhere))}, so "
+                           f"Let's Encrypt is given that one instead of the challenge.", hint=hint)
+    if not any(answer == SERVED for answer in answers.values()):
+        raise MailctlError(f"OpenLiteSpeed doesn't serve {name} on port 80 at "
+                           f"{', '.join(str(address) for address in answers)}.", hint=hint)
+    return [f"Nothing answers for {name} on port 80 at {address}, so Let's Encrypt uses this server's other "
+            f"address. Add a listener for it in WebAdmin, or take the record away."
+            for address, answer in answers.items() if answer == NO_ANSWER]
 
 
-def serves(address: IPAddress, name: str, file_name: str, token: str) -> bool:
+def serves(address: IPAddress, name: str, file_name: str, token: str) -> str:
     connection = http.client.HTTPConnection(str(address), 80, timeout=2)
     try:
         connection.request("GET", f"/{CHALLENGES}/{file_name}", headers={"Host": name})
         response = connection.getresponse()
-        return response.status == 200 and response.read(len(token) + 2).decode(errors="replace").strip() == token
+        if response.status == 200 and response.read(len(token) + 2).decode(errors="replace").strip() == token:
+            return SERVED
+        return ANOTHER_SITE
     except OSError:
-        return False
+        return NO_ANSWER
     finally:
         connection.close()
 

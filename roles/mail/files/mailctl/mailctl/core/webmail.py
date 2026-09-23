@@ -105,12 +105,12 @@ def sync(config: Config, domains: Iterable[str], server_ips: set[IPAddress], res
         changed |= _delete_certificate(config, name)
     for name, addresses in plan.uncertified.items():
         try:
-            _wait_until_served(config, name, addresses)
+            worked_around = _wait_until_served(config, name, addresses)
             _request_certificate(config, name)
         except MailctlError as problem:
             plan.outcomes[name] = Outcome(name, State.FAILED, " ".join(filter(None, (problem.message, problem.hint))))
         else:
-            plan.outcomes[name] = Outcome(name, State.NEW)
+            plan.outcomes[name] = Outcome(name, State.NEW, " ".join(worked_around))
             changed = True
     # Moves the sites that got their certificate to the HTTPS listeners.
     _publish(config, plan.kept)
@@ -240,8 +240,8 @@ def _publish(config: Config, hosts: set[str]) -> bool:
     return changed
 
 
-def _wait_until_served(config: Config, name: str, addresses: set[IPAddress]) -> None:
-    certificate.wait_until_served(
+def _wait_until_served(config: Config, name: str, addresses: set[IPAddress]) -> list[str]:
+    return certificate.wait_until_served(
         config.webmail_root, name, addresses, timeout=SERVE_TIMEOUT,
         hint="Run the Ansible playbook: it adds the webmail sites to OpenLiteSpeed's configuration.")
 

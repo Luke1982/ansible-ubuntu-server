@@ -80,15 +80,19 @@ def lswsctrl(config):
 
 
 class FakeWebServer:
-    """Serves the test file, except for the names and addresses in refused. Records (address, name) of requests."""
+    """Serves the test file, except for the names and addresses in refused, where nothing answers, and those in
+    taken, where another site does. Records (address, name) of requests."""
 
     def __init__(self):
         self.requests: list[tuple[str, str]] = []
         self.refused: set[str] = set()
+        self.taken: set[str] = set()
 
     def serves(self, address, name, file_name, token):
         self.requests.append((str(address), name))
-        return not {name, str(address)} & self.refused
+        if {name, str(address)} & self.taken:
+            return certificate.ANOTHER_SITE
+        return certificate.NO_ANSWER if {name, str(address)} & self.refused else certificate.SERVED
 
 
 @pytest.fixture
@@ -313,20 +317,32 @@ def test_no_certificate_is_requested_while_the_site_isnt_served(config, certbot,
 
     assert list(result.outcomes) == [Outcome(
         "webmail.example.nl", State.FAILED,
-        "OpenLiteSpeed doesn't serve webmail.example.nl on port 80 at 203.0.113.5."
+        "OpenLiteSpeed doesn't serve webmail.example.nl on port 80 at 203.0.113.5, 2001:db8::5."
         " Run the Ansible playbook: it adds the webmail sites to OpenLiteSpeed's configuration.",
     )]
     assert certbot.calls == []
 
 
-def test_every_address_of_the_site_must_be_served(config, certbot, served):
-    """Let's Encrypt may use any of them; a listener for IPv4 only is a common reason for a refused certificate."""
+def test_an_address_where_nothing_answers_is_left_to_lets_encrypts_own_fallback(config, certbot, served):
+    """OpenLiteSpeed listening on IPv4 only is common. Let's Encrypt tries the other address when a connection
+    isn't accepted at all, so the certificate is asked for, and the address is reported."""
     served.refused.add("2001:db8::5")
 
     result = sync(config, "example.nl")
 
+    assert result.outcomes[0].state is State.NEW
+    assert "Nothing answers for webmail.example.nl on port 80 at 2001:db8::5" in result.outcomes[0].detail
+    assert [call[:2] for call in certbot.calls] == [["certonly", "--webroot"]]
+
+
+def test_an_address_where_another_site_answers_stops_the_certificate(config, certbot, served):
+    """Let's Encrypt doesn't fall back from an answer it doesn't like: it fails the validation."""
+    served.taken.add("2001:db8::5")
+
+    result = sync(config, "example.nl")
+
     assert result.outcomes[0].state is State.FAILED
-    assert "at 2001:db8::5." in result.outcomes[0].detail
+    assert "Another site answers for webmail.example.nl on port 80 at 2001:db8::5" in result.outcomes[0].detail
     assert certbot.calls == []
 
 

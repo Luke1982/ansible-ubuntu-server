@@ -244,7 +244,7 @@ class PointingHere(FakeDns):
 def reachable(monkeypatch, public_server):
     """Both names point here and OpenLiteSpeed answers for them, so certbot can be asked."""
     monkeypatch.setattr(dns_check, "SystemResolver", PointingHere)
-    monkeypatch.setattr(certificate, "serves", lambda address, name, file_name, token: True)
+    monkeypatch.setattr(certificate, "serves", lambda address, name, file_name, token: certificate.SERVED)
 
 
 def test_publish_gets_the_certificate_itself_and_puts_the_site_on_https(
@@ -279,7 +279,7 @@ def test_publish_waits_for_the_names_it_just_published_before_giving_up(
         mailctl, transip_account, ols, db_config, monkeypatch, public_server, fake_command):
     """The records were published a moment ago, so the first lookups still find nothing."""
     fake_command("certbot")
-    monkeypatch.setattr(certificate, "serves", lambda address, name, file_name, token: True)
+    monkeypatch.setattr(certificate, "serves", lambda address, name, file_name, token: certificate.SERVED)
     monkeypatch.setattr(publishing, "RESOLVE_TIMEOUT", 30)
     monkeypatch.setattr(publishing, "RESOLVE_POLL", 0)
     lookups = []
