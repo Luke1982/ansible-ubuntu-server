@@ -5,3 +5,9 @@
   service:
     name: mariadb
     state: restarted
+
+# Graceful: requests in progress are finished first.
+# lswsctrl may start OpenLiteSpeed and its watchdog in the background, which
+# keep its output open: without the redirect, the task would never end.
+- name: restart openlitespeed
+  shell: "{{ ols_root }}/bin/lswsctrl restart </dev/null >/dev/null 2>&1"

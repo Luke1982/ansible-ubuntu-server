@@ -1,0 +1,16 @@
+---
+
+# OpenLiteSpeed, installed by the web role
+ols_root: /usr/local/lsws
+
+# phpMyAdmin: where its files are, and the site that serves them. The site's name
+# needs an A record (and an AAAA record) pointing to this server.
+phpmyadmin_root: /var/www/phpmyadmin
+phpmyadmin_host: "pma.{{ hostname }}"
+
+# LiteSpeed's PHP, which runs phpMyAdmin (installed by the web role), and the
+# user it runs as: OpenLiteSpeed's own, which needs to write phpMyAdmin's
+# temporary directory.
+phpmyadmin_lsphp: "{{ ols_root }}/lsphp83/bin/lsphp"
+phpmyadmin_user: nobody
+phpmyadmin_group: nogroup

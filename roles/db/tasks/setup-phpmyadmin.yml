@@ -1,0 +1,97 @@
+---
+# phpMyAdmin at pma.<hostname>, on HTTP and HTTPS, served by OpenLiteSpeed as a
+# site of its own. OpenLiteSpeed's listeners and its other sites are set up by
+# hand in WebAdmin; pmasite.py adds this site to that config and the site's name
+# to every listener for port 80 and 443, and leaves everything else alone.
+#
+# The site has no certificate of its own, so OpenLiteSpeed serves it with the one
+# on the HTTPS listener. Visitors get a warning when that certificate is for
+# another name, which the self-signed one OpenLiteSpeed comes with is.
+
+- name: Check that OpenLiteSpeed and its PHP are installed
+  stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ ols_root }}/conf/httpd_config.conf"
+    - "{{ phpmyadmin_lsphp }}"
+  register: phpmyadmin_needs
+
+- name: Stop when OpenLiteSpeed or its PHP is missing
+  assert:
+    that: item.stat.exists
+    fail_msg: "{{ item.item }} doesn't exist. Run the web role first: it installs OpenLiteSpeed and its PHP."
+    quiet: yes
+  loop: "{{ phpmyadmin_needs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Copy over the phpMyAdmin installation script
+  copy:
+    src: roles/db/files/install-phpmyadmin.sh
+    dest: /tmp/install-phpmyadmin.sh
+    mode: 0755
+    owner: root
+    group: root
+
+# Installs it once, and moves the copy that earlier versions of this role put in
+# OpenLiteSpeed's Example site, where every name that site answers to reached it.
+- name: Install phpMyAdmin
+  command: /tmp/install-phpmyadmin.sh {{ phpmyadmin_root }}
+  register: phpmyadmin_install
+  changed_when: "'Changed:' in phpmyadmin_install.stdout"
+
+- name: Say what the installation did
+  debug:
+    msg: "{{ phpmyadmin_install.stdout_lines }}"
+
+# It holds the passphrase of phpMyAdmin's cookie login, and OpenLiteSpeed's PHP
+# has to read it: no one else does.
+- name: Keep phpMyAdmin's settings to itself
+  file:
+    path: "{{ phpmyadmin_root }}/config.inc.php"
+    owner: root
+    group: "{{ phpmyadmin_group }}"
+    mode: 0640
+
+# phpMyAdmin's own temporary directory ($cfg['TempDir']), for the pages it builds
+- name: Create phpMyAdmin's temporary directory
+  file:
+    path: "{{ phpmyadmin_root }}/tmp"
+    state: directory
+    owner: "{{ phpmyadmin_user }}"
+    group: "{{ phpmyadmin_group }}"
+    mode: 0700
+
+- name: Create the directory for the site's settings
+  file:
+    path: "{{ ols_root }}/conf/vhosts/{{ phpmyadmin_host }}"
+    state: directory
+    owner: lsadm  # like everything in OpenLiteSpeed's conf directory
+    mode: 0750
+
+- name: Install the site's settings
+  template:
+    src: phpmyadmin-vhconf.conf.j2
+    dest: "{{ ols_root }}/conf/vhosts/{{ phpmyadmin_host }}/vhconf.conf"
+    owner: lsadm
+    mode: 0644
+  notify: restart openlitespeed
+
+- name: Copy over the script that puts the site in OpenLiteSpeed's config
+  copy:
+    src: roles/db/files/pmasite/pmasite.py
+    dest: /tmp/pmasite.py
+    mode: 0755
+    owner: root
+    group: root
+
+- name: Put the phpMyAdmin site in OpenLiteSpeed's config
+  command: >
+    /tmp/pmasite.py
+    --config {{ ols_root }}/conf/httpd_config.conf
+    --name {{ phpmyadmin_host }}
+    --root {{ phpmyadmin_root }}/
+    --vhost-config $SERVER_ROOT/conf/vhosts/{{ phpmyadmin_host }}/vhconf.conf
+  register: phpmyadmin_site
+  changed_when: "'Changed:' in phpmyadmin_site.stdout"
+  notify: restart openlitespeed

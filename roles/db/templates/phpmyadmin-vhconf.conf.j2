@@ -1,0 +1,78 @@
+# {{ ansible_managed }}
+# The settings of the phpMyAdmin site at {{ phpmyadmin_host }}. OpenLiteSpeed's
+# listeners and its other sites are set up by hand in WebAdmin; the db role puts
+# this site in its config (pmasite.py) and writes this file, where WebAdmin keeps
+# a site's settings, so WebAdmin shows it like any other.
+docRoot                   {{ phpmyadmin_root }}/
+enableGzip                1
+
+errorlog  {
+  useServer               1
+}
+
+index  {
+  useServer               0
+  autoIndex               0
+  indexFiles              index.php
+}
+
+# LiteSpeed's PHP runs phpMyAdmin, as OpenLiteSpeed's own user: the site has no
+# user of its own (setUIDMode 0 in the server config).
+extprocessor phpmyadmin-php  {
+  type                    lsapi
+  address                 uds://tmp/lshttpd/phpmyadmin.sock
+  maxConns                5
+  env                     PHP_LSAPI_CHILDREN=5
+  initTimeout             60
+  retryTimeout            0
+  persistConn             1
+  respBuffer              0
+  autoStart               1
+  path                    {{ phpmyadmin_lsphp }}
+  backlog                 100
+  instances               1
+  memSoftLimit            512M
+  memHardLimit            640M
+}
+
+scripthandler  {
+  add                     lsapi:phpmyadmin-php php
+}
+
+# The database password travels with every request, so the site is only offered
+# over HTTPS. Let's Encrypt's challenges stay on HTTP, for a certificate of its
+# own later on: without one the site uses the certificate of the HTTPS listener.
+rewrite  {
+  enable                  1
+  rules                   <<<END_rules
+RewriteCond %{HTTPS} !on
+RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/
+RewriteRule ^ https://{{ phpmyadmin_host }}%{REQUEST_URI} [R=301,L]
+  END_rules
+}
+
+# phpMyAdmin's own directories: no page lives in them, and setup writes settings.
+context /libraries/  {
+  allowBrowse             0
+}
+
+context /templates/  {
+  allowBrowse             0
+}
+
+context /vendor/  {
+  allowBrowse             0
+}
+
+context /setup/  {
+  allowBrowse             0
+}
+
+context /tmp/  {
+  allowBrowse             0
+}
+
+# LiteSpeed's page cache stays off, so one person's pages are never served to another.
+module cache  {
+  ls_enabled              0
+}

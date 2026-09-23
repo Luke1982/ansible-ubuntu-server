@@ -1,31 +1,13 @@
 ---
 # Main DB tasks
 
-- name: Install MariaDB and Phpmyadmin
+- name: Install MariaDB
   apt:
     pkg:
       - mariadb-server
     state: present
 
-- name: Copy over phpmyadmin installation script
-  copy:
-    src: roles/db/files/install-phpmyadmin-openlitespeed.sh
-    dest: /tmp/install-phpmyadmin-openlitespeed.sh
-    mode: 0755
-    owner: root
-    group: root
-
-- name: Run phpmyadmin installation script
-  command: /tmp/install-phpmyadmin-openlitespeed.sh
-  args:
-    creates: /usr/local/lsws/Example/html/phpmyadmin
-  register: phpmyadmin_install
-  changed_when: "'Installed' in phpmyadmin_install.stdout"
-
-- name: Say why phpMyAdmin wasn't installed
-  debug:
-    msg: "{{ phpmyadmin_install.stdout }}"
-  when: "'Skipped' in phpmyadmin_install.stdout | default('')"
+- include_tasks: setup-phpmyadmin.yml
 
 - name: Copy custom mysql config file over
   copy:
