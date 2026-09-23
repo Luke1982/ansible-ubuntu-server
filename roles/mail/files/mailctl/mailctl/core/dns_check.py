@@ -77,6 +77,7 @@ class SystemResolver:
     def __init__(self, timeout: float = 5.0) -> None:
         self._resolver = dns.resolver.Resolver()
         self._resolver.lifetime = timeout
+        self._timeout = timeout
 
     def txt(self, name: str) -> list[str]:
         return [b"".join(answer.strings).decode(errors="replace") for answer in self._query(name, "TXT")]
@@ -87,7 +88,17 @@ class SystemResolver:
         return [answer.exchange.to_text(omit_final_dot=True) for answer in answers if answer.exchange != dns.name.root]
 
     def addresses(self, name: str) -> set[IPAddress]:
-        return {ip_address(answer.address) for kind in ("A", "AAAA") for answer in self._query(name, kind)}
+        """Where a name points, as other servers on the internet see it.
+
+        A server has its own hostname in /etc/hosts, on 127.0.1.1, and systemd-resolved answers from that file, so
+        the machine's own resolver says the hostname points at the loopback address. That says nothing about what
+        anyone else gets, so a loopback answer is put aside and the name's own nameservers are asked instead.
+        """
+        found = {ip_address(answer.address) for kind in ("A", "AAAA") for answer in self._query(name, kind)}
+        elsewhere = {ip for ip in found if not ip.is_loopback}
+        if elsewhere or not found:
+            return elsewhere
+        return {ip for ip in self._at_nameservers(name) if not ip.is_loopback}
 
     def srv(self, name: str) -> list[Srv]:
         return [
@@ -100,9 +111,33 @@ class SystemResolver:
         name = dns.reversename.from_address(str(address)).to_text()
         return [answer.target.to_text(omit_final_dot=True) for answer in self._query(name, "PTR")]
 
-    def _query(self, name: str, kind: str) -> list:
+    def _at_nameservers(self, name: str) -> set[IPAddress]:
+        """The addresses the name's own nameservers give for it, asked directly."""
+        servers = [str(ip) for ip in self._nameservers_of(name)]
+        if not servers:
+            return set()
+        return {ip_address(answer.address) for kind in ("A", "AAAA") for answer in self._query(name, kind, servers)}
+
+    def _nameservers_of(self, name: str) -> set[IPAddress]:
+        """The addresses of the nameservers of the closest zone the name is in."""
+        labels = name.split(".")
+        for start in range(len(labels) - 1):
+            hosts = [answer.target.to_text(omit_final_dot=True) for answer in self._query(".".join(labels[start:]), "NS")]
+            # Straight from this machine's resolver: a nameserver's own name isn't the one in /etc/hosts.
+            found = {ip_address(answer.address)
+                     for host in hosts for kind in ("A", "AAAA") for answer in self._query(host, kind)}
+            if found:
+                return found
+        return set()
+
+    def _query(self, name: str, kind: str, servers: list[str] | None = None) -> list:
+        resolver = self._resolver
+        if servers is not None:
+            resolver = dns.resolver.Resolver(configure=False)
+            resolver.nameservers = servers
+            resolver.lifetime = self._timeout
         try:
-            return list(self._resolver.resolve(name, kind))
+            return list(resolver.resolve(name, kind))
         except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
             return []
         except dns.exception.DNSException as error:

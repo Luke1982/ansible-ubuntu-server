@@ -445,3 +445,86 @@ def test_the_webmail_records_point_calendar_and_contact_apps_at_the_webmail_site
         DnsRecord("SRV", "_carddavs._tcp.example.nl", "0 1 443 webmail.example.nl."),
     ]
     assert dns_check.webmail_host("shop.example.nl") == "webmail.shop.example.nl"
+
+
+class Address:
+    def __init__(self, address):
+        self.address = address
+
+
+class Target:
+    def __init__(self, name):
+        self.target = dns.name.from_text(name)
+
+
+def answering(records=None):
+    """A _query that answers from records keyed by (name, kind), and from "authoritative" for a direct question."""
+    records = records or {}
+    asked = []
+
+    def query(self, name, kind, servers=None):
+        asked.append((name, kind, tuple(servers) if servers else None))
+        if servers is not None:
+            return records.get(("authoritative", kind), [])
+        return records.get((name, kind), [])
+
+    return query, asked
+
+
+def test_a_hostname_in_etc_hosts_is_looked_up_at_the_nameservers_of_its_zone(monkeypatch):
+    """A server has its own name in /etc/hosts on 127.0.1.1 and systemd-resolved answers from that file, which
+    says nothing about where the name points for anyone else."""
+    query, asked = answering({
+        ("server.hosting.example", "A"): [Address("127.0.1.1")],
+        ("hosting.example", "NS"): [Target("ns1.hosting.example.")],
+        ("ns1.hosting.example", "A"): [Address("198.51.100.53")],
+        ("authoritative", "A"): [Address("203.0.113.5")],
+        ("authoritative", "AAAA"): [Address("2001:db8::5")],
+    })
+    monkeypatch.setattr(dns_check.SystemResolver, "_query", query)
+
+    found = dns_check.SystemResolver().addresses("server.hosting.example")
+
+    assert found == {ip_address("203.0.113.5"), ip_address("2001:db8::5")}
+    assert ("server.hosting.example", "A", ("198.51.100.53",)) in asked
+
+
+def test_an_answer_from_the_internet_is_taken_as_it_is(monkeypatch):
+    query, asked = answering({("mail.example.nl", "A"): [Address("203.0.113.5")]})
+    monkeypatch.setattr(dns_check.SystemResolver, "_query", query)
+
+    assert dns_check.SystemResolver().addresses("mail.example.nl") == {ip_address("203.0.113.5")}
+    assert [kind for _, kind, _ in asked] == ["A", "AAAA"]  # no nameservers asked
+
+
+def test_a_name_with_no_records_stays_a_name_with_no_records(monkeypatch):
+    query, asked = answering()
+    monkeypatch.setattr(dns_check.SystemResolver, "_query", query)
+
+    assert dns_check.SystemResolver().addresses("mail.example.nl") == set()
+    assert all(servers is None for _, _, servers in asked)
+
+
+def test_a_loopback_answer_with_no_nameservers_to_ask_gives_nothing(monkeypatch):
+    query, _ = answering({("server.hosting.example", "A"): [Address("127.0.1.1")]})
+    monkeypatch.setattr(dns_check.SystemResolver, "_query", query)
+
+    assert dns_check.SystemResolver().addresses("server.hosting.example") == set()
+
+
+def test_the_hostname_check_passes_on_a_server_that_answers_itself_from_etc_hosts(monkeypatch):
+    """The whole point: doctor said the hostname didn't point here while it did."""
+    query, _ = answering({
+        ("web02.example.com", "A"): [Address("127.0.1.1")],
+        ("example.com", "NS"): [Target("ns1.example.com.")],
+        ("ns1.example.com", "A"): [Address("198.51.100.53")],
+        ("authoritative", "A"): [Address("203.0.113.5")],
+        ("authoritative", "AAAA"): [Address("2001:db8::5")],
+    })
+    monkeypatch.setattr(dns_check.SystemResolver, "_query", query)
+    ips = {ip_address("203.0.113.5"), ip_address("2001:db8::5")}
+
+    checks = dns_check.check_server("web02.example.com", server_ips=ips, resolver=dns_check.SystemResolver())
+
+    assert checks[0].status is Status.OK
+    assert checks[0].detail == "web02.example.com points to this server."
