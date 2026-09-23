@@ -2,16 +2,24 @@
 
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Annotated
+
+import typer
 
 from .. import ui
-from ..core import activity, addresses, domains, forwards, mailbox, names
+from ..core import accountfile, activity, addresses, domains, forwards, mailbox, names
 from ..core.errors import MailctlError
 from ..session import Session, open_session
 from . import domain as domain_command
+from .dns import DryRun
 from .shared import (
     Address, DeleteMail, DomainFilter, PasswordStdin, Yes, ask_address, attempt, decide_mail, domain_filter, group,
     warn_about_incoming_forwards,
 )
+
+AccountFile = Annotated[str, typer.Argument(
+    metavar="FILE", help="A JSON file of addresses with their passwords.", show_default=False)]
 
 app = group("Add, list and delete mail accounts, and change their passwords.")
 
@@ -42,6 +50,59 @@ def add(address: Address = None, password_stdin: PasswordStdin = False) -> None:
     ui.success(f"Created {address}.")
     if had_mail:
         ui.note(f"The mail that was kept in {home} is in the account again.")
+
+
+@app.command(name="import")
+def import_accounts(file: AccountFile = None, dry_run: DryRun = False, yes: Yes = False) -> None:
+    """Create accounts from a JSON file of addresses and passwords, for moving a server.
+
+    The file holds addresses with their passwords, or a list of entries with an "address" and a "password":
+
+    [dim]{"info@example.nl": "a password", "sales@example.nl": "another"}[/]
+
+    It is read and checked whole before anything is created, an address that already exists is left as it is, and
+    every domain has to be on this server already. Delete the file afterwards: it holds passwords in plain text.
+
+    [dim]Example:[/] mailctl address import accounts.json
+
+    [dim]Check the file only:[/] mailctl address import accounts.json --dry-run
+    """
+    path = Path(ui.ask("The JSON file with the accounts", file, "FILE"))
+    accounts = accountfile.read(path)
+    if accountfile.readable_by_others(path):
+        ui.warn(f"{path} can be read by others, and it holds passwords. Delete it once the accounts are created.")
+    with open_session() as session:
+        known = {account.address for account in accounts if addresses.exists(session.db, account.address)}
+        missing = sorted({names.split(account.address)[1] for account in accounts} - _domains(session))
+        if missing:
+            raise MailctlError(f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} not on this server.",
+                               hint=f"Add {'it' if len(missing) == 1 else 'them'} first with: mailctl domain add")
+        for address in sorted(known):
+            ui.note(f"{address} already exists and is left as it is.")
+        to_create = [account for account in accounts if account.address not in known]
+        if not to_create:
+            ui.success(f"Every account in {path} is already on this server.")
+            return
+        ui.line(f"{ui.plural(len(to_create), 'account')} to create from {path}:")
+        for account in to_create:
+            ui.line(account.address, indent=2)
+        if dry_run:
+            ui.note("Nothing was created (--dry-run).")
+            return
+        ui.confirm(f"Create {ui.plural(len(to_create), 'account')}?", yes)
+        for account in to_create:
+            home = mailbox.home_dir(session.config, account.address)
+            with session.db.transaction():
+                addresses.add(session.db, account.address, account.password)
+                mailbox.create_maildir(session.config, account.address)
+            ui.success(f"Created {account.address}." +
+                       (f" The mail that was kept in {home} is in the account again." if home.exists() else ""))
+    ui.success(f"Created {ui.plural(len(to_create), 'account')} from {path}.")
+    ui.note(f"Delete {path} now: it holds the passwords in plain text.")
+
+
+def _domains(session: Session) -> set[str]:
+    return {domain.name for domain in domains.list_domains(session.db)}
 
 
 @app.command(name="list")

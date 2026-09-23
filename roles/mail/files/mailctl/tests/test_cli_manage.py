@@ -1,5 +1,6 @@
 import base64
 import io
+import json
 import re
 import tarfile
 import subprocess
@@ -9,7 +10,7 @@ import pytest
 from conftest import FAKE_KEY_RECORD_START, PASSWORD, Mailctl
 
 from mailctl import ui
-from mailctl.core import system
+from mailctl.core import mailbox, system
 from mailctl.core.errors import MailctlError
 
 ROUNDCUBE = 'require ["fileinto"];\nif header :contains "subject" "invoice" { fileinto "Invoices"; }\n'
@@ -571,3 +572,90 @@ def test_filters_import_refuses_an_account_that_isnt_here_and_an_archive_without
     add_account(mailctl, "info@example.nl")
 
     assert "holds no filters" in mailctl.fails("filters", "import", "info@example.nl", str(empty))
+
+
+# mailctl address import: the accounts of a server being moved here, with the passwords their owners already have.
+
+ACCOUNTS = {"info@example.nl": "correct horse battery", "sales@example.nl": "another one entirely"}
+
+
+def stored_hash(database, address):
+    return database.value("SELECT password FROM virtual_users WHERE email = %s", address)
+
+
+def crypt_like_dovecot(database, address, password):
+    """The hash the account should have: the same salt, so only the password decides whether they match."""
+    salt = stored_hash(database, address).split("$")[2]
+    hashed = subprocess.run(["openssl", "passwd", "-6", "-salt", salt, "-stdin"],
+                            input=password + "\n", capture_output=True, text=True, check=True).stdout.strip()
+    return "{SHA512-CRYPT}" + hashed
+
+
+def accounts_file(tmp_path, accounts=None, name="accounts.json"):
+    path = tmp_path / name
+    path.write_text(json.dumps(ACCOUNTS if accounts is None else accounts))
+    path.chmod(0o600)
+    return path
+
+
+def test_import_creates_every_account_in_the_file(mailctl, example_domain, tmp_path, database, db_config):
+    path = accounts_file(tmp_path)
+
+    output = mailctl.ok("address", "import", str(path), "--yes")
+
+    assert "Created 2 accounts" in output
+    listed = mailctl.ok("address", "list")
+    for address, password in ACCOUNTS.items():
+        assert address in listed
+        assert mailbox.home_dir(db_config, address).is_dir(), "the account got no mailbox"
+        assert stored_hash(database, address) == crypt_like_dovecot(database, address, password), \
+            "the password in the file isn't the one the account got"
+
+
+def test_import_leaves_an_account_that_is_already_there(mailctl, example_domain, tmp_path, terminal, typed_passwords):
+    typed_passwords("the password it has now", "the password it has now")
+    mailctl.ok("address", "add", "info@example.nl")
+    path = accounts_file(tmp_path)
+
+    output = mailctl.ok("address", "import", str(path), "--yes")
+
+    assert "info@example.nl already exists and is left as it is." in output
+    assert "Created 1 account" in output
+
+
+def test_import_checks_the_whole_file_before_creating_anything(mailctl, example_domain, tmp_path):
+    path = accounts_file(tmp_path, {"info@example.nl": "correct horse battery", "sales@example.nl": "short"})
+
+    output = mailctl.fails("address", "import", str(path), "--yes")
+
+    assert "The password needs at least" in output
+    assert "There are no accounts yet." in mailctl.ok("address", "list")
+
+
+def test_import_needs_the_domains_to_be_on_this_server(mailctl, example_domain, tmp_path):
+    path = accounts_file(tmp_path, {"info@example.nl": "correct horse battery",
+                                    "info@elsewhere.nl": "correct horse battery"})
+
+    output = mailctl.fails("address", "import", str(path), "--yes")
+
+    assert "elsewhere.nl is not on this server" in output
+    assert "There are no accounts yet." in mailctl.ok("address", "list")
+
+
+def test_import_can_check_a_file_without_creating_anything(mailctl, example_domain, tmp_path):
+    path = accounts_file(tmp_path)
+
+    output = mailctl.ok("address", "import", str(path), "--dry-run")
+
+    assert "2 accounts to create" in output and "Nothing was created (--dry-run)." in output
+    assert "There are no accounts yet." in mailctl.ok("address", "list")
+
+
+def test_import_says_to_delete_a_file_of_passwords_others_can_read(mailctl, example_domain, tmp_path):
+    path = accounts_file(tmp_path)
+    path.chmod(0o644)
+
+    output = mailctl.ok("address", "import", str(path), "--yes")
+
+    assert "can be read by others, and it holds passwords" in output
+    assert f"Delete {path} now" in output
