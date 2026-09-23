@@ -482,7 +482,7 @@ def test_check_says_which_records_keep_a_site_whose_name_no_longer_points_here(c
     assert found.detail.startswith("webmail.example.nl has no A or AAAA record.")
     assert "takes the site away" in found.detail
     assert [(record.type, record.name) for record in found.fixes] == [
-        ("A", "webmail.example.nl"), ("AAAA", "webmail.example.nl"),
+        ("A", "webmail.example.nl"),
         ("SRV", "_caldavs._tcp.example.nl"), ("SRV", "_carddavs._tcp.example.nl"),
     ]
 

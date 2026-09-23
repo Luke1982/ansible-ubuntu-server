@@ -26,6 +26,7 @@ MAIL_SERVICES = (("_imaps._tcp", 0, 993), ("_imap._tcp", 10, 143), ("_submission
 DAV_SERVICES = ("_caldavs._tcp", "_carddavs._tcp")
 DAV_PORT = 443
 WEBMAIL_PREFIX = "webmail."
+AUTODISCOVER_PREFIX = "autodiscover."
 
 
 class Status(Enum):
@@ -194,9 +195,16 @@ def webmail_records(domain: str, server_ips: set[IPAddress]) -> list[DnsRecord]:
 
 
 def autodetect_records(domain: str, server_ips: set[IPAddress]) -> list[DnsRecord]:
-    """The records for the site that hands Thunderbird (autoconfig) and Outlook (autodiscover) their settings."""
-    return [record for name in ("autoconfig", "autodiscover")
-            for record in _host_records(f"{name}.{domain}", _reachable(server_ips))]
+    """The records for the site that hands Thunderbird (autoconfig) and Outlook (autodiscover) their settings.
+
+    The SRV record is what Outlook looks up when the addresses don't answer it, which includes the step it takes
+    first: a POST to the domain itself, where most domains have their website and no mail settings.
+    """
+    return [
+        *(record for name in ("autoconfig", "autodiscover")
+          for record in _host_records(f"{name}.{domain}", _reachable(server_ips))),
+        DnsRecord("SRV", f"_autodiscover._tcp.{domain}", f"0 1 443 {AUTODISCOVER_PREFIX}{domain}."),
+    ]
 
 
 def mail_host(domain: str) -> str:
@@ -269,7 +277,15 @@ def _address_records(domain: str, server_ips: set[IPAddress]) -> tuple[DnsRecord
 
 
 def _host_records(host: str, ips: set[IPAddress]) -> tuple[DnsRecord, ...]:
-    return tuple(DnsRecord("A" if ip.version == 4 else "AAAA", host, str(ip)) for ip in _sorted(ips))
+    """The address records for a name on this server: its IPv4 address.
+
+    A name is published so that mail programs and browsers reach it, and an address they can't reach costs every
+    one of them a wait before it falls back to the other: a server whose web listeners are on IPv4 only, which is
+    how OpenLiteSpeed comes, makes an AAAA record a delay on every first connection. A server with no IPv4 address
+    publishes its IPv6 one, since then that is the only way to it.
+    """
+    published = {ip for ip in ips if ip.version == 4} or ips
+    return tuple(DnsRecord("A" if ip.version == 4 else "AAAA", host, str(ip)) for ip in _sorted(published))
 
 
 def _sorted(ips: set[IPAddress]) -> list[IPAddress]:

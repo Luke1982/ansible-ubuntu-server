@@ -90,7 +90,8 @@ def read_zone(session: Session, domain: str, records: list[DnsRecord], *, read_o
     if not transip.uses_transip_nameservers(nameservers):
         ui.warn(f"{zone_name} uses the nameservers {', '.join(nameservers) or '(none)'}, "
                 f"so the internet doesn't see its DNS records at TransIP.")
-    return ZoneChange(client, zone_name, entries, zone.plan(domain, entries, records, zone=zone_name))
+    return ZoneChange(client, zone_name, entries,
+                      zone.plan(domain, entries, records, zone=zone_name, sender_ips=system.server_ips()))
 
 
 def show_zone_change(change: ZoneChange) -> None:

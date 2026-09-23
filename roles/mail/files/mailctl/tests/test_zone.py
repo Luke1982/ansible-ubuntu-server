@@ -9,11 +9,10 @@ IPV4, IPV6 = "93.184.216.34", "2606:2800:220:1::5"
 DKIM_VALUE = "v=DKIM1; h=sha256; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOC"
 RECORDS = dns_check.recommended_records("example.nl", {ip_address(IPV4), ip_address(IPV6)}, DKIM_VALUE)
 
-# Everything mailctl publishes, as TransIP would hold it.
+# Everything mailctl publishes, as TransIP would hold it. Only the IPv4 address: see _host_records.
 MAIL_ENTRIES = [
     Entry("@", 3600, "MX", "10 mail.example.nl."),
     Entry("mail", 3600, "A", IPV4),
-    Entry("mail", 3600, "AAAA", IPV6),
     Entry("@", 3600, "TXT", "v=spf1 mx ~all"),
     Entry("mail._domainkey", 3600, "TXT", DKIM_VALUE),
     Entry("_dmarc", 3600, "TXT", "v=DMARC1; p=quarantine"),
@@ -22,15 +21,18 @@ MAIL_ENTRIES = [
     Entry("_submissions._tcp", 3600, "SRV", "0 1 465 mail.example.nl."),
     Entry("_submission._tcp", 3600, "SRV", "10 1 587 mail.example.nl."),
     Entry("webmail", 3600, "A", IPV4),
-    Entry("webmail", 3600, "AAAA", IPV6),
     Entry("_caldavs._tcp", 3600, "SRV", "0 1 443 webmail.example.nl."),
     Entry("_carddavs._tcp", 3600, "SRV", "0 1 443 webmail.example.nl."),
 ]
 WEBSITE = [Entry("@", 300, "A", "198.51.100.80"), Entry("www", 300, "CNAME", "@")]
 
 
+SERVER_IPS = {ip_address(IPV4), ip_address(IPV6)}
+
+
 def plan(*entries):
-    return zone.plan("example.nl", list(entries), RECORDS)
+    # The server has both addresses and sends mail from both, while only the IPv4 one is published.
+    return zone.plan("example.nl", list(entries), RECORDS, sender_ips=SERVER_IPS)
 
 
 def without(entries, *types_and_names):
@@ -153,21 +155,37 @@ def test_the_mail_host_loses_its_other_addresses_and_cnames():
     result = plan(*without(MAIL_ENTRIES, ("A", "mail"), ("AAAA", "mail")), *old)
 
     assert result.remove == tuple(old[:2])
-    assert result.add == (Entry("mail", 3600, "A", IPV4), Entry("mail", 3600, "AAAA", IPV6))
+    assert result.add == (Entry("mail", 3600, "A", IPV4),)
     assert old[2] in result.result
 
 
 def test_records_written_differently_are_the_same():
     written_differently = [
         Entry("@", 300, "MX", "10 mail"),
-        Entry("MAIL", 300, "AAAA", "2606:2800:0220:0001:0000:0000:0000:0005"),
+        Entry("MAIL", 300, "A", "93.184.216.34"),
         Entry("_imaps._tcp", 300, "SRV", "0 1 993 Mail.Example.NL."),
         Entry("_imap._tcp", 300, "SRV", "10 1 143 mail"),
         Entry("mail._domainkey", 300, "TXT", '"v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0" "BAQEFAAOC"'),
     ]
-    replaced = {("MX", "@"), ("AAAA", "mail"), ("SRV", "_imaps._tcp"), ("SRV", "_imap._tcp"), ("TXT", "mail._domainkey")}
+    replaced = {("MX", "@"), ("A", "mail"), ("SRV", "_imaps._tcp"), ("SRV", "_imap._tcp"), ("TXT", "mail._domainkey")}
 
     assert not plan(*without(MAIL_ENTRIES, *replaced), *written_differently).changes
+
+
+def test_spf_allows_the_address_mail_goes_out_from_even_though_no_name_points_there():
+    """Mail leaves over IPv6 from a server that has it, whatever the names point to, and an SPF record without
+    that address has every such message refused."""
+    result = plan(*without(MAIL_ENTRIES, ("TXT", "@")), Entry("@", 300, "TXT", "v=spf1 -all"))
+
+    assert result.add == (Entry("@", 3600, "TXT", f"v=spf1 ip4:{IPV4} ip6:{IPV6} -all"),)
+
+
+def test_an_ipv6_record_left_at_a_published_name_is_taken_away():
+    """A name is published to be reached; publishing again cleans up an address that was published before."""
+    result = plan(*MAIL_ENTRIES, Entry("mail", 300, "AAAA", IPV6), Entry("webmail", 300, "AAAA", IPV6))
+
+    assert result.remove == (Entry("mail", 300, "AAAA", IPV6), Entry("webmail", 300, "AAAA", IPV6))
+    assert result.add == ()
 
 
 def test_another_dkim_key_or_a_cname_for_it_is_replaced():

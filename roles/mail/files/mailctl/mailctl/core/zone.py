@@ -46,14 +46,20 @@ class _Group:
     wanted: Callable[[list[Entry]], list[Entry]]
 
 
-def plan(domain: str, current: list[Entry], records: list[DnsRecord], zone: str | None = None) -> Plan:
+def plan(domain: str, current: list[Entry], records: list[DnsRecord], zone: str | None = None,
+         sender_ips: set[IPAddress] | None = None) -> Plan:
     """The entries to remove and add, so the zone holds the domain's records and not the entries they replace.
-    The zone is the domain's own, or a parent domain's for a domain like shop.example.nl."""
+    The zone is the domain's own, or a parent domain's for a domain like shop.example.nl.
+
+    sender_ips are the addresses this server sends mail from, for an SPF record that doesn't allow it yet. They
+    are not the addresses published for the mail host: mail goes out over IPv6 from a server that has it, whether
+    or not a name points there, and an SPF record that leaves that address out has every such message refused.
+    """
     zone = zone or domain
     remove: list[Entry] = []
     add: list[Entry] = []
     unchanged = 0
-    for group in _groups(domain, zone, records):
+    for group in _groups(domain, zone, records, sender_ips):
         existing = [entry for entry in current if group.replaces(entry)]
         wanted = group.wanted(existing)
         kept = [entry for entry in existing if any(_same(entry, other, zone) for other in wanted)]
@@ -74,9 +80,10 @@ def _relative(zone: str, name: str) -> str:
     return "@" if name == zone else name.removesuffix(f".{zone}")
 
 
-def _groups(domain: str, zone: str, records: list[DnsRecord]) -> list[_Group]:
-    mail_ips = {ip_address(record.value) for record in records
-                if record.type in ("A", "AAAA") and record.name == mail_host(domain)}
+def _groups(domain: str, zone: str, records: list[DnsRecord], sender_ips: set[IPAddress] | None) -> list[_Group]:
+    mail_ips = sender_ips if sender_ips is not None else {
+        ip_address(record.value) for record in records
+        if record.type in ("A", "AAAA") and record.name == mail_host(domain)}
     grouped: dict[tuple[str, str], list[Entry]] = {}
     for record in records:
         entry = _entry(zone, record)

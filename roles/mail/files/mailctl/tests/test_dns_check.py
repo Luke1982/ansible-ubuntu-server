@@ -81,7 +81,6 @@ def test_recommended_records_deliver_mail_to_the_mail_host_at_the_servers_public
     assert dns_check.recommended_records("example.nl", server_ips, DKIM_VALUE) == [
         DnsRecord("MX", "example.nl", "10 mail.example.nl."),
         DnsRecord("A", "mail.example.nl", "93.184.216.34"),
-        DnsRecord("AAAA", "mail.example.nl", "2606:2800:220:1::5"),
         DnsRecord("TXT", "example.nl", "v=spf1 mx ~all"),
         DnsRecord("TXT", "mail._domainkey.example.nl", DKIM_VALUE),
         DnsRecord("TXT", "_dmarc.example.nl", "v=DMARC1; p=quarantine"),
@@ -90,10 +89,27 @@ def test_recommended_records_deliver_mail_to_the_mail_host_at_the_servers_public
         DnsRecord("SRV", "_submissions._tcp.example.nl", "0 1 465 mail.example.nl."),
         DnsRecord("SRV", "_submission._tcp.example.nl", "10 1 587 mail.example.nl."),
         DnsRecord("A", "webmail.example.nl", "93.184.216.34"),
-        DnsRecord("AAAA", "webmail.example.nl", "2606:2800:220:1::5"),
         DnsRecord("SRV", "_caldavs._tcp.example.nl", "0 1 443 webmail.example.nl."),
         DnsRecord("SRV", "_carddavs._tcp.example.nl", "0 1 443 webmail.example.nl."),
     ]
+
+
+def test_only_the_ipv4_address_is_published_unless_that_is_all_there_is():
+    """A name is published to be reached, and an address that isn't served there costs every client a wait."""
+    both = {ip_address("93.184.216.34"), ip_address("2606:2800:220:1::5")}
+
+    assert dns_check.autodetect_records("example.nl", both)[:2] == [
+        DnsRecord("A", "autoconfig.example.nl", "93.184.216.34"),
+        DnsRecord("A", "autodiscover.example.nl", "93.184.216.34"),
+    ]
+    assert dns_check.webmail_records("example.nl", {ip_address("2606:2800:220:1::5")})[0] == \
+        DnsRecord("AAAA", "webmail.example.nl", "2606:2800:220:1::5")  # a server with no IPv4 address at all
+
+
+def test_outlook_is_sent_to_the_autodiscover_site_by_an_srv_record():
+    """Outlook asks the domain itself first, where most domains have a website that knows nothing about mail."""
+    assert dns_check.autodetect_records("example.nl", SERVER_IPS)[-1] == \
+        DnsRecord("SRV", "_autodiscover._tcp.example.nl", "0 1 443 autodiscover.example.nl.")
 
 
 def test_the_mail_host_of_a_subdomain_is_in_the_subdomain():
