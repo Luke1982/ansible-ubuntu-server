@@ -298,6 +298,7 @@ Mail servers get `mailctl`, a command-line tool for the mail domains, addresses,
 |---------|-------------|
 | `mailctl domain add example.nl` | Adds a domain, creates its DKIM key and shows the DNS records to publish |
 | `mailctl address add info@example.nl` | Creates an account; asks for the password |
+| `mailctl address import accounts.json` | Creates the accounts in a JSON file of addresses and passwords, for moving a server to this one |
 | `mailctl forward add sales@example.nl info@example.nl` | Forwards mail for an address |
 | `mailctl status info@example.nl` | Folders, last logins, sending against the limits, recent bounces |
 | `mailctl status example.nl` | Checks the domain's DNS records and whether the certificate includes `mail.example.nl` |
@@ -321,6 +322,10 @@ Last logins are recorded for IMAP, which webmail and phones on ActiveSync use to
 - Postfix and Dovecot use the hostname's Let's Encrypt certificate for everyone, so it must include `mail.example.nl` for every domain. `mailctl certificate sync` adds the names that point to the server (below); `mailctl doctor` tells you when one is missing.
 
 A new domain: `mailctl domain add example.nl`, then `mailctl dns publish example.nl` (or publish the records by hand when the domain isn't at TransIP), `mailctl certificate sync`, and check with `mailctl doctor example.nl`.
+
+Every address record it publishes is the server's IPv4 address. A name is published to be reached, and an address nothing answers on costs each mail program and browser a wait before it falls back — a server whose web listeners are on IPv4, which is how OpenLiteSpeed comes, makes an `AAAA` record a delay on every first connection, and Outlook gives up on it altogether. An IPv6-only server publishes its `AAAA` record, since then that is the only way to it. SPF is a different matter and still allows both addresses: mail leaves over IPv6 from a server that has it, whatever the names point to.
+
+`mailctl doctor` looks past the records themselves: it connects to every address these names point to, on the port that name is for, and warns about the ones where nothing answers. That is what a record left over from another server looks like, and it is invisible in DNS.
 
 `dns publish` only touches the mail records: it replaces the MX, `mail`, DKIM and SRV records, removes a previous provider's `autoconfig` and `autodiscover` records, adds the server's addresses to an SPF record that doesn't allow the server yet (so the senders it allows keep working), and leaves an existing DMARC policy and every other record alone. A domain like `shop.example.nl` goes into the `example.nl` zone.
 
@@ -357,6 +362,14 @@ Every command asks for what you leave out. In scripts, pass everything on the co
 mailctl address add info@example.nl --password-stdin < password.txt
 mailctl address delete info@example.nl --yes --keep-mail
 ```
+
+Moving a server brings tens of accounts whose passwords are already known. `mailctl address import accounts.json` creates them from a file of addresses with their passwords, or of entries with an `address` and a `password`:
+
+```json
+{"info@example.nl": "a password", "sales@example.nl": "another one"}
+```
+
+The file is read and checked whole first, so a mistake in it is found before any account exists; an address that is already there is left as it is, and every domain has to be on this server already. `--dry-run` checks the file and creates nothing. Delete the file afterwards: it holds the passwords in plain text, and mailctl says so when others can read it.
 
 The code is in `roles/mail/files/mailctl`. Its tests start a throwaway MariaDB or MySQL server and run against the library versions of both Ubuntu releases:
 
