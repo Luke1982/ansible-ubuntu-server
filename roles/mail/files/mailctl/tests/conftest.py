@@ -26,7 +26,7 @@ os.environ["COLUMNS"] = "200"
 from typer.testing import CliRunner  # noqa: E402
 
 from mailctl import cli  # noqa: E402
-from mailctl.core import db, openlitespeed, system, transip  # noqa: E402
+from mailctl.core import db, openlitespeed, reach, system, transip  # noqa: E402
 from mailctl.core.config import Config, SendLimit  # noqa: E402
 
 SCHEMAS = {
@@ -184,6 +184,12 @@ class FakeCommand:
         if not self._log.exists():
             return []
         return [re.findall(r"\[([^]]*)\]", line) for line in self._log.read_text().splitlines()]
+
+
+@pytest.fixture(autouse=True)
+def everything_answers(monkeypatch):
+    """No test reaches the network: every address answers, unless a test says otherwise."""
+    monkeypatch.setattr(reach, "answers", lambda address, port, timeout=None: True)
 
 
 @pytest.fixture(autouse=True)

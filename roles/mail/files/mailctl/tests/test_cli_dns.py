@@ -6,7 +6,7 @@ import pytest
 from conftest import FAKE_KEY_RECORD_START, make_certificate
 
 from mailctl import ui
-from mailctl.core import dns_check, system
+from mailctl.core import dns_check, reach, system
 from mailctl.core.dns_check import Srv
 
 PUBLIC_IP = "93.184.216.34"
@@ -327,3 +327,20 @@ def test_status_of_a_domain_checks_the_certificate(mailctl, healthy_dns):
 
     assert "The certificate includes mail.example.nl" in output
     assert "Mail programs can look up mail.example.nl" in output
+
+
+def test_doctor_reports_an_address_that_answers_nothing(mailctl, healthy_dns, monkeypatch):
+    """What a record alone can't show: mail.example.nl points here, but nothing listens for IMAP."""
+    monkeypatch.setattr(reach, "answers", lambda address, port, timeout=None: port != reach.IMAP_PORT)
+
+    output = mailctl.ok("doctor")  # a warning: the records are right, so nothing is broken for certain
+
+    assert f"mail.example.nl at {PUBLIC_IP} doesn't answer on port 993" in output
+    assert "warning" in output
+    assert "Take the record away, or let the server answer there." in output
+
+
+def test_doctor_says_nothing_about_reachability_when_everything_answers(mailctl, healthy_dns):
+    output = mailctl.ok("doctor")
+
+    assert "Everything these names point to answers." in output

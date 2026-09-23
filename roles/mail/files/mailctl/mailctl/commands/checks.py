@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from .. import ui
-from ..core import autodiscover, certificate, dkim, dns_check, system, webmail
+from ..core import autodiscover, certificate, dkim, dns_check, reach, system, webmail
 from ..core.certificate import Certificate
 from ..core.dns_check import Check, IPAddress, Status
 from ..core.errors import MailctlError
@@ -43,7 +43,9 @@ def server_checks(facts: Server, now: datetime) -> list[Check]:
         checks.append(certificate.check_server(facts.certificate, facts.hostname, now))
     else:
         checks.append(Check("Certificate", Status.FAIL, facts.certificate_problem))
-    return checks
+    # Where other mail servers deliver: a hostname address that doesn't answer there delays every message.
+    reachable = reach.check({facts.hostname: reach.SMTP_PORT}, facts.resolver)
+    return checks + ([reachable] if reachable else [])
 
 
 def domain_checks(session: Session, facts: Server, domain: str, now: datetime | None = None) -> list[Check]:
@@ -61,7 +63,30 @@ def domain_checks(session: Session, facts: Server, domain: str, now: datetime | 
     moment = now or datetime.now().astimezone()
     site = attempt_check(lambda: autodiscover.check(session.config, domain, facts.ips, facts.resolver, moment))
     webmail_site = attempt_check(lambda: webmail.check(session.config, domain, facts.ips, facts.resolver, moment))
-    return checks + [found for found in (site, webmail_site) if found]
+    reachable = attempt_check(lambda: reach.check(_ports_of(session, domain), facts.resolver))
+    return checks + [found for found in (site, webmail_site, reachable) if found]
+
+
+def _has_webmail(session: Session, domain: str) -> bool:
+    """Whether the domain has a webmail site. False when OpenLiteSpeed's config can't be read, which the webmail
+    check itself reports: the mail host is worth looking at either way."""
+    try:
+        return webmail.host(domain) in webmail.sites(session.config)
+    except MailctlError:
+        return False
+
+
+def _ports_of(session: Session, domain: str) -> dict[str, int]:
+    """The names a domain's mail depends on, with the port each one is used for."""
+    names = {dns_check.mail_host(domain): reach.IMAP_PORT}
+    if _has_webmail(session, domain):
+        names[webmail.host(domain)] = reach.HTTPS_PORT
+    if autodiscover.has_site(session.config, domain):
+        site, alias = autodiscover.names(domain)
+        # Outlook asks the domain itself before it asks these, so an address there that doesn't answer stops it
+        # before it ever reaches the site.
+        names.update({site: reach.HTTPS_PORT, alias: reach.HTTPS_PORT, domain: reach.HTTPS_PORT})
+    return names
 
 
 def attempt_check(check: Callable[[], Check | None]) -> Check | None:
