@@ -1,5 +1,41 @@
 ---
 
+# The ignorecommand below calls gawk (mawk, Ubuntu's default awk, won't do) and
+# a mysql client, to read which mail accounts exist. mariadb-server brings a
+# client along, but naming it keeps the dependency visible: without one the
+# script has no account list, fails closed, and quietly bans everybody.
+- name: Install what the mail ignorecommand needs
+  apt:
+    pkg:
+      - gawk
+      - mariadb-client
+    state: present
+
+# fail2ban's rule -- so many failures in so long, then ban -- cannot tell a
+# password guesser from a customer's phone that still has last week's password
+# saved and retries it every few minutes forever. In the log they look the
+# same. This script answers that question for the dovecot and postfix jails,
+# which ban permanently; the script explains how it decides.
+#
+# Not a template: the script is full of ${...} and awk braces.
+- name: Install the mail brute-force ignorecommand
+  copy:
+    src: f2b-mail-ignore.sh
+    dest: /usr/local/sbin/f2b-mail-ignore.sh
+    mode: 0755
+    owner: root
+    group: root
+
+# fail2ban runs the script afresh for every ban it considers, so neither this
+# nor the script itself needs a restart to take effect.
+- name: Set the thresholds for the mail brute-force ignorecommand
+  template:
+    src: f2b-mail-ignore.j2
+    dest: /etc/default/f2b-mail-ignore
+    mode: 0644
+    owner: root
+    group: root
+
 - name: Install postfix fail2ban jail
   copy:
     src: jail-postfix.conf

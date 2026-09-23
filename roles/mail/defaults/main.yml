@@ -74,3 +74,24 @@ mailcert_root: /var/www/mailcert
 # Email address for the Let's Encrypt account of the webmail certificates, used
 # when certbot has no account yet. Without it, the account has no address.
 letsencrypt_email: ""
+
+# Brute-force protection for the mail jails (tasks/configure-fail2ban.yml).
+# Before banning an address, fail2ban asks /usr/local/sbin/f2b-mail-ignore.sh
+# whether it belongs to a customer whose mail client still has an old password
+# saved. It exempts the address only if all three thresholds below are met.
+#
+# These were fitted to one server's traffic and replayed over 30 days of its
+# mail log. Re-validate against real logs before changing them; the script's
+# comments explain what each one is for.
+
+# Successful logins an address needs before it counts as an established device.
+# A password guesser has none, which does most of the work.
+f2b_min_success: 2
+# Distinct accounts it may be failing on. One phone with several mailboxes
+# configured is normal; failing across a dozen accounts is not.
+f2b_max_fail_users: 3
+# Distinct accounts that don't exist it may try. One covers a client still
+# configured for a mailbox that was deleted; attackers probe far more.
+f2b_max_invalid_users: 1
+# How far back to read when the mail log is the systemd journal.
+f2b_log_days: 30

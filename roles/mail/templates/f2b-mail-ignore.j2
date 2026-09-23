@@ -1,0 +1,10 @@
+# Settings for /usr/local/sbin/f2b-mail-ignore.sh, the fail2ban ignorecommand
+# for the mail jails. The script explains what each one does.
+#
+# Managed by Ansible: roles/mail/templates/f2b-mail-ignore.j2. Change the
+# values in roles/mail/defaults/main.yml, not here.
+
+MIN_SUCCESS={{ f2b_min_success }}
+MAX_FAIL_USERS={{ f2b_max_fail_users }}
+MAX_INVALID_USERS={{ f2b_max_invalid_users }}
+LOG_DAYS={{ f2b_log_days }}
