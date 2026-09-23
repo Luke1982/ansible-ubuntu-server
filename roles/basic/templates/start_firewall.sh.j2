@@ -37,6 +37,8 @@ $IPT -A INPUT -m state --state ESTABLISHED -j ACCEPT
 # Web server
 iptables -A INPUT -p tcp --dport 80 -s 0/0 -m state --state NEW,ESTABLISHED -j ACCEPT
 iptables -A INPUT -p tcp --dport 443 -s 0/0 -m state --state NEW,ESTABLISHED -j ACCEPT
+# OpenLiteSpeed admin panel
+iptables -A INPUT -p tcp --dport 7080 -s 0/0 -m state --state NEW,ESTABLISHED -j ACCEPT
 # Mail server
 iptables -A INPUT -p tcp --dport 143 -s 0/0 -m state --state NEW,ESTABLISHED -j ACCEPT
 iptables -A INPUT -p tcp --dport 25 -s 0/0 -m state --state NEW,ESTABLISHED -j ACCEPT
