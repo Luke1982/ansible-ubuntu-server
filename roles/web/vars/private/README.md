@@ -31,4 +31,9 @@ linux_users:
 | `ssh_access` | `true` or `false` |
 | `ftp_access` | `true` or `false` |
 
-> Virtual host configuration (PHP-FPM pools, document roots) is not yet automated. Virtual hosts are configured manually in the OpenLiteSpeed admin panel after provisioning.
+> Sites are not set up from this file. A site's Linux user is made by `domainctl add DOMAIN` on the server, with
+> no password, along with its directories, permissions, virtual host and certificate. See "Managing web sites with
+> domainctl" in the project README.
+>
+> Use `linuxusers.yml` for the people who log in to the server: give them `ssh_access: true` and a password hash.
+> A user listed here that `domainctl` also made is left alone as long as `state: present`.

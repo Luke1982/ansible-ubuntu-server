@@ -1,1 +1,7 @@
 ---
+
+# A graceful restart: requests being handled finish first, and OpenLiteSpeed starts when it isn't running.
+# lswsctrl may start OpenLiteSpeed and its watchdog in the background, which keeps the command's output open,
+# so nothing is read from it.
+- name: restart openlitespeed
+  shell: "{{ ols_root }}/bin/lswsctrl restart </dev/null >/dev/null 2>&1"

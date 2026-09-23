@@ -1,0 +1,36 @@
+---
+# The OpenLiteSpeed template every site made with domainctl is a member of.
+
+- name: Create OpenLiteSpeed's template directory
+  file:
+    path: "{{ ols_root }}/conf/templates"
+    state: directory
+    owner: "{{ ols_config_user }}"
+    group: "{{ ols_config_user }}"
+    mode: 0750
+
+# A template written by hand before is kept next to the new one, so the settings it had can be compared.
+- name: Look for a webhosting template written by hand
+  stat:
+    path: "{{ ols_root }}/{{ web_template_file }}"
+  register: webhosting_template
+
+- name: Keep a copy of a template that Ansible didn't write
+  copy:
+    src: "{{ ols_root }}/{{ web_template_file }}"
+    dest: "{{ ols_root }}/{{ web_template_file }}.before-ansible"
+    remote_src: yes
+    owner: "{{ ols_config_user }}"
+    group: "{{ ols_config_user }}"
+    mode: 0640
+    force: no
+  when: webhosting_template.stat.exists
+
+- name: Write the webhosting template
+  template:
+    src: webhosting.conf.j2
+    dest: "{{ ols_root }}/{{ web_template_file }}"
+    owner: "{{ ols_config_user }}"
+    group: "{{ ols_config_user }}"
+    mode: 0640
+  notify: restart openlitespeed

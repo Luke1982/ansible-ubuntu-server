@@ -6,3 +6,30 @@ php_versions:
   "26.04": "8.5"
 
 php_version: "{{ php_versions[ansible_distribution_version] }}"
+
+# --- Sites and domainctl -----------------------------------------------------
+# Where a site's Linux user gets its home directory, which is the virtual host's root.
+web_home_root: /home
+# The site's directories inside it. The template serves the first and writes its logs in the second.
+web_docroot: public_html/www
+web_logs_dir: logs
+# The address OpenLiteSpeed shows on its error pages, and the one Let's Encrypt writes to.
+web_admin_email: info@majorlabel.nl
+# OpenLiteSpeed's log level for a site: DEBUG is verbose but keeps rolling at 1 MB.
+web_log_level: DEBUG
+# The user OpenLiteSpeed serves and runs PHP as. It is the one the sites' ACLs let in, and it only ever reads:
+# a site that has to write somewhere gets that one directory opened up by hand.
+web_ols_user: nobody
+# OpenLiteSpeed itself
+ols_root: /usr/local/lsws
+# Owns OpenLiteSpeed's config directory, and WebAdmin runs as it.
+ols_config_user: lsadm
+# The template in httpd_config.conf that every domainctl site is a member of.
+web_template: webhosting
+web_template_file: conf/templates/webhosting.conf
+
+letsencrypt_dir: /etc/letsencrypt
+
+# Where domainctl and the shared library are installed, and where the shared source lives in this repository.
+domainctl_lib: /usr/local/lib/domainctl
+serverctl_src: "{{ role_path }}/../../shared/serverctl"

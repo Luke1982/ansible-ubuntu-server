@@ -15,6 +15,7 @@
     state: present
 
 - include_tasks: setup-openlitespeed.yml
+- include_tasks: setup-webhosting.yml
 
 - name: Install PHP and some PHP modules
   apt:
@@ -78,3 +79,15 @@
       export NVM_DIR="/usr/local/nvm"
       [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
       [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+- include_tasks: setup-domainctl.yml
+
+# The sites themselves are added with "domainctl add DOMAIN". This only brings what is already there up to date:
+# the template block in OpenLiteSpeed's config, the redirect to HTTPS, and each site's file permissions.
+- name: Bring the sites up to date
+  command: domainctl sync
+  register: domainctl_sync
+  changed_when: "'Changed the web sites' in domainctl_sync.stdout"
+
+- name: Show what domainctl sync did
+  debug:
+    var: domainctl_sync.stdout_lines

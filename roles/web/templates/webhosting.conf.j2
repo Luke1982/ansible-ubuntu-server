@@ -1,0 +1,56 @@
+# The settings every site made with domainctl shares.
+#
+# Written by Ansible (roles/web/templates/webhosting.conf.j2). Changes made by hand are overwritten on the next
+# playbook run. The one thing domainctl changes here is the redirect between the markers below: it comments the
+# rules out while certbot proves a new domain over plain HTTP, and puts them back straight afterwards.
+#
+# $VH_NAME is the member's name in httpd_config.conf, which domainctl makes the site's Linux user. Everything
+# here is found by it: the home directory the site is served from, and the certificate it presents.
+vhRoot                    {{ web_home_root }}/$VH_NAME/
+configFile                $SERVER_ROOT/conf/vhosts/$VH_NAME/vhconf.conf
+allowSymbolLink           1
+enableScript              1
+restrained                1
+
+virtualHostConfig  {
+  docRoot                 $VH_ROOT/{{ web_docroot }}
+  adminEmails             {{ web_admin_email }}
+  enableGzip              1
+  enableBr                1
+  enableIpGeo             0
+
+  errorlog $VH_ROOT/{{ web_logs_dir }}/error.log {
+    useServer             0
+    logLevel              {{ web_log_level }}
+    rollingSize           1M
+    keepDays              30
+    compressArchive       1
+  }
+
+  accesslog $VH_ROOT/{{ web_logs_dir }}/access.log {
+    useServer             0
+  }
+
+  # Let's Encrypt asks for its challenge over plain HTTP. Serving it from a context of its own means the folder
+  # is reachable whatever a site's own .htaccess does with the rest.
+  context /.well-known/acme-challenge/ {
+    location              $VH_ROOT/{{ web_docroot }}/.well-known/acme-challenge/
+    allowBrowse           1
+  }
+
+  rewrite  {
+    enable                1
+    autoLoadHtaccess      1
+# BEGIN https-redirect
+RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/
+RewriteCond %{HTTPS} off
+RewriteRule .* https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+# END https-redirect
+  }
+
+  vhssl  {
+    keyFile               {{ letsencrypt_dir }}/live/$VH_NAME/privkey.pem
+    certFile              {{ letsencrypt_dir }}/live/$VH_NAME/fullchain.pem
+    certChain             1
+  }
+}

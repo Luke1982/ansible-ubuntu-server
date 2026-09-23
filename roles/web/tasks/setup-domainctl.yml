@@ -1,0 +1,135 @@
+---
+# domainctl manages the web sites of this server: a Linux user per site, its directories and permissions, a
+# member of the OpenLiteSpeed template and a Let's Encrypt certificate.
+# Its code is in roles/web/files/domainctl, the library it shares with mailctl in shared/serverctl.
+# Run "domainctl --help" on the server.
+
+- name: Install the packages domainctl needs
+  apt:
+    pkg:
+      - python3-typer
+      - python3-rich
+      - python3-dnspython
+      # setfacl and getfacl: the sites' files stay the user's own, and OpenLiteSpeed is let in by ACL.
+      - acl
+    state: present
+
+# Both package directories by name: the tasks below only create the subdirectories a package has, and
+# shared/serverctl has none, so nothing would create the directory its files are copied into.
+- name: Create the directories domainctl is installed in
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: 0755
+  loop:
+    - "{{ domainctl_lib }}"
+    - "{{ domainctl_lib }}/serverctl"
+    - "{{ domainctl_lib }}/domainctl"
+
+# Only .py files, so __pycache__ directories from local test runs stay behind.
+- name: Create the package subdirectories of the shared library
+  file:
+    path: "{{ domainctl_lib }}/serverctl/{{ item.path }}"
+    state: directory
+    mode: 0755
+  with_community.general.filetree: "{{ serverctl_src }}"
+  when: item.state == "directory" and "__pycache__" not in item.path
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Copy the shared library
+  copy:
+    src: "{{ item.src }}"
+    dest: "{{ domainctl_lib }}/serverctl/{{ item.path }}"
+    mode: 0644
+  with_community.general.filetree: "{{ serverctl_src }}"
+  when: item.state == "file" and item.path.endswith(".py")
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Create the domainctl package subdirectories
+  file:
+    path: "{{ domainctl_lib }}/domainctl/{{ item.path }}"
+    state: directory
+    mode: 0755
+  with_community.general.filetree: domainctl/domainctl/
+  when: item.state == "directory" and "__pycache__" not in item.path
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Copy the domainctl package
+  copy:
+    src: "{{ item.src }}"
+    dest: "{{ domainctl_lib }}/domainctl/{{ item.path }}"
+    mode: 0644
+  with_community.general.filetree: domainctl/domainctl/
+  when: item.state == "file" and item.path.endswith(".py")
+  loop_control:
+    label: "{{ item.path }}"
+
+# -P keeps the current directory off the module path, so nothing there can pose as domainctl or serverctl.
+- name: Install the domainctl command
+  copy:
+    dest: /usr/local/bin/domainctl
+    mode: 0755
+    content: |
+      #!/bin/sh
+      PYTHONPATH={{ domainctl_lib }} exec /usr/bin/python3 -P -m domainctl "$@"
+
+- name: Create the domainctl configuration directory
+  file:
+    path: /etc/domainctl
+    state: directory
+    mode: 0755
+
+- name: Create the directory for the TransIP login
+  file:
+    path: /etc/transip
+    state: directory
+    owner: root
+    group: root
+    mode: 0700
+
+# mailctl asked for the TransIP login first and kept it in /etc/mailctl. Both tools publish DNS records, so the
+# login moves to a place that belongs to neither and is entered once per server. mailctl keeps reading its own
+# copy until it is moved over to the shared library; nothing is deleted here.
+- name: Look for a TransIP login mailctl saved earlier
+  stat:
+    path: "/etc/mailctl/{{ item }}"
+  register: mailctl_transip
+  loop:
+    - transip.json
+    - transip.key
+
+- name: Take the TransIP login over from mailctl
+  copy:
+    src: "/etc/mailctl/{{ item.item }}"
+    dest: "/etc/transip/{{ item.item }}"
+    remote_src: yes
+    owner: root
+    group: root
+    mode: 0600
+    force: no
+  loop: "{{ mailctl_transip.results }}"
+  when: item.stat.exists
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Write the domainctl configuration
+  copy:
+    dest: /etc/domainctl/config.json
+    mode: 0644
+    content: "{{ domainctl_config | to_nice_json }}\n"
+  vars:
+    domainctl_config:
+      hostname: "{{ hostname }}"
+      home_root: "{{ web_home_root }}"
+      docroot: "{{ web_docroot }}"
+      logs: "{{ web_logs_dir }}"
+      ols_root: "{{ ols_root }}"
+      ols_user: "{{ ols_config_user }}"
+      web_user: "{{ web_ols_user }}"
+      template: "{{ web_template }}"
+      template_file: "{{ web_template_file }}"
+      letsencrypt_dir: "{{ letsencrypt_dir }}"
+      letsencrypt_email: "{{ web_admin_email }}"
