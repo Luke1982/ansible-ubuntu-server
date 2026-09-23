@@ -37,11 +37,15 @@
     state: started
   notify: restart spamassassin
 
-- name: Add the SpamAssassin milter user to the spamd group
+# postfix: the package's start script puts the socket in that group, so Postfix can reach it from its chroot, and
+# refuses to start without it. Postfix then rejects every connection with "451 Service unavailable", incoming mail
+# and mail programs logging in alike, so this membership is what keeps mail working at all.
+- name: Add the SpamAssassin milter user to the spamd and postfix groups
   user:
     append: yes
-    groups: debian-spamd
+    groups: debian-spamd,postfix
     name: spamass-milter
+  notify: restart spamass-milter
 
 - name: Create SpamAssassin systemd override directory
   file:
