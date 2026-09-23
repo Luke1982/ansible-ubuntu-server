@@ -10,7 +10,7 @@ from test_webmail import FAKE_CERTBOT, REFUSING_CERTBOT
 from test_cli_dns import PUBLIC_IP, FakeDns as HealthyDns
 
 from mailctl.commands import webmail as webmail_command
-from mailctl.core import dns_check, openlitespeed, system, transip, webmail
+from mailctl.core import certificate, dns_check, openlitespeed, system, transip, webmail
 
 
 class FakeDns:
@@ -34,7 +34,7 @@ def webmail_ready(mailctl, db_config, fake_command, monkeypatch):
     (db_config.ols_root / "bin").mkdir()
     FakeCommand(db_config.ols_root / "bin", "lswsctrl", "")
     monkeypatch.setattr(dns_check, "SystemResolver", FakeDns)
-    monkeypatch.setattr(webmail, "_serves", lambda address, name, file_name, token: True)
+    monkeypatch.setattr(certificate, "serves", lambda address, name, file_name, token: True)
     mailctl.ok("domain", "add", "example.nl")
     return mailctl
 
@@ -95,7 +95,7 @@ def test_webmail_sync_shows_why_a_certificate_was_refused(webmail_ready, fake_co
 
 
 def test_webmail_sync_says_what_to_do_when_openlitespeed_doesnt_serve_the_site(webmail_ready, monkeypatch):
-    monkeypatch.setattr(webmail, "_serves", lambda address, name, file_name, token: False)
+    monkeypatch.setattr(certificate, "serves", lambda address, name, file_name, token: False)
     monkeypatch.setattr(webmail, "SERVE_TIMEOUT", 0)
 
     output = webmail_ready.ok("webmail", "sync")

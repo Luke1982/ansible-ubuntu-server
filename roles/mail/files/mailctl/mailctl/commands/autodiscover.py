@@ -1,5 +1,6 @@
 """mailctl autodiscover: let Thunderbird (autoconfig) and Outlook (autodiscover) find a domain's mail settings."""
 
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
@@ -7,8 +8,8 @@ from typing import Annotated
 import typer
 
 from .. import ui
-from ..core import autodiscover, dns_check, domains, openlitespeed, transip
-from ..core.dns_check import DnsRecord
+from ..core import autodiscover, dns_check, domains, openlitespeed, system, transip
+from ..core.dns_check import DnsRecord, IPAddress, LookupFailed
 from ..core.errors import MailctlError
 from ..session import Session, open_session
 from .dns import (
@@ -19,6 +20,10 @@ from .shared import Domain, Yes, ask_domain, group
 app = group("Let Thunderbird and Outlook find a domain's mail settings (autoconfig and autodiscover).")
 
 
+# How long records published a moment ago get to be answered, and how often that is tried.
+RESOLVE_TIMEOUT = 120.0
+RESOLVE_POLL = 5.0
+
 NoDns = Annotated[bool, typer.Option(
     "--no-dns", help="Don't publish the DNS records at TransIP: show them, to publish by hand.")]
 
@@ -28,9 +33,9 @@ def publish(domain: Domain = None, dry_run: DryRun = False, yes: Yes = False, no
     """Set up autoconfig and autodiscover for a domain, so Thunderbird and Outlook find its settings by themselves.
 
     Adds a site at autodiscover.DOMAIN and autoconfig.DOMAIN to OpenLiteSpeed, from mailctl's template, and publishes
-    both names at TransIP. Checks for HTTPS first: with a certificate for both names the site answers on HTTP and
-    HTTPS; without one it answers on HTTP only, and the command shows how to get the certificate with certbot. Run it
-    again once certbot has the certificate, to switch HTTPS on.
+    both names at TransIP. The site goes on HTTP first, since that is where Let's Encrypt checks a name; once both
+    names point here, the command asks certbot for the certificate itself and switches the site to HTTPS. When a name
+    doesn't point here yet, or Let's Encrypt refuses, it says so and how to do that step by hand.
 
     [dim]Example:[/] mailctl autodiscover publish example.nl
     """
@@ -68,7 +73,55 @@ def publish(domain: Domain = None, dry_run: DryRun = False, yes: Yes = False, no
     if https_problem is None:
         ui.success(f"Mail programs find the settings at https://{site} and https://{alias}.")
         return
-    ui.warn(f"No HTTPS yet: {https_problem}")
+    ui.note(f"No HTTPS yet: {https_problem}")
+    if dry_run:
+        return
+    _certify(session, domain)
+
+
+def _certify(session: Session, domain: str) -> None:
+    """Gets the certificate for both names and puts the site on HTTPS. Outlook needs HTTPS, so this is the point of
+    the command; when it can't be done yet, the certbot command is there to run by hand later."""
+    config, (site, alias) = session.config, autodiscover.names(domain)
+    try:
+        addresses = _pointing_here(session, (site, alias))
+        with ui.console.status(f"Asking certbot for a certificate for {site} and {alias}…"):
+            autodiscover.request_certificate(config, domain, addresses)
+    except MailctlError as problem:
+        ui.warn(problem.message)
+        if problem.hint:
+            ui.note(problem.hint)
+        _by_hand(session, domain)
+        return
+    ui.success(f"Let's Encrypt gave a certificate for {site} and {alias}.")
+    before, after = autodiscover.planned_config(config, domain, https=True)
+    if before != after:
+        _update_site(config.ols_root, before, after)
+    ui.success(f"Mail programs find the settings at https://{site} and https://{alias}.")
+
+
+def _pointing_here(session: Session, names: tuple[str, ...]) -> dict[str, set[IPAddress]]:
+    """Where each name points, once every address is this server's. Records published a moment ago need a while to
+    be answered everywhere, so this waits for them instead of failing on the run that published them."""
+    resolver = dns_check.SystemResolver()
+    server_ips = system.server_ips()
+    found: dict[str, set[IPAddress]] = {}
+    deadline = time.monotonic() + RESOLVE_TIMEOUT
+    with ui.console.status(f"Waiting until {' and '.join(names)} point to this server…"):
+        for name in names:
+            while True:
+                try:
+                    found[name] = dns_check.resolve_to_this_server(resolver, name, server_ips)
+                    break
+                except (dns_check.NotPointingHere, LookupFailed) as problem:
+                    if time.monotonic() >= deadline:
+                        raise MailctlError(f"No certificate yet: {problem}") from None
+                    time.sleep(RESOLVE_POLL)
+    return found
+
+
+def _by_hand(session: Session, domain: str) -> None:
+    site, alias = autodiscover.names(domain)
     ui.line(f"Certbot's web root for {site} and {alias} is {session.config.autodiscover_root}.")
     ui.note("Once both names point to this server, get the certificate with:")
     ui.line(autodiscover.certbot_command(session.config, domain), indent=2)

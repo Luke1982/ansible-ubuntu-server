@@ -35,6 +35,24 @@ def https_problem(config: Config, domain: str, now: datetime) -> str | None:
     return certificate.problem(certificate_path(config, domain), names(domain), now)
 
 
+SERVE_TIMEOUT = 10  # seconds OpenLiteSpeed gets to serve the site after a restart
+
+
+def request_certificate(config: Config, domain: str, addresses: dict[str, set[IPAddress]]) -> None:
+    """Asks certbot for the certificate for both names, once OpenLiteSpeed really answers for them on port 80.
+    A validation Let's Encrypt refuses counts against its limits, so what can be checked here is checked first."""
+    site, alias = names(domain)
+    for name in (site, alias):
+        certificate.wait_until_served(
+            config.autodiscover_root, name, addresses[name], timeout=SERVE_TIMEOUT,
+            hint=f"Run: mailctl autodiscover publish {domain}, which adds the site to OpenLiteSpeed.")
+    try:
+        certificate.run_certbot(config, "certonly", "--webroot", "--webroot-path", str(config.autodiscover_root),
+                                "--cert-name", site, "-d", site, "-d", alias)
+    except MailctlError as problem:
+        raise MailctlError(f"No certificate for {site} and {alias}: {certificate.reason(problem.message)}") from None
+
+
 def certbot_command(config: Config, domain: str) -> str:
     site, alias = names(domain)
     return shlex.join(["certbot", "certonly", "--webroot", "-w", str(config.autodiscover_root),

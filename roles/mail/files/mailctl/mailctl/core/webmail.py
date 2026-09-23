@@ -12,9 +12,6 @@ make mailctl, running as root, write or delete anything lsadm couldn't. The note
 exist; mailctl leaves every other virtual host alone.
 """
 
-import http.client
-import secrets
-import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -23,7 +20,9 @@ from pathlib import Path
 
 from . import certificate, files, names, openlitespeed, system
 from .config import Config
-from .dns_check import Check, IPAddress, LookupFailed, Resolver, Status, webmail_records
+from .dns_check import (
+    Check, IPAddress, LookupFailed, NotPointingHere, Resolver, Status, resolve_to_this_server, webmail_records,
+)
 from .errors import MailctlError
 from .openlitespeed import VirtualHost
 
@@ -31,7 +30,6 @@ PREFIX = "webmail."
 SERVE_TIMEOUT = 10  # seconds OpenLiteSpeed gets to serve a new site after a restart
 _HEADER = "# Written by mailctl webmail sync. Changes are overwritten.\n"
 _NOTE = "Managed by mailctl: webmail (mailctl webmail sync)"
-_CHALLENGES = ".well-known/acme-challenge"
 
 
 class State(Enum):
@@ -79,10 +77,6 @@ class _Plan:
         self.outcomes[name] = Outcome(name, State.WAITING, reason)
 
 
-class NotPointingHere(Exception):
-    """The name has no address, or an address that isn't this server's."""
-
-
 def host(domain: str) -> str:
     return PREFIX + domain
 
@@ -93,19 +87,6 @@ def sites(config: Config) -> list[str]:
 
 def has_certificate(config: Config, name: str) -> bool:
     return all((_live(config, name) / file).is_file() for file in ("fullchain.pem", "privkey.pem"))
-
-
-def resolve_to_this_server(resolver: Resolver, name: str, server_ips: set[IPAddress]) -> set[IPAddress]:
-    """The name's addresses, when every one of them is this server's: Let's Encrypt and visitors may use any of
-    them. Raises NotPointingHere otherwise, and LookupFailed when the lookup fails."""
-    addresses = resolver.addresses(name)
-    if not addresses:
-        raise NotPointingHere(f"{name} has no A or AAAA record.")
-    foreign = sorted(addresses - server_ips, key=lambda ip: (ip.version, ip))
-    if foreign:
-        also = " also" if len(foreign) < len(addresses) else ""
-        raise NotPointingHere(f"{name}{also} points to {', '.join(map(str, foreign))}, which isn't this server.")
-    return addresses
 
 
 def sync(config: Config, domains: Iterable[str], server_ips: set[IPAddress], resolver: Resolver) -> Result:
@@ -260,36 +241,9 @@ def _publish(config: Config, hosts: set[str]) -> bool:
 
 
 def _wait_until_served(config: Config, name: str, addresses: set[IPAddress]) -> None:
-    """Waits until OpenLiteSpeed serves a test file from the challenge folder under the name at each of its addresses,
-    as Let's Encrypt asks for its challenge at any of them. Failed validations count against Let's Encrypt's limits,
-    so this is checked first."""
-    token = secrets.token_hex(16)
-    probe = config.webmail_root / _CHALLENGES / f"mailctl-{token}"
-    files.replace(probe, token)
-    try:
-        deadline = time.monotonic() + SERVE_TIMEOUT
-        for address in sorted(addresses, key=lambda ip: (ip.version, ip)):
-            while not _serves(address, name, probe.name, token):
-                if time.monotonic() >= deadline:
-                    raise MailctlError(
-                        f"OpenLiteSpeed doesn't serve {name} on port 80 at {address}.",
-                        hint="Run the Ansible playbook: it adds the webmail sites to OpenLiteSpeed's configuration.",
-                    )
-                time.sleep(0.5)
-    finally:
-        files.remove(probe)
-
-
-def _serves(address: IPAddress, name: str, file_name: str, token: str) -> bool:
-    connection = http.client.HTTPConnection(str(address), 80, timeout=2)
-    try:
-        connection.request("GET", f"/{_CHALLENGES}/{file_name}", headers={"Host": name})
-        response = connection.getresponse()
-        return response.status == 200 and response.read(len(token) + 2).decode(errors="replace").strip() == token
-    except OSError:
-        return False
-    finally:
-        connection.close()
+    certificate.wait_until_served(
+        config.webmail_root, name, addresses, timeout=SERVE_TIMEOUT,
+        hint="Run the Ansible playbook: it adds the webmail sites to OpenLiteSpeed's configuration.")
 
 
 def _request_certificate(config: Config, name: str) -> None:
@@ -318,8 +272,8 @@ def _live(config: Config, name: str) -> Path:
 
 def _site(config: Config, name: str, certified: bool) -> str:
     challenges = f"""
-context /{_CHALLENGES}/ {{
-  location                {config.webmail_root}/{_CHALLENGES}/
+context /{certificate.CHALLENGES}/ {{
+  location                {config.webmail_root}/{certificate.CHALLENGES}/
   allowBrowse             1
 }}
 """

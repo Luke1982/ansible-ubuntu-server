@@ -1,18 +1,23 @@
 """The certificate Postfix and Dovecot present: one for the hostname and every mail.DOMAIN."""
 
+import http.client
 import re
+import secrets
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import system
+from . import files, system
 from .config import Config
-from .dns_check import Check, Status, mail_host
+from .dns_check import Check, IPAddress, Status, mail_host
 from .errors import MailctlError
 
 # Certbot renews 30 days before the end, so less than this means renewing fails.
 EXPIRY_WARNING_DAYS = 14
+# Where Let's Encrypt asks for its challenge, under a site's web root.
+CHALLENGES = ".well-known/acme-challenge"
 
 
 @dataclass(frozen=True)
@@ -48,6 +53,36 @@ def run_certbot(config: Config, *args: str) -> None:
     account = ["--email", email] if email else ["--register-unsafely-without-email"]
     system.run("certbot", *args, "--agree-tos", *account, "--non-interactive",
                "--config-dir", str(config.letsencrypt_dir))
+
+
+def wait_until_served(root: Path, name: str, addresses: set[IPAddress], hint: str, timeout: float) -> None:
+    """Waits until OpenLiteSpeed serves a test file from the challenge folder under the name at each of its
+    addresses, as Let's Encrypt asks for its challenge at any of them. Failed validations count against Let's
+    Encrypt's limits, so this is checked first."""
+    token = secrets.token_hex(16)
+    probe = root / CHALLENGES / f"mailctl-{token}"
+    files.replace(probe, token)
+    try:
+        deadline = time.monotonic() + timeout
+        for address in sorted(addresses, key=lambda ip: (ip.version, ip)):
+            while not serves(address, name, probe.name, token):
+                if time.monotonic() >= deadline:
+                    raise MailctlError(f"OpenLiteSpeed doesn't serve {name} on port 80 at {address}.", hint=hint)
+                time.sleep(0.5)
+    finally:
+        files.remove(probe)
+
+
+def serves(address: IPAddress, name: str, file_name: str, token: str) -> bool:
+    connection = http.client.HTTPConnection(str(address), 80, timeout=2)
+    try:
+        connection.request("GET", f"/{CHALLENGES}/{file_name}", headers={"Host": name})
+        response = connection.getresponse()
+        return response.status == 200 and response.read(len(token) + 2).decode(errors="replace").strip() == token
+    except OSError:
+        return False
+    finally:
+        connection.close()
 
 
 def reason(message: str) -> str:

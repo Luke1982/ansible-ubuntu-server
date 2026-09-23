@@ -8,7 +8,8 @@ from test_cli_dns import (  # noqa: F401 (fixtures)
 )
 
 from mailctl import ui
-from mailctl.core import autodiscover, dns_check, openlitespeed
+from mailctl.commands import autodiscover as publishing
+from mailctl.core import autodiscover, certificate, dns_check, openlitespeed
 
 HTTPD_CONFIG = """\
 listener HTTP {
@@ -24,8 +25,12 @@ listener HTTPS {
 
 
 @pytest.fixture
-def ols(db_config):
-    """OpenLiteSpeed with listeners for HTTP and HTTPS, the templates Ansible installs, and a fake lswsctrl."""
+def ols(db_config, monkeypatch):
+    """OpenLiteSpeed with listeners for HTTP and HTTPS, the templates Ansible installs, and a fake lswsctrl.
+
+    Nothing here answers DNS or serves a page, so the waiting for both is over at once."""
+    monkeypatch.setattr(publishing, "RESOLVE_TIMEOUT", 0)
+    monkeypatch.setattr(autodiscover, "SERVE_TIMEOUT", 0)
     conf = db_config.ols_root / "conf"
     (conf / "templates").mkdir(parents=True)
     (conf / "httpd_config.conf").write_text(HTTPD_CONFIG)
@@ -59,7 +64,8 @@ def test_publish_without_a_certificate_serves_http_and_says_how_to_get_one(mailc
         in output
     assert (f"certbot certonly --webroot -w {db_config.autodiscover_root} --cert-name autodiscover.example.nl"
             " -d autodiscover.example.nl -d autoconfig.example.nl") in output
-    assert "There is no certificate at" in output
+    assert "There is no certificate at" in output  # why there is no HTTPS yet
+    assert "No certificate yet: autodiscover.example.nl has no A or AAAA record." in output  # and why it stays that way
 
 
 def test_publish_with_a_certificate_moves_the_site_to_https(mailctl, transip_account, ols, db_config):
@@ -223,3 +229,69 @@ def test_doctor_leaves_out_the_site_of_a_domain_without_one(mailctl, public_serv
     monkeypatch.setattr(dns_check, "SystemResolver", FakeDns)
 
     assert "Autodiscover" not in mailctl.fails("doctor", "example.nl")
+
+
+class PointingHere(FakeDns):
+    """DNS once the records this command publishes are answered: both names point to this server."""
+
+    def addresses(self, name):
+        if name in ("autodiscover.example.nl", "autoconfig.example.nl"):
+            return {ip_address(PUBLIC_IP)}
+        return super().addresses(name)
+
+
+@pytest.fixture
+def reachable(monkeypatch, public_server):
+    """Both names point here and OpenLiteSpeed answers for them, so certbot can be asked."""
+    monkeypatch.setattr(dns_check, "SystemResolver", PointingHere)
+    monkeypatch.setattr(certificate, "serves", lambda address, name, file_name, token: True)
+
+
+def test_publish_gets_the_certificate_itself_and_puts_the_site_on_https(
+        mailctl, transip_account, ols, db_config, reachable, fake_command):
+    certbot = fake_command("certbot")
+
+    output = mailctl.ok("autodiscover", "publish", "example.nl", "--yes")
+
+    assert certbot.calls[0][:7] == ["certonly", "--webroot", "--webroot-path", str(db_config.autodiscover_root),
+                                    "--cert-name", "autodiscover.example.nl", "-d"]
+    assert certbot.calls[0][7:10] == ["autodiscover.example.nl", "-d", "autoconfig.example.nl"]
+    assert "Let's Encrypt gave a certificate" in output
+    assert members(db_config) == {"mailautodiscover": ["autodiscover.example.nl"], "mailautodiscover-http": []}
+    assert "Mail programs find the settings at https://autodiscover.example.nl" in output
+    assert ols.calls == [["restart"], ["restart"]]  # on HTTP for the challenge, then on HTTPS
+
+
+def test_publish_says_what_lets_encrypt_refused_and_leaves_the_site_on_http(
+        mailctl, transip_account, ols, db_config, reachable, fake_command):
+    fake_command("certbot", "echo '  Detail: 93.184.216.34: Invalid response from http://autoconfig.example.nl' >&2;"
+                            " exit 1")
+
+    output = mailctl.ok("autodiscover", "publish", "example.nl", "--yes")
+
+    assert "No certificate for autodiscover.example.nl and autoconfig.example.nl" in output
+    assert "Invalid response" in output
+    assert members(db_config) == {"mailautodiscover": [], "mailautodiscover-http": ["autodiscover.example.nl"]}
+    assert "certbot certonly --webroot" in output  # still says how to do it by hand
+
+
+def test_publish_waits_for_the_names_it_just_published_before_giving_up(
+        mailctl, transip_account, ols, db_config, monkeypatch, public_server, fake_command):
+    """The records were published a moment ago, so the first lookups still find nothing."""
+    fake_command("certbot")
+    monkeypatch.setattr(certificate, "serves", lambda address, name, file_name, token: True)
+    monkeypatch.setattr(publishing, "RESOLVE_TIMEOUT", 30)
+    monkeypatch.setattr(publishing, "RESOLVE_POLL", 0)
+    lookups = []
+
+    class Late(PointingHere):
+        def addresses(self, name):
+            lookups.append(name)
+            return super().addresses(name) if lookups.count(name) > 2 else set()
+
+    monkeypatch.setattr(dns_check, "SystemResolver", Late)
+
+    output = mailctl.ok("autodiscover", "publish", "example.nl", "--yes")
+
+    assert lookups.count("autodiscover.example.nl") == 3  # it kept asking until the record was there
+    assert "Mail programs find the settings at https://autodiscover.example.nl" in output

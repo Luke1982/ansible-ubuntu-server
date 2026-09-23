@@ -144,9 +144,151 @@ Each server has its own playbook (e.g. `web01.whservice.nl.yml`) in the project 
 | Role | What it does |
 |------|-------------|
 | `basic` | Hostname, base packages, unattended-upgrades, Linux users, SSH hardening, iptables firewall (applied at boot), fail2ban |
-| `web` | OpenLiteSpeed with LiteSpeed's PHP 8.3, PHP-FPM and CLI from Ubuntu (8.3 on Ubuntu 24.04, 8.5 on 26.04), Composer (global), nvm (system-wide), certbot, Let's Encrypt directory |
-| `db` | MariaDB, phpMyAdmin |
+| `web` | OpenLiteSpeed with LiteSpeed's PHP 8.3, PHP-FPM and CLI from Ubuntu (8.3 on Ubuntu 24.04, 8.5 on 26.04), Composer (global), nvm (system-wide), certbot, Let's Encrypt directory, the shared virtual host template, and `domainctl` (below) |
+| `db` | MariaDB, phpMyAdmin on a site of its own at `pma.<hostname>` |
 | `mail` | Postfix, Dovecot with full-text IMAP search (fts-xapian) and login tracking, OpenDKIM, SpamAssassin, SOGo (webmail, calendars, address books and ActiveSync), per-user sending limits (postfwd), fail2ban jails for SMTP, IMAP and webmail brute force, and `mailctl` (below) |
+
+## phpMyAdmin
+
+Servers with the `db` role get phpMyAdmin at `https://pma.<hostname>`, for
+example `https://pma.web01.example.com`, on a site of its own in OpenLiteSpeed.
+Publish an `A` record (and an `AAAA` record) for that name pointing at the
+server: nothing publishes it for you. Log in with a MariaDB user, `root` for
+instance.
+
+The site has no certificate of its own, so OpenLiteSpeed serves it with the
+certificate on the HTTPS listener, which is the self-signed one OpenLiteSpeed
+comes with unless you replaced it. Browsers warn about it; the warning is about
+the name in the certificate, not about the encryption. Plain HTTP redirects to
+HTTPS, so the database password is never sent unencrypted.
+
+phpMyAdmin's files are in `/var/www/phpmyadmin` and the site's settings in
+`/usr/local/lsws/conf/vhosts/pma.<hostname>/vhconf.conf`, where WebAdmin keeps
+every site's, so WebAdmin shows this one like all the others. Every playbook run
+writes that file, so change the role, not WebAdmin, for anything about this site.
+
+The role adds the site to `httpd_config.conf` and its name to every listener for
+port 80 and 443, marked with the note "Managed by Ansible: phpMyAdmin (db
+role)", and leaves the listeners themselves and your other sites alone. It keeps
+the previous version of that config next to it as
+`httpd_config.conf.pmasite.bak`. The script that edits it, and its tests, are in
+`roles/db/files/pmasite`:
+
+```bash
+python3 -m pytest roles/db/files/pmasite
+```
+
+Anyone who reaches the site can try passwords on your databases. If it doesn't
+need to be open to everyone, limit it to your own addresses under the site's
+Access Control in WebAdmin.
+
+On servers that already had phpMyAdmin, the first run moves it out of
+OpenLiteSpeed's Example site, where every name that site answers to could reach
+it, including the server's own address. It keeps the settings it had, and gives
+it the passphrase for cookie login that the sample settings don't have:
+phpMyAdmin used to log everybody out whenever it restarted, and say so on every
+page. The settings it replaces are kept as `config.inc.php.previous`.
+
+## Blocking password guessing
+
+Postfix, Dovecot and SOGo each have a fail2ban jail. Banning on failed logins
+alone catches two things that look identical in the log: someone guessing
+passwords, and a customer's phone that still has last week's password saved and
+retries it every few minutes, forever. Banning the second one permanently locks
+a real customer out of their mail.
+
+So before the SMTP or IMAP jail bans an address, it asks
+`/usr/local/sbin/f2b-mail-ignore.sh` whether the address looks like a customer.
+It is left alone only if all three hold: it has logged in successfully at least
+twice, it is failing on no more than three accounts, and it has tried at most
+one account that does not exist. A guesser fails the first test, because it
+does not know any password. The other two stop an address that cracked one
+mailbox from hiding behind its own successes while guessing at the rest.
+
+This is safe because whoever already has a working password logs in first try
+and never produces a failure at all, so they never reach the jail in the first
+place. The jail only ever sees guessers and real customers.
+
+Webmail is different: a failed webmail login comes from the browser's address,
+which has no mail login history behind it, so the check cannot tell a guesser
+from someone mistyping their own password. That jail bans for an hour instead
+of forever. Calendar, contact and ActiveSync logins have no jail at all: they
+leave no log line fail2ban can tell apart from a normal first request, and are
+throttled by SOGo itself (`roles/mail/templates/sogo.conf.j2`).
+
+The thresholds are in `roles/mail/defaults/main.yml`. They were fitted to one
+server's traffic and checked against a month of its logs, so replay real logs
+before changing them. Addresses that were let off are logged: `journalctl -t
+f2b-mail-ignore`. To check the rules themselves:
+
+```bash
+bash roles/mail/tests/f2b-mail-ignore/run-tests.sh
+```
+
+## Managing web sites with domainctl
+
+Web servers get `domainctl`, a command-line tool for the sites on the server. Run it as root; `domainctl --help` lists everything, and `--help` on a command explains it with an example.
+
+| Command | What it does |
+|---------|-------------|
+| `domainctl add DOMAIN` | Sets a site up: its Linux user, directories, permissions, virtual host and certificate |
+| `domainctl list` | The sites with their domain, user and certificate |
+| `domainctl check [USER]` | Whether a site's names, permissions and certificate are in order |
+| `domainctl delete USER` | Removes a site; `--purge` takes the user and its files too |
+| `domainctl sync` | Brings the template block and every site's permissions up to date. The playbook runs it |
+| `domainctl dns credentials` | The TransIP login, shared with mailctl |
+
+### How a site is put together
+
+Every site is one member of a single OpenLiteSpeed template, `conf/templates/webhosting.conf`, which the playbook writes from `roles/web/templates/webhosting.conf.j2`. The member's name is the site's Linux user, and the template finds everything by it: the home directory it serves (`/home/$VH_NAME/public_html/www`), the logs it writes (`/home/$VH_NAME/logs/`) and the certificate it presents (`/etc/letsencrypt/live/$VH_NAME/`). So a site's certificate is named after its user, not its domain.
+
+The block in `httpd_config.conf` is the one named in `web_template` (`webhosting`), or one already there whose name differs from it only in case: OpenLiteSpeed's own is called `Webhosting`, and a server whose sites were set up in WebAdmin has its members in that. `domainctl` manages the block that holds the sites, rather than adding a second one beside it, and says so when a server has both. A site that was made by hand therefore shows up in `domainctl list` as it is, with its user, its home directory and its certificate; `domainctl add DOMAIN --existing-user` gives a site to a Linux user that is already there.
+
+The user has no password. It exists to keep one site's files away from the others, not to log in with: root reaches it with `su - USER`, and sshd only lets in the users listed in `linuxusers.yml` with `ssh_access: true`.
+
+OpenLiteSpeed serves and runs PHP as `nobody`, which is not in the site's group, so it is let in by ACL and no further:
+
+- `/home/USER` and `/home/USER/public_html` — `--x`, enough to walk through, not to list
+- `/home/USER/public_html/www` — `r-x`, with the same as a default entry so files uploaded later are readable too
+- `/home/USER/logs` — `rwx`, since OpenLiteSpeed writes the site's logs itself
+
+**`nobody` can read the web root but never write it**, so a CMS that uploads files, writes a cache or installs plugins fails until you open that one directory up by hand:
+
+```bash
+setfacl -m u:nobody:rwx -m d:u:nobody:rwx /home/USER/public_html/www/wp-content/uploads
+```
+
+`domainctl check` and `domainctl sync` compare the ACL entries above and put back any that went missing; entries you added yourself are left alone.
+
+### What `domainctl add` does
+
+1. Works out the user name from the domain (`example.nl` becomes `example`), or takes `--user`.
+2. Looks the domain and `www.DOMAIN` up **in real DNS**, because that is what Let's Encrypt checks. The domain has to point here, and only here. A name with no record at all is offered to TransIP, if the domain is in that account and uses TransIP's nameservers; it then waits until the nameservers serve it.
+3. `www` is included only when it points here. A name that doesn't resolve here would fail the whole certificate request and take the bare domain down with it, so it is left out with a warning instead. Run the command again once the record is right.
+4. Makes the user, its home directory, `public_html/www` and `logs`, with a placeholder page, and sets the ACL entries above.
+5. Adds the member to the template and restarts OpenLiteSpeed.
+6. Checks that OpenLiteSpeed really answers for the domain on port 80, by fetching a file of its own from the challenge folder at each of the server's addresses. A failed Let's Encrypt validation counts against their limits; this check does not.
+7. Switches the redirect to HTTPS off in the template, runs certbot as a test and then for real (`certonly --webroot`), and switches the redirect back on — always, also when certbot fails.
+
+Run it again for the same domain whenever something stopped it: it picks up where it left off, and adds `www` to the certificate once that record points here.
+
+Nothing is rolled back when certbot fails: the site stays up over HTTP and the message says what Let's Encrypt refused. Fix that and run `domainctl add DOMAIN` again, or take it away with `domainctl delete USER`.
+
+### The redirect to HTTPS
+
+The redirect lives in the shared template, between the markers `# BEGIN https-redirect` and `# END https-redirect`, so switching it off switches it off for **every** site on the server for as long as certbot runs. That is a few seconds and `domainctl` always puts it back, but it is worth knowing. The template also never redirects `/.well-known/acme-challenge/`, so `certbot renew` from its timer keeps working on its own, without anything switching anything off.
+
+If a run is killed at exactly the wrong moment, `domainctl sync` — and so the next playbook run — switches the redirect back on and says it did.
+
+OpenLiteSpeed's config is changed by reading it and renaming a new file into place, so two commands doing that at once would lose one another's changes. Both tools take a lock first, `/run/serverctl-openlitespeed.lock`, and hold it for the whole of the change: `domainctl add` including certbot, and `mailctl webmail sync`, `mailctl certificate sync` and `mailctl autodiscover publish` over their read and write. The second command waits; after five minutes it gives up and says another command is still busy.
+
+### The code
+
+`domainctl` is in `roles/web/files/domainctl`, with its tests in `roles/web/files/domainctl/tests`. The OpenLiteSpeed, TransIP, DNS and certbot code it shares with `mailctl` is in `shared/serverctl`, with its own tests in `shared/tests`; the playbook copies that directory next to each tool, so a web server needs no mail role and the other way round.
+
+```bash
+pytest shared/tests roles/web/files/domainctl/tests
+```
 
 ## Managing mail with mailctl
 
@@ -194,7 +336,9 @@ The playbook runs `mailctl certificate sync` on every run, and it only asks cert
 
 `mailctl autodiscover publish example.nl` sets up a site at `autodiscover.example.nl`, with `autoconfig.example.nl` as alias, which gives Thunderbird (autoconfig) and Outlook (autodiscover) the settings for `mail.example.nl`, and publishes both names at TransIP. The site is a member of an OpenLiteSpeed virtual host template the playbook installs, so it shows up in WebAdmin under Virtual Host Templates; mailctl adds the templates to `httpd_config.conf` the first time.
 
-It checks for HTTPS first. Without a certificate for both names, the site answers on HTTP only, so no mail program sees another site's certificate, and the command shows the certbot command and its web root (`/var/www/mailautodiscover`):
+The site goes on HTTP first, since that is where Let's Encrypt checks a name and no mail program should meet another site's certificate in the meantime. The command then waits until both names point to this server — up to two minutes, for the records it has just published — asks certbot for the certificate itself, and switches the site to HTTPS.
+
+When a name doesn't point here yet, or Let's Encrypt refuses, it says which and leaves the site on HTTP, with the command for the step it couldn't take:
 
 ```bash
 certbot certonly --webroot -w /var/www/mailautodiscover --cert-name autodiscover.example.nl -d autodiscover.example.nl -d autoconfig.example.nl

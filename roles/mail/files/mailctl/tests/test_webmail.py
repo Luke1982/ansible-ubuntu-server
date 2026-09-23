@@ -7,7 +7,7 @@ import pytest
 from conftest import FakeCommand, make_certificate
 from test_openlitespeed import HTTPD_CONFIG
 
-from mailctl.core import files, openlitespeed, system, webmail
+from mailctl.core import certificate, files, openlitespeed, system, webmail
 from mailctl.core.errors import MailctlError
 from mailctl.core.dns_check import LookupFailed, Status
 from mailctl.core.webmail import Outcome, State
@@ -94,7 +94,7 @@ class FakeWebServer:
 @pytest.fixture
 def served(monkeypatch):
     web_server = FakeWebServer()
-    monkeypatch.setattr(webmail, "_serves", web_server.serves)
+    monkeypatch.setattr(certificate, "serves", web_server.serves)
     monkeypatch.setattr(webmail, "SERVE_TIMEOUT", 0)
     return web_server
 

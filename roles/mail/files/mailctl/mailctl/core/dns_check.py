@@ -61,6 +61,23 @@ class LookupFailed(Exception):
     """A lookup failed for another reason than the record not existing."""
 
 
+class NotPointingHere(Exception):
+    """The name has no address, or an address that isn't this server's."""
+
+
+def resolve_to_this_server(resolver: "Resolver", name: str, server_ips: set[IPAddress]) -> set[IPAddress]:
+    """The name's addresses, when every one of them is this server's: Let's Encrypt and visitors may use any of
+    them. Raises NotPointingHere otherwise, and LookupFailed when the lookup fails."""
+    addresses = resolver.addresses(name)
+    if not addresses:
+        raise NotPointingHere(f"{name} has no A or AAAA record.")
+    foreign = sorted(addresses - server_ips, key=lambda ip: (ip.version, ip))
+    if foreign:
+        also = " also" if len(foreign) < len(addresses) else ""
+        raise NotPointingHere(f"{name}{also} points to {', '.join(map(str, foreign))}, which isn't this server.")
+    return addresses
+
+
 class Resolver(Protocol):
     def txt(self, name: str) -> list[str]: ...
 
