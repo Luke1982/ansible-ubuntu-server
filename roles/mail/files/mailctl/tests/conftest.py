@@ -305,6 +305,11 @@ def db_config(config, database_socket) -> Config:
             for statement in re.sub(r"--[^\n]*", "", schema.read_text()).split(";"):
                 if statement.strip():
                     cursor.execute(statement)
+        # SOGo makes its own tables; this is the one mailctl reads and writes, as SOGo creates it.
+        cursor.execute("DROP DATABASE IF EXISTS sogo")
+        cursor.execute("CREATE DATABASE sogo")
+        cursor.execute("CREATE TABLE sogo.sogo_user_profile (c_uid varchar(255) NOT NULL PRIMARY KEY, "
+                       "c_defaults text, c_settings text)")
     connection.close()
     return replace(config, db_socket=database_socket)
 
