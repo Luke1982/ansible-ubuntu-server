@@ -1,12 +1,16 @@
 ---
 # Configuration file for SpamAssassin
 
+# The full path, not /spamass/spamass.sock: that one is only right for a Postfix service running chrooted, and the
+# cleanup daemon, which every message passes through, does not. It would then reach no milter at all, and Postfix
+# answers an unreachable milter with "451 try again later" for every message, in and out.
 - name: Configure postfix to connect to SpamAssassin
   shell:
     cmd: |
-     postconf smtpd_milters=unix:/spamass/spamass.sock
-     postconf non_smtpd_milters=unix:/spamass/spamass.sock
+     postconf smtpd_milters=unix:/var/spool/postfix/spamass/spamass.sock
+     postconf non_smtpd_milters=unix:/var/spool/postfix/spamass/spamass.sock
      postconf milter_connect_macros="i j {daemon_name} v {if_name} _"
+  notify: restart postfix
 
 - name: Configure SpamAssassin to use the vmail's home folder for Bayes
   lineinfile:

@@ -72,12 +72,15 @@
     insertafter: EOF
     line: "## From here configuration is controlled by Ansible"
 
+# Not chrooted ("n"), like the services the package ships in this file: a chrooted service looks for the milter
+# sockets and everything else inside /var/spool/postfix, and the rest of Postfix does not, so one path can't be
+# right for both.
 - name: Setup Postfix submission ports
   blockinfile:
     path: /etc/postfix/master.cf
     insertafter: \#\# From here configuration is controlled by Ansible
     block: |
-      submission inet n - y - - smtpd
+      submission inet n - n - - smtpd
        -o syslog_name=postfix/submission
        -o smtpd_tls_security_level=encrypt
        -o smtpd_sasl_auth_enable=yes
@@ -89,7 +92,7 @@
        -o smtpd_client_restrictions=permit_sasl_authenticated,reject
        -o smtpd_recipient_restrictions=reject_non_fqdn_recipient,reject_unknown_recipient_domain,permit_sasl_authenticated,reject
 
-      smtps inet n - y - - smtpd
+      smtps inet n - n - - smtpd
        -o syslog_name=postfix/smtps
        -o smtpd_tls_security_level=encrypt
        -o smtpd_tls_wrappermode=yes

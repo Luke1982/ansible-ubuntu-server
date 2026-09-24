@@ -33,17 +33,20 @@
     remove: no
     state: present
 
+# Behind SpamAssassin's, and by its full path for the same reason (configure-spamassassin.yml).
 - name: Enable opendkim smtpd miltering in Postfix
   replace:
     path: /etc/postfix/main.cf
-    regexp: ^smtpd_milters\s?=\s?(unix:\/spamass\/spamass.sock)
-    replace: smtpd_milters=\1,unix:/opendkim/opendkim.sock
+    regexp: ^smtpd_milters\s?=\s?(unix:/var/spool/postfix/spamass/spamass.sock)$
+    replace: smtpd_milters=\1,unix:/var/spool/postfix/opendkim/opendkim.sock
+  notify: restart postfix
 
 - name: Enable opendkim non-smtpd miltering in Postfix
   replace:
     path: /etc/postfix/main.cf
-    regexp: ^non_smtpd_milters\s?=\s?(unix:\/spamass\/spamass.sock)
-    replace: non_smtpd_milters=\1,unix:/opendkim/opendkim.sock
+    regexp: ^non_smtpd_milters\s?=\s?(unix:/var/spool/postfix/spamass/spamass.sock)$
+    replace: non_smtpd_milters=\1,unix:/var/spool/postfix/opendkim/opendkim.sock
+  notify: restart postfix
 
 - name: Create directories for OpenDKIM files and tables
   file:
