@@ -337,6 +337,10 @@ Let's Encrypt checks each name over HTTP. Answering that is all an OpenLiteSpeed
 
 The playbook runs `mailctl certificate sync` on every run, and it only asks certbot when a name is missing or the certificate is about to expire. Certbot renews it by itself after that, and its deploy hook reloads Postfix and Dovecot, so mail programs never get an expired certificate.
 
+### Mail filters
+
+An account's filters are Sieve scripts, and Dovecot runs **one** of them: the active one. Webmail keeps its filters in a script of its own and makes that one active whenever they are saved there, so filters imported with `mailctl address import-sieve` stop running at that moment, and the other way round. `mailctl filters show` marks which one is active, and the import says which filter it takes over from. After the account's own filter, the server's own runs for everyone: it files what SpamAssassin marked in `Junk`.
+
 ### Autoconfig and autodiscover
 
 `mailctl autodiscover publish example.nl` sets up a site at `autodiscover.example.nl`, with `autoconfig.example.nl` as alias, which gives Thunderbird (autoconfig) and Outlook (autodiscover) the settings for `mail.example.nl`, and publishes both names at TransIP. The site is a member of an OpenLiteSpeed virtual host template the playbook installs, so it shows up in WebAdmin under Virtual Host Templates; mailctl adds the templates to `httpd_config.conf` the first time.
