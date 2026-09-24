@@ -11,9 +11,11 @@ one of SOGo's is reported instead, and left as the script it came from.
 """
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from . import mailbox
 from .db import Database
 from .sieveparse import Call, Unreadable, parse
 
@@ -70,6 +72,36 @@ def render(filters: list[dict[str, Any]]) -> str:
     used |= {"mailbox"} if any(":create" in block for block in blocks) else set()
     header = f"require {json.dumps(sorted(used))};\n\n" if used else ""
     return header + "\n".join(blocks)
+
+
+@dataclass(frozen=True)
+class Adopted:
+    """What became of an account's imported rules."""
+    added: list[dict[str, Any]]  # the rules webmail shows from now on
+    already: int  # rules webmail had a filter of that name for, left as they were
+    left: list[str]  # a line about each rule webmail's filters can't express
+
+
+def adopt(db: Database, address: str, scripts: Iterable[tuple[str, str]]) -> Adopted:
+    """Puts the rules of these (name, content) scripts in webmail's filter list, and writes webmail's own script
+    so they run at once instead of when someone next saves filters there.
+
+    Nothing is written when no rule fits webmail's filters: the caller then leaves the scripts to run as they are.
+    """
+    filters, left = [], []
+    for name, content in scripts:
+        translated, reasons = translate(content, name)
+        filters += translated
+        left += reasons
+    if not filters:
+        return Adopted([], 0, left)
+    existing = read(db, address)
+    taken = {one.get("name") for one in existing}
+    added = [one for one in filters if one.get("name") not in taken]
+    write(db, address, existing + added)
+    mailbox.put_sieve(address, SCRIPT, render(existing + added))
+    mailbox.activate_sieve(address, SCRIPT)
+    return Adopted(added, len(filters) - len(added), left)
 
 
 def read(db: Database, address: str) -> list[dict[str, Any]]:

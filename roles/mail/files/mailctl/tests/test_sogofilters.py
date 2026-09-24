@@ -134,3 +134,35 @@ def test_an_account_webmail_has_never_seen_gets_a_profile_of_its_own(database):
 
     assert sogofilters.read(database, "new@example.nl") == filters
     assert sogofilters.read(database, "nobody@example.nl") == []
+
+
+def test_adopt_puts_the_rules_in_webmail_and_writes_the_script_it_runs(database, fake_command):
+    doveadm = fake_command("doveadm")
+
+    adopted = sogofilters.adopt(database, "info@example.nl", [("roundcube", ROUNDCUBE)])
+
+    assert [one["name"] for one in adopted.added] == ["Family", "Bills"]
+    assert adopted.already == 0 and adopted.left == []
+    assert sogofilters.read(database, "info@example.nl") == adopted.added
+    assert ["sieve", "put", "-u", "info@example.nl", "sogo"] in [call[:5] for call in doveadm.calls]
+    assert ["sieve", "activate", "-u", "info@example.nl", "sogo"] in [call[:5] for call in doveadm.calls]
+
+
+def test_adopt_leaves_a_filter_webmail_already_has_alone(database, fake_command):
+    fake_command("doveadm")
+    sogofilters.adopt(database, "info@example.nl", [("roundcube", ROUNDCUBE)])
+
+    adopted = sogofilters.adopt(database, "info@example.nl", [("roundcube", ROUNDCUBE)])
+
+    assert adopted.added == [] and adopted.already == 2
+    assert len(sogofilters.read(database, "info@example.nl")) == 2
+
+
+def test_adopt_writes_nothing_when_no_rule_fits_webmails_filters(database, fake_command):
+    doveadm = fake_command("doveadm")
+
+    adopted = sogofilters.adopt(database, "info@example.nl", [("away", 'vacation :days 1 "Away";\n')])
+
+    assert adopted.added == [] and "vacation" in adopted.left[0]
+    assert sogofilters.read(database, "info@example.nl") == []
+    assert doveadm.calls == []
