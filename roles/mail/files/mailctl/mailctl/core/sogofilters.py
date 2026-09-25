@@ -25,8 +25,10 @@ SCRIPT = "sogo"  # the script SOGo writes and activates
 FIELDS = {"subject": "subject", "from": "from", "to": "to", "cc": "cc"}
 OPERATORS = {"is": "is", "contains": "contains", "matches": "matches"}
 NEGATED = {"is": "is_not", "contains": "contains_not", "matches": "matches_not"}
-_TESTS = ("header", "address", "envelope")
+EVERY_MESSAGE = "allmessages"  # webmail's third way of matching: no rules, every message
+_HEADER_TESTS = ("header", "address", "envelope")
 _FLAG_ACTIONS = ("addflag", "setflag")
+_PLAIN_ACTIONS = ("discard", "keep", "stop", "reject")
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,8 @@ def render(filters: list[dict[str, Any]]) -> str:
     used = {"fileinto"} if any("fileinto" in block for block in blocks) else set()
     used |= {"imap4flags"} if any("addflag" in block for block in blocks) else set()
     used |= {"mailbox"} if any(":create" in block for block in blocks) else set()
+    used |= {"body"} if any("body :text" in block for block in blocks) else set()
+    used |= {"reject"} if any("reject " in block for block in blocks) else set()
     header = f"require {json.dumps(sorted(used))};\n\n" if used else ""
     return header + "\n".join(blocks)
 
@@ -137,13 +141,18 @@ def _filter(name: str, test: Any, actions: list[Any]) -> dict[str, Any]:
         "match": match,
         "active": 1,
         "rules": [_rule(one) for one in tests],
-        "actions": [_action(one) for one in actions],
+        "actions": [one for action in actions for one in _actions(action)],
     }
 
 
 def _match(test: Any) -> tuple[str, list[Any]]:
+    if isinstance(test, Call) and test.name == "true":
+        return EVERY_MESSAGE, []  # "if true", which webmail calls every message
     if isinstance(test, Call) and test.name in ("allof", "anyof"):
-        return ("all" if test.name == "allof" else "any"), list(test.arguments)
+        inner = list(test.arguments)
+        if len(inner) == 1 and isinstance(inner[0], Call) and inner[0].name == "true":
+            return EVERY_MESSAGE, []
+        return ("all" if test.name == "allof" else "any"), inner
     return "all", [test]
 
 
@@ -153,15 +162,22 @@ def _rule(test: Any) -> dict[str, str]:
         if len(test.arguments) != 1:
             raise Untranslatable("a 'not' over more than one test")
         test = test.arguments[0]
-    if not isinstance(test, Call) or test.name not in _TESTS:
+    if not isinstance(test, Call) or test.name not in (*_HEADER_TESTS, "body"):
         raise Untranslatable(f"the test {_describe(test)}, which webmail's filters don't have")
     operator = next((tag for tag in test.tags if tag in OPERATORS), None)
     if operator is None:
         raise Untranslatable(f"a {test.name} test with {', '.join(':' + tag for tag in test.tags) or 'no'} match type")
-    fields, values = test.arguments[-2:] if len(test.arguments) >= 2 else ([], [])
-    field = _field(fields)
-    value = _one(values, "value")
-    return {"field": field, "operator": NEGATED[operator] if negated else OPERATORS[operator], "value": value}
+    arguments = list(test.arguments)
+    if "comparator" in test.tags:
+        arguments = arguments[1:]  # :comparator takes the name of the comparator with it
+    if test.name == "body":
+        field, values = "body", arguments[-1:]
+    else:
+        if len(arguments) < 2:
+            raise Untranslatable(f"a {test.name} test without a header and a value")
+        field, values = _field(arguments[-2]), arguments[-1:]
+    return {"field": field, "operator": NEGATED[operator] if negated else OPERATORS[operator],
+            "value": _one(values, "value")}
 
 
 def _field(fields: Any) -> str:
@@ -185,17 +201,22 @@ def _one(values: Any, what: str) -> str:
     return found[0]
 
 
-def _action(action: Any) -> dict[str, str]:
+def _actions(action: Any) -> list[dict[str, str]]:
+    """What an action becomes in webmail's list: one of its actions, or more than one where it says more."""
     if not isinstance(action, Call):
         raise Untranslatable(f"the action {_describe(action)}")
     if action.name == "fileinto":
-        return {"method": "fileinto", "argument": _one(action.arguments, "folder")}
+        return [{"method": "fileinto", "argument": _one(action.arguments, "folder")}]
     if action.name == "redirect":
-        return {"method": "redirect", "argument": _one(action.arguments, "address")}
-    if action.name in ("discard", "keep", "stop"):
-        return {"method": action.name}
+        # ":copy" means the message is forwarded and stays, which is redirect and keep together.
+        forward = [{"method": "redirect", "argument": _one(action.arguments, "address")}]
+        return forward + [{"method": "keep"}] if "copy" in action.tags else forward
+    if action.name in _PLAIN_ACTIONS:
+        return [{"method": action.name}]
     if action.name in _FLAG_ACTIONS:
-        return {"method": "addflag", "argument": _one(action.arguments, "flag")}
+        flags = action.arguments[0] if action.arguments and isinstance(action.arguments[0], list) \
+            else list(action.arguments)
+        return [{"method": "addflag", "argument": _one([flag], "flag")} for flag in flags]
     raise Untranslatable(f"the action {action.name}, which webmail's filters don't have")
 
 
@@ -205,10 +226,14 @@ def _describe(node: Any) -> str:
 
 def _block(one: dict[str, Any]) -> str:
     tests = [_test_line(rule) for rule in one.get("rules", [])]
-    if not tests:
+    if one.get("match") == EVERY_MESSAGE:
+        condition = "true"
+    elif not tests:
         return ""
-    condition = tests[0] if len(tests) == 1 else \
-        f"{'allof' if one.get('match', 'all') == 'all' else 'anyof'} ({', '.join(tests)})"
+    elif len(tests) == 1:
+        condition = tests[0]
+    else:
+        condition = f"{'allof' if one.get('match', 'all') == 'all' else 'anyof'} ({', '.join(tests)})"
     actions = [_action_line(action) for action in one.get("actions", [])]
     body = "\n".join(f"    {line}" for line in actions if line)
     return f"# rule:[{one.get('name', '')}]\nif {condition}\n{{\n{body}\n}}\n"
@@ -219,9 +244,13 @@ def _test_line(rule: dict[str, str]) -> str:
     negated = operator.endswith("_not")
     match = operator.removesuffix("_not")
     field = rule.get("field", "subject")
-    headers = ["To", "Cc"] if field == "to_or_cc" else [field.capitalize()]
-    names = json.dumps(headers) if len(headers) > 1 else json.dumps(headers[0])
-    test = f'header :{match} {names} {json.dumps(rule.get("value", ""))}'
+    value = json.dumps(rule.get("value", ""))
+    if field == "body":
+        test = f"body :text :{match} {value}"
+    else:
+        headers = ["To", "Cc"] if field == "to_or_cc" else [field.capitalize()]
+        names = json.dumps(headers) if len(headers) > 1 else json.dumps(headers[0])
+        test = f"header :{match} {names} {value}"
     return f"not {test}" if negated else test
 
 
@@ -233,6 +262,6 @@ def _action_line(action: dict[str, str]) -> str:
         return f"redirect {json.dumps(argument)};"
     if method == "addflag":
         return f"addflag {json.dumps(argument)};"
-    if method in ("discard", "keep", "stop"):
-        return f"{method};"
+    if method in _PLAIN_ACTIONS:
+        return f"{method} {json.dumps(argument)};" if method == "reject" else f"{method};"
     return ""

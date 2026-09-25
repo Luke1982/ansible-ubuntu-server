@@ -14,6 +14,7 @@ RULE_NAME = re.compile(r"#\s*rule:\s*\[(?P<name>[^]]*)]")
 _TOKENS = re.compile(r"""
     (?P<space>\s+)
   | (?P<comment>\#[^\n]*)
+  | (?P<bracket_comment>/\*.*?\*/)
   | (?P<string>"(?:[^"\\]|\\.)*")
   | (?P<text>text:[^\n]*\n.*?^\.\s*$)
   | (?P<number>\d+[KMG]?)
@@ -56,6 +57,8 @@ def _scan(content: str) -> list[_Token]:
             raise Unreadable(f"can't read {content[at:at + 20]!r}")
         at = found.end()
         kind = found.lastgroup
+        if kind == "bracket_comment":
+            continue
         if kind == "comment":
             name = RULE_NAME.match(found.group())
             if name:

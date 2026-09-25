@@ -10,22 +10,21 @@ import pytest
 from conftest import FAKE_KEY_RECORD_START, PASSWORD, Mailctl
 
 from mailctl import ui
-from mailctl.core import mailbox, system
+from mailctl.core import mailbox, sogofilters, system
 from mailctl.core.errors import MailctlError
 
 ROUNDCUBE = 'require ["fileinto"];\nif header :contains "subject" "invoice" { fileinto "Invoices"; }\n'
-VACATION = 'require ["vacation"];\nvacation :days 1 "Away";\n'
 
 COMMANDS = [
     ("domain", "add"), ("domain", "list"), ("domain", "delete"),
-    ("address", "add"), ("address", "list"), ("address", "password"), ("address", "delete"),
+    ("address", "add"), ("address", "import"), ("address", "list"), ("address", "password"), ("address", "delete"),
     ("forward", "add"), ("forward", "list"), ("forward", "delete"),
     ("dkim", "show"), ("dkim", "create"),
     ("dns", "show"), ("dns", "publish"), ("dns", "credentials"), ("autodiscover", "publish"),
     ("certificate", "sync"),
-    ("status",), ("doctor",),
+    ("status",), ("doctor",), ("repair",),
     ("spam", "show"), ("spam", "set"), ("spam", "unset"),
-    ("filters", "show"), ("filters", "import"),
+    ("filters", "show"),
 ]
 
 
@@ -509,71 +508,6 @@ def test_dkim_show_without_a_key_explains_how_to_create_one(mailctl):
     assert "mailctl dkim create example.nl" in mailctl.fails("dkim", "show", "example.nl")
 
 
-@pytest.fixture
-def sieve_archive(tmp_path):
-    """A tar of an account's sieve directory on another server, with two filters and the active one linked."""
-    path = tmp_path / "sieve.tar.gz"
-    with tarfile.open(path, "w:gz") as tar:
-        for name, content in (("info/sieve/roundcube.sieve", ROUNDCUBE), ("info/sieve/vacation.sieve", VACATION)):
-            info = tarfile.TarInfo(name)
-            info.size = len(content.encode())
-            tar.addfile(info, io.BytesIO(content.encode()))
-        link = tarfile.TarInfo("info/.dovecot.sieve")
-        link.type, link.linkname = tarfile.SYMTYPE, "sieve/roundcube.sieve"
-        tar.addfile(link)
-    return path
-
-
-def test_filters_import_writes_the_scripts_and_activates_the_one_that_was_active(mailctl, example_domain,
-                                                                                 sieve_archive, fake_command):
-    doveadm = fake_command("doveadm", 'if [ "$2" = "list" ]; then echo; fi')
-    add_account(mailctl, "info@example.nl")
-
-    output = mailctl.ok("filters", "import", "info@example.nl", str(sieve_archive))
-
-    assert "Imported roundcube for info@example.nl" in output
-    assert "roundcube is the active filter" in output
-    assert ["sieve", "put", "-u", "info@example.nl", "roundcube"] in [call[:5] for call in doveadm.calls]
-    assert ["sieve", "put", "-u", "info@example.nl", "vacation"] in [call[:5] for call in doveadm.calls]
-    assert ["sieve", "activate", "-u", "info@example.nl", "roundcube"] in [call[:5] for call in doveadm.calls]
-
-
-def test_filters_import_keeps_the_filters_the_account_has_unless_replace(mailctl, example_domain, sieve_archive,
-                                                                        fake_command):
-    doveadm = fake_command("doveadm", 'if [ "$2" = "list" ]; then echo "roundcube ACTIVE"; fi')
-    add_account(mailctl, "info@example.nl")
-
-    output = mailctl.ok("filters", "import", "info@example.nl", str(sieve_archive))
-
-    assert "already has a filter roundcube; --replace overwrites it" in output
-    assert ["sieve", "put", "-u", "info@example.nl", "roundcube"] not in [call[:5] for call in doveadm.calls]
-
-    assert "Imported roundcube" in mailctl.ok("filters", "import", "info@example.nl", str(sieve_archive), "--replace")
-
-
-def test_filters_import_dry_run_changes_nothing(mailctl, example_domain, sieve_archive, fake_command):
-    doveadm = fake_command("doveadm", 'if [ "$2" = "list" ]; then echo; fi')
-    add_account(mailctl, "info@example.nl")
-
-    output = mailctl.ok("filters", "import", "info@example.nl", str(sieve_archive), "--dry-run")
-
-    assert "Would import roundcube and make it active." in output
-    assert "Nothing was changed (--dry-run)." in output
-    assert not [call for call in doveadm.calls if call[:2] == ["sieve", "put"]]
-
-
-def test_filters_import_refuses_an_account_that_isnt_here_and_an_archive_without_filters(mailctl, example_domain,
-                                                                                        sieve_archive, tmp_path):
-    assert "isn't an account on this server" in mailctl.fails("filters", "import", "gone@example.nl",
-                                                              str(sieve_archive))
-    empty = tmp_path / "empty.tar"
-    with tarfile.open(empty, "w"):
-        pass
-    add_account(mailctl, "info@example.nl")
-
-    assert "holds no filters" in mailctl.fails("filters", "import", "info@example.nl", str(empty))
-
-
 # mailctl address import: the accounts of a server being moved here, with the passwords their owners already have.
 
 ACCOUNTS = {"info@example.nl": "correct horse battery", "sales@example.nl": "another one entirely"}
@@ -619,7 +553,7 @@ def test_import_leaves_an_account_that_is_already_there(mailctl, example_domain,
 
     output = mailctl.ok("address", "import", str(path), "--yes")
 
-    assert "info@example.nl already exists and is left as it is." in output
+    assert "1 account in" in output and "is already here and left as they are." in output
     assert "Created 1 account" in output
 
 
@@ -659,3 +593,72 @@ def test_import_says_to_delete_a_file_of_passwords_others_can_read(mailctl, exam
 
     assert "can be read by others, and it holds passwords" in output
     assert f"Delete {path} now" in output
+
+
+def test_filters_show_says_that_only_the_active_one_runs(mailctl, example_domain, fake_command):
+    """An account can have several filters, from webmail and from the import, and Dovecot runs one."""
+    scripts = {"sogo": "# webmail's own", "roundcube": "# imported"}
+    listing = "; ".join(f'echo "{name}{" ACTIVE" if name == "sogo" else ""}"' for name in scripts)
+    fake_command("doveadm", f'if [ "$2" = "list" ]; then {listing}; elif [ "$2" = "get" ]; then echo "# filter"; fi')
+    add_account(mailctl, "info@example.nl")
+
+    output = mailctl.ok("filters", "show", "info@example.nl")
+
+    assert "Only the active filter runs. The others are kept and do nothing." in output
+
+
+def test_filters_adopt_puts_the_filters_an_account_has_in_webmail(mailctl, example_domain, fake_command, database):
+    """For accounts whose filters were imported before mailctl put them in webmail's list."""
+    script = 'require ["fileinto"];\n# rule:[Invoices]\nif header :contains "subject" "invoice" { fileinto "Bills"; }'
+    doveadm = fake_command("doveadm", f'if [ "$2" = "list" ]; then echo "roundcube ACTIVE"; '
+                                      f'elif [ "$2" = "get" ]; then printf \'{script}\'; fi')
+    add_account(mailctl, "info@example.nl")
+
+    output = mailctl.ok("filters", "adopt", "info@example.nl")
+
+    assert "1 rule in webmail's filters" in output
+    filters = sogofilters.read(database, "info@example.nl")
+    assert [one["name"] for one in filters] == ["Invoices"]
+    assert ["sieve", "activate", "-u", "info@example.nl", "sogo"] in [call[:5] for call in doveadm.calls]
+
+
+def test_filters_adopt_can_show_what_it_would_do(mailctl, example_domain, fake_command, database):
+    script = 'if header :contains "subject" "invoice" { fileinto "Bills"; }'
+    fake_command("doveadm", f'if [ "$2" = "list" ]; then echo "roundcube ACTIVE"; '
+                            f'elif [ "$2" = "get" ]; then printf \'{script}\'; fi')
+    add_account(mailctl, "info@example.nl")
+
+    output = mailctl.ok("filters", "adopt", "info@example.nl", "--dry-run")
+
+    assert "would put 1 rule in webmail's filters" in output
+    assert "Nothing was changed (--dry-run)." in output
+    assert sogofilters.read(database, "info@example.nl") == []
+
+
+def test_address_delete_takes_what_webmail_keeps_with_it(mailctl, example_domain, database, typed_passwords, terminal):
+    """Calendars, address books and filters live in webmail's database, not in the mail directory."""
+    typed_passwords("correct horse battery", "correct horse battery")
+    mailctl.ok("address", "add", "info@example.nl")
+    database.execute("INSERT INTO sogo.sogo_user_profile (c_uid, c_defaults) VALUES (%s, %s)",
+                     "info@example.nl", '{"SOGoSieveFilters": []}')
+    database.execute("INSERT INTO sogo.sogo_folder_info (c_path, c_path1, c_path2, c_foldername, c_folder_type) "
+                     "VALUES (%s, 'Users', %s, 'personal', 'Appointment')",
+                     "/Users/info@example.nl/Calendar/personal", "info@example.nl")
+
+    output = mailctl.ok("address", "delete", "info@example.nl", "--yes", "--delete-mail")
+
+    assert "Webmail lost 1 calendar or address book and its webmail settings and filters too." in output
+    assert database.value("SELECT COUNT(*) FROM sogo.sogo_user_profile WHERE c_uid = %s", "info@example.nl") == 0
+    assert database.value("SELECT COUNT(*) FROM sogo.sogo_folder_info WHERE c_path2 = %s", "info@example.nl") == 0
+
+
+def test_address_delete_that_keeps_the_mail_keeps_webmails_data_too(mailctl, example_domain, database,
+                                                                   typed_passwords, terminal):
+    typed_passwords("correct horse battery", "correct horse battery")
+    mailctl.ok("address", "add", "info@example.nl")
+    database.execute("INSERT INTO sogo.sogo_user_profile (c_uid, c_defaults) VALUES (%s, %s)",
+                     "info@example.nl", '{"SOGoSieveFilters": []}')
+
+    mailctl.ok("address", "delete", "info@example.nl", "--yes", "--keep-mail")
+
+    assert database.value("SELECT COUNT(*) FROM sogo.sogo_user_profile WHERE c_uid = %s", "info@example.nl") == 1

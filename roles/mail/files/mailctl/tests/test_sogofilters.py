@@ -166,3 +166,59 @@ def test_adopt_writes_nothing_when_no_rule_fits_webmails_filters(database, fake_
     assert adopted.added == [] and "vacation" in adopted.left[0]
     assert sogofilters.read(database, "info@example.nl") == []
     assert doveadm.calls == []
+
+
+# What a real server's filters look like, which webmail's editor turns out to have a place for.
+
+def test_a_rule_for_every_message_is_webmails_every_message(fake_command):
+    """"if true" is what a forward-everything rule looks like; webmail calls it "all messages"."""
+    filters, left = translated('require ["copy"];\n# rule:[default]\nif true\n{\n\tredirect :copy "a@b.nl";\n}\n', "rc")
+
+    assert left == []
+    assert filters[0]["match"] == sogofilters.EVERY_MESSAGE and filters[0]["rules"] == []
+    # :copy forwards and keeps the message, which webmail does with two actions.
+    assert filters[0]["actions"] == [{"method": "redirect", "argument": "a@b.nl"}, {"method": "keep"}]
+    assert "if true" in sogofilters.render(filters)
+
+
+def test_a_rule_on_the_message_body_is_kept():
+    script = ('require ["body","fileinto"];\n# rule:[orders]\n'
+              'if allof (header :contains "subject" "order", body :text :contains :comparator "i;octet" "iDEAL")\n'
+              '{\n\tfileinto "Orders";\n}\n')
+
+    filters, left = translated(script, "rc")
+
+    assert left == []
+    assert filters[0]["rules"][1] == {"field": "body", "operator": "contains", "value": "iDEAL"}
+    assert 'body :text :contains "iDEAL"' in sogofilters.render(filters)
+    assert '"body"' in sogofilters.render(filters).split("\n")[0]  # the require line asks for it
+
+
+def test_a_list_of_flags_becomes_one_action_each():
+    script = 'require ["imap4flags"];\nif header :is "to" "a@b.nl" { addflag ["\\\\Seen","\\\\Flagged"]; }\n'
+
+    filters, left = translated(script, "rc")
+
+    assert left == []
+    assert filters[0]["actions"] == [{"method": "addflag", "argument": "\\Seen"},
+                                     {"method": "addflag", "argument": "\\Flagged"}]
+
+
+def test_setflag_is_the_same_to_webmail_as_addflag():
+    filters, _ = translated('if header :is "to" "a@b.nl" { setflag "\\\\Seen"; }\n', "rc")
+
+    assert filters[0]["actions"] == [{"method": "addflag", "argument": "\\Seen"}]
+
+
+def test_an_empty_script_holds_no_rules_and_nothing_is_wrong_with_it():
+    """Roundcube leaves this behind for an account that never had a filter."""
+    assert translated("/* empty script */", "rc") == ([], [])
+
+
+def test_several_redirects_in_one_rule_are_several_actions():
+    script = 'if header :contains "subject" "x" { redirect "a@b.nl"; redirect "c@d.nl"; }\n'
+
+    filters, left = translated(script, "rc")
+
+    assert left == []
+    assert [action["argument"] for action in filters[0]["actions"]] == ["a@b.nl", "c@d.nl"]

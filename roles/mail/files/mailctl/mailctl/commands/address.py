@@ -2,20 +2,21 @@
 
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Optional
 
 import typer
 
 from .. import ui
-from ..core import accountfile, activity, addresses, domains, forwards, mailbox, names
+from ..core import accountfile, activity, addresses, domains, forwards, mailbox, names, sogo
 from ..core.errors import MailctlError
 from ..session import Session, open_session
+from . import certificate as certificate_command
 from . import domain as domain_command
+from .checks import offer_the_certificate
 from .dns import DryRun
 from .shared import (
-    Address, DeleteMail, DomainFilter, PasswordStdin, Yes, ask_address, attempt, decide_mail, domain_filter, group,
-    warn_about_incoming_forwards,
+    Address, DeleteMail, DomainFilter, PasswordStdin, Yes, activate_imported, ask_address, attempt, decide_mail,
+    domain_filter, group, into_webmail, warn_about_incoming_forwards, would_be_in_webmail,
 )
 
 AccountFile = Annotated[str, typer.Argument(
@@ -50,6 +51,10 @@ def add(address: Address = None, password_stdin: PasswordStdin = False) -> None:
     ui.success(f"Created {address}.")
     if had_mail:
         ui.note(f"The mail that was kept in {home} is in the account again.")
+    if not new_domain:  # a new domain has offered it already, as part of adding it
+        with open_session() as session:
+            if offer_the_certificate(session, domain):
+                certificate_command.sync(yes=True)
 
 
 @app.command(name="import")
@@ -67,7 +72,7 @@ def import_accounts(file: AccountFile = None, dry_run: DryRun = False, yes: Yes 
 
     [dim]Check the file only:[/] mailctl address import accounts.json --dry-run
     """
-    path = Path(ui.ask("The JSON file with the accounts", file, "FILE"))
+    path = ui.ask_file("The JSON file with the accounts", file, "FILE")
     accounts = accountfile.read(path)
     if accountfile.readable_by_others(path):
         ui.warn(f"{path} can be read by others, and it holds passwords. Delete it once the accounts are created.")
@@ -77,8 +82,9 @@ def import_accounts(file: AccountFile = None, dry_run: DryRun = False, yes: Yes 
         if missing:
             raise MailctlError(f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} not on this server.",
                                hint=f"Add {'it' if len(missing) == 1 else 'them'} first with: mailctl domain add")
-        for address in sorted(known):
-            ui.note(f"{address} already exists and is left as it is.")
+        if known:
+            ui.note(f"{ui.plural(len(known), 'account')} in {path} "
+                    f"{'is' if len(known) == 1 else 'are'} already here and left as they are.")
         to_create = [account for account in accounts if account.address not in known]
         if not to_create:
             ui.success(f"Every account in {path} is already on this server.")
@@ -99,10 +105,6 @@ def import_accounts(file: AccountFile = None, dry_run: DryRun = False, yes: Yes 
                        (f" The mail that was kept in {home} is in the account again." if home.exists() else ""))
     ui.success(f"Created {ui.plural(len(to_create), 'account')} from {path}.")
     ui.note(f"Delete {path} now: it holds the passwords in plain text.")
-
-
-def _domains(session: Session) -> set[str]:
-    return {domain.name for domain in domains.list_domains(session.db)}
 
 
 @app.command(name="list")
@@ -165,7 +167,12 @@ def delete(address: Address = None, delete_mail: DeleteMail = None, yes: Yes = F
         problems: list[str] = []
         if delete_mail:
             attempt(problems, "Couldn't delete the mail", lambda: mailbox.delete_mail(session.config, home))
+            removed = attempt(problems, "Couldn't delete what webmail keeps for the account",
+                              lambda: sogo.remove_user(session.db, address))
+        else:
+            removed = None
     ui.success(f"Deleted {address}.")
+    _say_what_webmail_lost(removed)
     if home.exists() and not delete_mail:
         ui.note(f"Its mail is kept in {home}; adding {address} again brings it back.")
     for problem in problems:
@@ -175,6 +182,21 @@ def delete(address: Address = None, delete_mail: DeleteMail = None, yes: Yes = F
     # While the address forwards its mail itself, mail forwarded to it still arrives somewhere.
     if not outgoing:
         warn_about_incoming_forwards(incoming)
+
+
+def _say_what_webmail_lost(removed: sogo.Removed | None) -> None:
+    """Webmail keeps calendars, address books and filters of its own, outside the mail directory."""
+    if not removed:
+        return
+    kept = [ui.plural(removed.folders, "calendar or address book")] if removed.folders else []
+    if removed.settings:
+        kept.append("its webmail settings and filters")
+    if kept:
+        ui.note(f"Webmail lost {' and '.join(kept)} too.")
+
+
+def _domains(session: Session) -> set[str]:
+    return {domain.name for domain in domains.list_domains(session.db)}
 
 
 def _domain_to_add(session: Session, domain: str) -> bool:

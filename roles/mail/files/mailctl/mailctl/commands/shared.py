@@ -7,7 +7,7 @@ from typing import Annotated, Optional
 import typer
 
 from .. import ui
-from ..core import addresses, autodiscover, dkim, dns_check, domains, names, spam, system
+from ..core import addresses, autodiscover, dkim, dns_check, domains, mailbox, names, sogofilters, spam, system
 from ..core.dns_check import DnsRecord
 from ..core.errors import MailctlError
 from ..core.forwards import Forward
@@ -94,3 +94,45 @@ def recommended_records(session: Session, domain: str, problems: list[str]) -> l
 def warn_about_incoming_forwards(incoming: list[Forward]) -> None:
     for forward in incoming:
         ui.warn(f"{forward.source} still forwards to {forward.destination}, which is no longer on this server.")
+
+
+def into_webmail(session: Session, address: str, scripts: list) -> bool:
+    """Puts the imported rules in webmail's filter list, where filters are edited. False when none of them fits,
+    and the imported filter is left to run as it is."""
+    adopted = sogofilters.adopt(session.db, address, [(script.name, script.content) for script in scripts])
+    for line in adopted.left:
+        ui.warn(f"Not in webmail: {line}")
+    if not adopted.added:
+        # Nothing said and nothing to add: the scripts hold no rules at all, so there is nothing to run.
+        return not adopted.left
+    ui.success(f"{ui.plural(len(adopted.added), 'rule')} of them "
+               f"{'is' if len(adopted.added) == 1 else 'are'} in webmail's filters now, which is where they are "
+               f"edited from now on. They run already.")
+    if adopted.already:
+        ui.note(f"Webmail already had {ui.plural(adopted.already, 'filter')} of the same name, left as "
+                f"{'it was' if adopted.already == 1 else 'they were'}.")
+    if adopted.left:
+        ui.note("The rules it doesn't have stay in the imported filter, which doesn't run while webmail's filters "
+                f"do. See them with: mailctl filters show {address}")
+    return True
+
+
+def would_be_in_webmail(scripts: list) -> None:
+    for script in scripts:
+        filters, left = sogofilters.translate(script.content, script.name)
+        ui.line(f"Would put {ui.plural(len(filters), 'rule')} of {script.name} in webmail's filters.", indent=2)
+        for line in left:
+            ui.warn(f"Not in webmail: {line}", indent=2)
+
+
+def activate_imported(address: str, scripts: list, was_active: str | None) -> None:
+    """When nothing went into webmail, the imported filter is the one that runs, as on the other server."""
+    for script in scripts:
+        if not script.active:
+            continue
+        mailbox.activate_sieve(address, script.name)
+        ui.success(f"{script.name} is the active filter.")
+        if was_active and was_active != script.name:
+            # An account has one active filter, and webmail keeps its own in a filter of its own.
+            ui.warn(f"{was_active} was the active filter and stops running: an account has one. Saving filters in "
+                    f"webmail makes {was_active} the active one again, and then the imported filters stop instead.")

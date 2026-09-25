@@ -1,9 +1,9 @@
 """mailctl domain: add, list and delete mail domains."""
 
 from .. import ui
-from ..core import addresses, autodiscover, dkim, domains, forwards, mailbox, webmail
+from ..core import addresses, autodiscover, dkim, domains, forwards, mailbox, sogo, webmail
 from ..session import Session, open_session
-from .checks import warn_if_not_in_certificate
+from .checks import offer_the_certificate
 from .shared import (
     DeleteMail, Domain, Yes, ask_domain, attempt, decide_mail, group, recommended_records, warn_about_incoming_forwards,
 )
@@ -39,7 +39,7 @@ def create(session: Session, domain: str) -> None:
     if session.config.transip_settings.exists():
         ui.note(f"Publish them at TransIP with: mailctl dns publish {domain}")
     ui.note(f"Once {webmail.host(domain)} points to this server, give it webmail with: mailctl webmail sync")
-    warn_if_not_in_certificate(session, domain)
+    offer_the_certificate(session, domain)
     ui.note(f"Check the domain's setup with: mailctl doctor {domain}")
 
 
@@ -87,8 +87,14 @@ def delete(domain: Domain = None, delete_mail: DeleteMail = None, yes: Yes = Fal
         for account in accounts:
             mailbox.kick(account)
         problems: list[str] = []
+        webmail_data = 0
         if delete_mail:
             attempt(problems, "Couldn't delete the mail", lambda: mailbox.delete_mail(session.config, mail))
+            for account in accounts:
+                # Webmail keeps calendars, address books and filters of its own, outside the mail directory.
+                removed = attempt(problems, f"Couldn't delete what webmail keeps for {account}",
+                                  lambda account=account: sogo.remove_user(session.db, account))
+                webmail_data += bool(removed and (removed.folders or removed.settings))
         attempt(problems, "Couldn't delete the DKIM key", lambda: dkim.delete_key(session.config, domain))
         attempt(problems, "Couldn't update OpenDKIM", lambda: dkim.update_opendkim(session.config))
         had_site = attempt(problems, "Couldn't remove the autodiscover site",
@@ -101,6 +107,8 @@ def delete(domain: Domain = None, delete_mail: DeleteMail = None, yes: Yes = Fal
         ui.note(f"Removed its site {site}. Its certificate stays; delete it with: certbot delete --cert-name {site}")
     if had_webmail:
         ui.note(f"Removed its webmail site {webmail.host(domain)}, with that site's certificate.")
+    if webmail_data:
+        ui.note(f"Webmail lost the calendars, address books and filters of {ui.plural(webmail_data, 'account')} too.")
     if mail.exists() and not delete_mail:
         ui.note(f"Its mail is kept in {mail}.")
     for problem in problems:

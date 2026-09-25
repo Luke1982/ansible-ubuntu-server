@@ -9,7 +9,7 @@ from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import names, system
+from . import names, sieve, system
 from .config import Config
 from .errors import MailctlError
 
@@ -106,7 +106,7 @@ def parse_folders(output: str, maildir: Path) -> list[Folder]:
 
 def sieve_scripts(address: str) -> list[SieveScript]:
     return [
-        SieveScript(name, active, system.run("doveadm", "sieve", "get", "-u", address, name))
+        SieveScript(name, active, sieve.get_script(address, name))
         for name, active in parse_sieve_list(system.run("doveadm", "sieve", "list", "-u", address))
     ]
 

@@ -4,11 +4,15 @@ Text from users, the database or DNS reaches Rich through text(): it's never rea
 characters are made visible, so a filter script or a DNS record can't steer the terminal.
 """
 
+import glob
+import os
 import re
 import sys
 import termios
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from rich import box
 from rich.console import Console
@@ -90,6 +94,47 @@ def ask(prompt: str, value: str | None, argument: str) -> str:
     while not answer:
         answer = Prompt.ask(text(prompt), console=console).strip()
     return answer
+
+
+def ask_file(prompt: str, value: str | None, argument: str) -> Path:
+    """Like ask(), for a file name, which the Tab key completes while it's typed."""
+    if value is not None or not interactive():
+        return Path(ask(prompt, value, argument))
+    with _file_completion():
+        return Path(ask(prompt, value, argument)).expanduser()
+
+
+def complete_file(typed: str) -> list[str]:
+    """The file and folder names that start with what was typed; folders end in a slash, to go on typing into."""
+    matches = sorted(glob.glob(glob.escape(os.path.expanduser(typed)) + "*"))
+    return [match + "/" if os.path.isdir(match) else match for match in matches]
+
+
+@contextmanager
+def _file_completion() -> Iterator[None]:
+    """Completes file names on Tab while the block asks for one."""
+    try:
+        import readline
+    except ImportError:  # Python without readline: the name is typed out
+        yield
+        return
+    matches: list[str] = []
+
+    def complete(typed: str, state: int) -> str | None:
+        """Readline asks for the matches one by one, with state counting up from 0 for each Tab."""
+        if state == 0:
+            matches[:] = complete_file(typed)
+        return matches[state] if state < len(matches) else None
+
+    completer, delimiters = readline.get_completer(), readline.get_completer_delims()
+    readline.set_completer(complete)
+    readline.set_completer_delims("\n")  # the whole line is the file name, spaces and all
+    readline.parse_and_bind("tab: complete")
+    try:
+        yield
+    finally:
+        readline.set_completer(completer)
+        readline.set_completer_delims(delimiters)
 
 
 def ask_secret(prompt: str) -> str:

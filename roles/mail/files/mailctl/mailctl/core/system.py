@@ -51,6 +51,17 @@ def _run(args: tuple[str, ...], stdin, **text_options):
     return result.stdout
 
 
+def run_check(*args: str) -> str | None:
+    """Runs a program that checks something, like sievec: None when it passes, or else what it said."""
+    try:
+        result = subprocess.run(args, capture_output=True, check=False, text=True, errors="replace")
+    except FileNotFoundError:
+        raise MailctlError(f"{args[0]} isn't installed.") from None
+    if result.returncode == 0:
+        return None
+    return result.stderr.strip() or result.stdout.strip() or f"exit status {result.returncode}"
+
+
 def _as_text(output: str | bytes) -> str:
     return output if isinstance(output, str) else output.decode(errors="replace")
 

@@ -310,6 +310,19 @@ def db_config(config, database_socket) -> Config:
         cursor.execute("CREATE DATABASE sogo")
         cursor.execute("CREATE TABLE sogo.sogo_user_profile (c_uid varchar(255) NOT NULL PRIMARY KEY, "
                        "c_defaults text, c_settings text)")
+        cursor.execute("CREATE TABLE sogo.sogo_folder_info (c_folder_id bigint unsigned NOT NULL AUTO_INCREMENT "
+                       "PRIMARY KEY, c_path varchar(255) NOT NULL, c_path1 varchar(255) NOT NULL, "
+                       "c_path2 varchar(255), c_foldername varchar(255) NOT NULL, c_location varchar(2048), "
+                       "c_quick_location varchar(2048), c_acl_location varchar(2048), "
+                       "c_folder_type varchar(255) NOT NULL)")
+        cursor.execute("CREATE TABLE sogo.sogo_acl (c_folder_id bigint unsigned NOT NULL, "
+                       "c_object varchar(255) NOT NULL, c_uid varchar(255) NOT NULL, c_role varchar(80) NOT NULL)")
+        cursor.execute("CREATE TABLE sogo.sogo_store (c_folder_id bigint unsigned NOT NULL, "
+                       "c_name varchar(255) NOT NULL, c_content longtext NOT NULL)")
+        cursor.execute("CREATE TABLE sogo.sogo_cache_folder (c_uid varchar(255) NOT NULL, "
+                       "c_path varchar(255) NOT NULL, c_content longtext)")
+        cursor.execute("CREATE TABLE sogo.sogo_users (c_uid varchar(255) NOT NULL PRIMARY KEY, "
+                       "c_name varchar(255), c_password varchar(255), c_cn varchar(255), mail varchar(255))")
     connection.close()
     return replace(config, db_socket=database_socket)
 
@@ -354,4 +367,5 @@ def mailctl(db_config, tmp_path, monkeypatch, fake_command, fake_opendkim_genkey
     db_config.vmail_root.mkdir()
     fake_command("systemctl")
     fake_command("doveadm")
+    fake_command("sievec")
     return Mailctl()
