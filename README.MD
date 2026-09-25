@@ -94,14 +94,7 @@ Calendars, address books and SOGo's settings live in the MariaDB database `sogo`
 
 Roundcube's database stays, with the contacts people saved in it. Filters made in Roundcube keep working until someone saves filters or a vacation reply in SOGo; from then on SOGo's apply. `mailctl filters show ADDRESS` shows both.
 
-Moving an account from another server: tar its sieve directory there (`tar czf sieve.tar.gz -C /var/vmail/example.nl/info sieve .dovecot.sieve`) and import it here:
-
-```bash
-mailctl filters import info@example.nl sieve.tar.gz --dry-run   # what it would do
-mailctl filters import info@example.nl sieve.tar.gz
-```
-
-It takes the `.sieve` files from the archive and makes active the one `.dovecot.sieve` pointed to. Filters the account already has are kept, unless you add `--replace`. Filters imported from Roundcube stop applying as soon as that user saves filters or a vacation reply in SOGo.
+Filters from another server come over with the server itself: the export writes every account's filters into the JSON file, and `mailctl import` puts the rules that webmail's own filter editor can express in its list, so they show up there and are edited there (see [Mail filters](#mail-filters)).
 
 #### Ubuntu release upgrades
 
@@ -302,14 +295,20 @@ setfacl -m u:nobody:rwx -m d:u:nobody:rwx /home/USER/public_html/www/wp-content/
 ### What `domainctl add` does
 
 1. Works out the user name from the domain (`example.nl` becomes `example`), or takes `--user`.
-2. Looks the domain and `www.DOMAIN` up **in real DNS**, because that is what Let's Encrypt checks. The domain has to point here, and only here. A name with no record at all is offered to TransIP, if the domain is in that account and uses TransIP's nameservers; it then waits until the nameservers serve it.
-3. `www` is included only when it points here. A name that doesn't resolve here would fail the whole certificate request and take the bare domain down with it, so it is left out with a warning instead. Run the command again once the record is right.
-4. Makes the user, its home directory, `public_html/www` and `logs`, with a placeholder page, and sets the ACL entries above.
+2. Makes the user, its home directory, `public_html/www` and `logs`, with a placeholder page, and sets the ACL entries above. This happens whatever the DNS says, so a site that is moving here can be put in place before its domain is.
+3. Looks the domain and `www.DOMAIN` up **in real DNS**, because that is what Let's Encrypt checks. The domain has to point here, and only here.
+   - A name with **no record at all** is offered to TransIP, if the domain is in that account and uses TransIP's nameservers.
+   - A name that **still points at the old server** is offered the move: it asks first, naming what it takes away, since visitors go to this server as soon as the old record expires. It never moves a name without a yes (`--yes` answers for you).
+   - Either way it waits until TransIP's nameservers serve the new record.
+   - When the domain still doesn't point here, that is where it stops: the directories are ready, and it says to run the same command again after the move. The virtual host and the certificate wait, because Let's Encrypt would refuse them.
+4. `www` is included only when it points here. A name that doesn't resolve here would fail the whole certificate request and take the bare domain down with it, so it is left out with a warning instead. Run the command again once the record is right.
 5. Adds the member to the template and restarts OpenLiteSpeed.
 6. Checks that OpenLiteSpeed really answers for the domain on port 80, by fetching a file of its own from the challenge folder at each of the server's addresses. A failed Let's Encrypt validation counts against their limits; this check does not.
 7. Switches the redirect to HTTPS off in the template, runs certbot as a test and then for real (`certonly --webroot`), and switches the redirect back on — always, also when certbot fails.
 
-Run it again for the same domain whenever something stopped it: it picks up where it left off, and adds `www` to the certificate once that record points here.
+Run it again for the same domain whenever something stopped it: it picks up where it left off, taking over the user and directories it made itself, and adds `www` to the certificate once that record points here.
+
+Every address record it publishes is the server's IPv4 address, for the reason in [Mail filters](#the-certificate-for-mail-programs)' neighbourhood: OpenLiteSpeed listens on IPv4 as it comes, so an `AAAA` record would cost every visitor a wait before their browser falls back to the address that answers.
 
 Nothing is rolled back when certbot fails: the site stays up over HTTP and the message says what Let's Encrypt refused. Fix that and run `domainctl add DOMAIN` again, or take it away with `domainctl delete USER`.
 
@@ -338,6 +337,8 @@ Mail servers get `mailctl`, a command-line tool for the mail domains, addresses,
 | `mailctl domain add example.nl` | Adds a domain, creates its DKIM key and shows the DNS records to publish |
 | `mailctl address add info@example.nl` | Creates an account; asks for the password |
 | `mailctl address import accounts.json` | Creates the accounts in a JSON file of addresses and passwords, for moving a server to this one |
+| `mailctl import mailserver.json` | Creates the domains, accounts, forwards, spam settings and filters in a JSON file from another server (below) |
+| `mailctl export mailserver.json` | Writes all of those from this server to a JSON file, for `mailctl import` on another one |
 | `mailctl forward add sales@example.nl info@example.nl` | Forwards mail for an address |
 | `mailctl status info@example.nl` | Folders, last logins, sending against the limits, recent bounces |
 | `mailctl status example.nl` | Checks the domain's DNS records and whether the certificate includes `mail.example.nl` |
@@ -351,7 +352,6 @@ Mail servers get `mailctl`, a command-line tool for the mail domains, addresses,
 | `mailctl filters show info@example.nl` | Shows an account's mail filters |
 | `mailctl filters import mailserver.json` | Takes only the filters from another server's file, into webmail's list (below) |
 | `mailctl filters run info@example.nl` | Runs an account's filters over the mail that is already in a folder (below) |
-| `mailctl filters import info@example.nl sieve.tar.gz` | Imports an account's filters from a tar of its sieve directory on another server |
 | `mailctl webmail sync` | Publishes missing `webmail.DOMAIN` records at TransIP, sets up webmail with a certificate for the domains whose `webmail.DOMAIN` points here, and removes it for the others. Run it by hand; the playbook only says to |
 
 Last logins are recorded for IMAP, which webmail and phones on ActiveSync use too; accounts that only send mail show no logins.
@@ -393,7 +393,9 @@ A `mailctl-spam-learn.timer` runs it every night, so nothing has to be remembere
 
 ### Mail filters
 
-An account's filters are Sieve scripts, and Dovecot runs **one** of them: the active one. Webmail keeps its filters in a script of its own and makes that one active whenever they are saved there, so filters imported with `mailctl address import-sieve` stop running at that moment, and the other way round. `mailctl filters show` marks which one is active, and the import says which filter it takes over from. `mailctl filters import mailserver.json` takes the filters, and nothing else, out of the file `mailctl export` writes on the other server: it puts their rules in webmail's list, writes webmail's own script so they run at once, and leaves a filter an account already has under that name alone unless `--replace`. Add an address to take one account's filters only, and `--dry-run` to see what it would do. Filters only sort mail as it arrives, so mail that came in before them stays where it is; `mailctl filters run ADDRESS` runs the account's active filter over a folder that is already there (the inbox unless `--folder` says otherwise) with Dovecot's own `sieve-filter`, and `--dry-run` says what it would move before anything is touched. After the account's own filter, the server's own runs for everyone: it files what SpamAssassin marked in `Junk`.
+An account's filters are Sieve scripts, and Dovecot runs **one** of them: the active one. Webmail (SOGo) is where filters are edited: it keeps them in its own database, renders them into the script named `sogo` and makes that one active, so a filter kept in any other script stops running the moment someone saves filters in webmail.
+
+That is why filters that come in with `mailctl import` are put in webmail's list, and run from webmail's own script straight away. A rule webmail's editor can't express -- an away message, a test on a header it doesn't offer -- is named with the reason and left in a script of its own, which doesn't run while webmail's filters do. `mailctl filters show ADDRESS` shows every script an account has and marks the active one. `mailctl filters import mailserver.json` takes the filters, and nothing else, out of the file [`mailctl export`](#moving-a-whole-mail-server) writes on the other server: for accounts that are already here, or whose mail came over by other means. It puts their rules in webmail's list the same way, writes webmail's own script so they run at once, and leaves a filter an account already has under that name alone unless `--replace`. Add an address to take one account's filters only, and `--dry-run` to see what it would do. Filters only sort mail as it arrives, so mail that came in before them stays where it is; `mailctl filters run ADDRESS` runs the account's active filter over a folder that is already there (the inbox unless `--folder` says otherwise) with Dovecot's own `sieve-filter`, and `--dry-run` says what it would move before anything is touched. After the account's own filter, the server's own runs for everyone: it files what SpamAssassin marked in `Junk`.
 
 ### Autoconfig and autodiscover
 
@@ -428,6 +430,25 @@ Moving a server brings tens of accounts whose passwords are already known. `mail
 ```
 
 The file is read and checked whole first, so a mistake in it is found before any account exists; an address that is already there is left as it is, and every domain has to be on this server already. `--dry-run` checks the file and creates nothing. Delete the file afterwards: it holds the passwords in plain text, and mailctl says so when others can read it.
+
+### Moving a whole mail server
+
+`mailctl import mailserver.json` brings over a whole mail server at once: its domains, its accounts with their passwords, its forwards (and who may send as the forwarded address), its spam settings and every account's Sieve filters. Write the file on the old server with `mailctl export mailserver.json`, or, on a server without mailctl, with [`roles/mail/files/export-mailserver.sh`](roles/mail/files/export-mailserver.sh): copy it there and run `sudo ./export-mailserver.sh mailserver.json`. It reads the same tables this role sets up, needs `jq`, and changes nothing.
+
+```json
+{
+  "version": 1,
+  "domains": ["example.nl"],
+  "addresses": [{"address": "info@example.nl", "password_hash": "{SHA512-CRYPT}$6$..."},
+                {"address": "sales@example.nl", "password": "a password"}],
+  "forwards": [{"source": "sales@example.nl", "destination": "info@example.nl", "send_as": true}],
+  "spam": [{"target": "server", "setting": "required_score", "value": "5"},
+           {"target": "example.nl", "setting": "welcomelist_from", "value": "*@partner.nl"}],
+  "sieve": [{"address": "info@example.nl", "name": "roundcube", "active": true, "content": "require ..."}]
+}
+```
+
+Every part may be left out. Accounts keep the password hash the old server has, so nobody needs a new password; a password in plain text works too. Hashes are kept as they are, with their scheme in front so webmail reads them too. For every account whose hash isn't SHA512-CRYPT, like this server's, the import asks for a new password in a terminal, and Enter keeps the hash; `--keep-hashes` doesn't ask. Weak hashes, like MD5-CRYPT, are pointed out. An account whose hash Dovecot here can't read needs a new password, or is skipped. What's already on this server is summed up in one line; `--verbose` names it. The whole file, and every filter's syntax, is checked before anything is created. Domains and accounts that are already on this server are left as they are, and so are their spam settings and filters; a spam setting for the whole server is only added where this server has none. Running the import again carries on where it stopped. `--dry-run` only checks the file. New domains get a DKIM key; publish their DNS records afterwards (`mailctl dns show` or `mailctl dns publish`). The file holds password hashes, so the export makes it readable by root only; delete it once it's imported.
 
 The code is in `roles/mail/files/mailctl`. Its tests start a throwaway MariaDB or MySQL server and run against the library versions of both Ubuntu releases:
 
