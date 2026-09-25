@@ -57,6 +57,9 @@ def _sender_pattern(value: str) -> str:
     return pattern
 
 
+# The names SpamAssassin used before version 4, which older servers still have.
+RENAMED = {"whitelist_from": "welcomelist_from", "blacklist_from": "blocklist_from"}
+
 SETTINGS = {
     "required_score": Setting(many=False, normalise=_number),
     "welcomelist_from": Setting(many=True, normalise=_sender_pattern),
@@ -115,9 +118,9 @@ def show(db: Database, chain: list[Scope]) -> list[Preference]:
 def set_value(db: Database, scope: Scope, setting: str, value: str) -> bool:
     """Sets a single value or adds one to a list; the setting and value as known_setting() and normalise() give them.
     Returns whether anything changed."""
-    if _is_set(db, scope, setting, value):
+    if is_set(db, scope, setting, value):
         return False
-    if not SETTINGS[setting].many:
+    if not _values_add_up(setting):
         unset_value(db, scope, setting)
     # The table has no auto-increment, but prefid is required.
     db.execute(
@@ -126,6 +129,13 @@ def set_value(db: Database, scope: Scope, setting: str, value: str) -> bool:
         scope.username, setting, value,
     )
     return True
+
+
+def target_of(username: str) -> str:
+    """The address, domain or 'server' a row of the table is for. Servers set up by hand often use @GLOBAL."""
+    if username in (GLOBAL, "@GLOBAL"):
+        return SERVER
+    return username.removeprefix("%")
 
 
 def unset_value(db: Database, scope: Scope, setting: str, value: str | None = None) -> int:
@@ -150,7 +160,7 @@ def forget(db: Database, username: str) -> None:
     db.execute("DELETE FROM spamassassin.userpref WHERE username = %s", username)
 
 
-def _is_set(db: Database, scope: Scope, setting: str, value: str) -> bool:
+def is_set(db: Database, scope: Scope, setting: str, value: str) -> bool:
     return db.value(
         "SELECT 1 FROM spamassassin.userpref WHERE username = %s AND preference = %s AND value = %s",
         scope.username, setting, value,

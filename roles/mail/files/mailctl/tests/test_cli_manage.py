@@ -25,6 +25,7 @@ COMMANDS = [
     ("status",), ("doctor",), ("repair",),
     ("spam", "show"), ("spam", "set"), ("spam", "unset"), ("spam", "learn"),
     ("filters", "show"), ("filters", "import"), ("filters", "run"),
+    ("import",), ("export",),
 ]
 
 
