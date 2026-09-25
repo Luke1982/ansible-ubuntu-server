@@ -24,7 +24,7 @@ COMMANDS = [
     ("certificate", "sync"),
     ("status",), ("doctor",), ("repair",),
     ("spam", "show"), ("spam", "set"), ("spam", "unset"),
-    ("filters", "show"),
+    ("filters", "show"), ("filters", "import"),
 ]
 
 
@@ -633,6 +633,105 @@ def test_filters_adopt_can_show_what_it_would_do(mailctl, example_domain, fake_c
     assert "would put 1 rule in webmail's filters" in output
     assert "Nothing was changed (--dry-run)." in output
     assert sogofilters.read(database, "info@example.nl") == []
+
+
+IMPORTED_FILTER = ('require ["fileinto"];\n# rule:[Invoices]\n'
+                   'if header :contains "subject" "invoice" { fileinto "Bills"; }\n')
+
+
+def server_file(tmp_path, filters, accounts=("info@example.nl",), name="mailserver.json"):
+    """A file as 'mailctl export' writes it: accounts and forwards as well as filters."""
+    path = tmp_path / name
+    path.write_text(json.dumps({
+        "domains": ["example.nl"],
+        "addresses": [{"address": address, "password": PASSWORD} for address in accounts],
+        "forwards": [{"source": "sales@example.nl", "destination": "info@example.nl"}],
+        "sieve": filters,
+    }))
+    path.chmod(0o600)
+    return path
+
+
+def a_filter(address="info@example.nl", name="roundcube", active=True, content=IMPORTED_FILTER):
+    return {"address": address, "name": name, "active": active, "content": content}
+
+
+def test_filters_import_takes_only_the_filters_from_a_mail_server_file(mailctl, example_domain, tmp_path, database):
+    """The accounts and forwards in the file are 'mailctl import' business; this command leaves them alone."""
+    add_account(mailctl, "info@example.nl")
+    path = server_file(tmp_path, [a_filter()])
+
+    output = mailctl.ok("filters", "import", str(path), "--yes")
+
+    assert "1 filter of 1 account" in output
+    assert [one["name"] for one in sogofilters.read(database, "info@example.nl")] == ["Invoices"]
+    assert "in webmail's filters now" in output
+    assert "sales@example.nl" not in mailctl.ok("forward", "list")
+
+
+def test_filters_import_leaves_out_an_account_this_server_doesnt_have(mailctl, example_domain, tmp_path):
+    path = server_file(tmp_path, [a_filter("gone@example.nl")], accounts=("gone@example.nl",))
+
+    output = mailctl.ok("filters", "import", str(path), "--yes")
+
+    assert "gone@example.nl isn't an account on this server" in output
+    assert "mailctl address add gone@example.nl" in output
+    assert "There is nothing to import." in output
+
+
+def test_filters_import_can_take_one_accounts_filters(mailctl, example_domain, tmp_path, database):
+    add_account(mailctl, "info@example.nl")
+    add_account(mailctl, "sales@example.nl")
+    path = server_file(tmp_path, [a_filter(), a_filter("sales@example.nl")],
+                       accounts=("info@example.nl", "sales@example.nl"))
+
+    output = mailctl.ok("filters", "import", str(path), "info@example.nl", "--yes")
+
+    assert "1 filter of 1 account" in output
+    assert sogofilters.read(database, "sales@example.nl") == []
+
+
+def test_filters_import_keeps_a_filter_the_account_already_has(mailctl, example_domain, tmp_path, fake_command):
+    fake_command("doveadm", 'if [ "$2" = "list" ]; then echo "roundcube ACTIVE"; '
+                            'elif [ "$2" = "get" ]; then echo "# filter"; fi')
+    add_account(mailctl, "info@example.nl")
+    path = server_file(tmp_path, [a_filter()])
+
+    output = mailctl.ok("filters", "import", str(path), "--yes")
+
+    assert "already has a filter called roundcube, left as it is" in output
+    assert "mailctl filters import --replace" in output
+    assert "There is nothing to import." in output
+
+
+def test_filters_import_overwrites_what_is_there_when_asked(mailctl, example_domain, tmp_path, fake_command,
+                                                            database):
+    fake_command("doveadm", 'if [ "$2" = "list" ]; then echo "roundcube ACTIVE"; '
+                            'elif [ "$2" = "get" ]; then echo "# filter"; fi')
+    add_account(mailctl, "info@example.nl")
+    path = server_file(tmp_path, [a_filter()])
+
+    output = mailctl.ok("filters", "import", str(path), "--replace", "--yes")
+
+    assert "Imported 1 filter of info@example.nl." in output
+    assert [one["name"] for one in sogofilters.read(database, "info@example.nl")] == ["Invoices"]
+
+
+def test_filters_import_can_show_what_it_would_do(mailctl, example_domain, tmp_path, database):
+    add_account(mailctl, "info@example.nl")
+    path = server_file(tmp_path, [a_filter()])
+
+    output = mailctl.ok("filters", "import", str(path), "--dry-run")
+
+    assert "Would put 1 rule of roundcube in webmail's filters." in output
+    assert "Nothing was changed (--dry-run)." in output
+    assert sogofilters.read(database, "info@example.nl") == []
+
+
+def test_filters_import_says_when_the_file_holds_no_filters(mailctl, example_domain, tmp_path):
+    path = server_file(tmp_path, [])
+
+    assert "holds no filters" in mailctl.ok("filters", "import", str(path), "--yes")
 
 
 def test_address_delete_takes_what_webmail_keeps_with_it(mailctl, example_domain, database, typed_passwords, terminal):

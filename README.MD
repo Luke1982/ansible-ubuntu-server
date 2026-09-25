@@ -348,6 +348,7 @@ Mail servers get `mailctl`, a command-line tool for the mail domains, addresses,
 | `mailctl certificate sync` | Puts the hostname and every `mail.DOMAIN` that points here in one certificate, and makes Postfix and Dovecot read it (below). Run it by hand; the playbook only says to |
 | `mailctl spam set example.nl required_score 4` | Changes a spam setting for an account, a domain or the whole server |
 | `mailctl filters show info@example.nl` | Shows an account's mail filters |
+| `mailctl filters import mailserver.json` | Takes only the filters from another server's file, into webmail's list (below) |
 | `mailctl filters import info@example.nl sieve.tar.gz` | Imports an account's filters from a tar of its sieve directory on another server |
 | `mailctl webmail sync` | Publishes missing `webmail.DOMAIN` records at TransIP, sets up webmail with a certificate for the domains whose `webmail.DOMAIN` points here, and removes it for the others. Run it by hand; the playbook only says to |
 
@@ -384,7 +385,7 @@ Postfix hands every message to spamass-milter, which asks spamd to score it and 
 
 ### Mail filters
 
-An account's filters are Sieve scripts, and Dovecot runs **one** of them: the active one. Webmail keeps its filters in a script of its own and makes that one active whenever they are saved there, so filters imported with `mailctl address import-sieve` stop running at that moment, and the other way round. `mailctl filters show` marks which one is active, and the import says which filter it takes over from. After the account's own filter, the server's own runs for everyone: it files what SpamAssassin marked in `Junk`.
+An account's filters are Sieve scripts, and Dovecot runs **one** of them: the active one. Webmail keeps its filters in a script of its own and makes that one active whenever they are saved there, so filters imported with `mailctl address import-sieve` stop running at that moment, and the other way round. `mailctl filters show` marks which one is active, and the import says which filter it takes over from. `mailctl filters import mailserver.json` takes the filters, and nothing else, out of the file `mailctl export` writes on the other server: it puts their rules in webmail's list, writes webmail's own script so they run at once, and leaves a filter an account already has under that name alone unless `--replace`. Add an address to take one account's filters only, and `--dry-run` to see what it would do. After the account's own filter, the server's own runs for everyone: it files what SpamAssassin marked in `Junk`.
 
 ### Autoconfig and autodiscover
 
