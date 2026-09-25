@@ -183,25 +183,37 @@ def run(address: Address = None, folder: SourceFolder = "INBOX", dry_run: DryRun
             ui.confirm(f"Run {active.name} over {folder} of {address}? Messages it files are moved out of "
                        f"{folder}.", yes)
         with ui.console.status(f"Running {active.name} over {folder}…"):
-            output, looked_at = sieve.apply_to(address, active.content, folder, execute=not dry_run)
+            output, looked_at = sieve.apply_to(address, active.content, folder, execute=not dry_run,
+                                               owner=session.config.vmail_user)
     moved = sieve.moves(output)
     _say_what_it_did(active.name, folder, looked_at, moved, dry_run)
 
 
-def _say_what_it_did(name: str, folder: str, looked_at: int, moved: dict[str, int], dry_run: bool) -> None:
-    would = "would go" if dry_run else "went"
+def _say_what_it_did(name: str, folder: str, looked_at: int, filed: dict[str, int], dry_run: bool) -> None:
+    """What the run did, per folder. A rule that files back into the folder it read leaves the message where it
+    is, so it is counted apart from the ones that move."""
     if not looked_at:
         ui.note(f"There is no mail in {folder}.")
         return
-    ui.line(f"{name} looked at {ui.plural(looked_at, 'message')} in {folder}.")
-    for where, count in sorted(moved.items(), key=lambda pair: -pair[1]):
-        ui.line(f"{ui.plural(count, 'message')} {would} to {where}.", indent=2)
+    staying = filed.pop(folder, 0)
+    moved = sum(filed.values())
+    ui.line(f"{name} looked at {_count(looked_at, 'message')} in {folder}:")
+    for where, count in sorted(filed.items(), key=lambda pair: (-pair[1], pair[0])):
+        ui.line(ui.text(f"{count:>7,} → "), ui.text(where), indent=2)
+    if staying:
+        ui.line(ui.dim(f"{staying:>7,} filed back into {folder}, so they stay where they are"), indent=2)
     if not moved:
-        ui.note(f"Nothing in {folder} matches the filters; it all stays where it is.")
+        ui.note(f"Nothing in {folder} moves: the filters leave it all where it is.")
     elif dry_run:
+        ui.line(f"{moved:,} of {looked_at:,} would move.")
         ui.note("Nothing was moved (--dry-run). Run it again without --dry-run to move them.")
     else:
-        ui.success(f"Moved {ui.plural(sum(moved.values()), 'message')} out of {folder}.")
+        ui.success(f"Moved {moved:,} of {_count(looked_at, 'message')} out of {folder}; the rest stays there.")
+
+
+def _count(number: int, word: str) -> str:
+    """Like ui.plural, with a separator in a number that runs into the thousands, as a mailbox does."""
+    return f"{number:,} {word if number == 1 else word + 's'}"
 
 
 @app.command()

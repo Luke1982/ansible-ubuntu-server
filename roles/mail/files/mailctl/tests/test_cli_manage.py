@@ -733,11 +733,48 @@ def a_filter(address="info@example.nl", name="roundcube", active=True, content=I
     return {"address": address, "name": name, "active": active, "content": content}
 
 
-SIEVE_FILTER_OUTPUT = (
-    "sieve-filter(info@example.nl): Info: filtering: msgid=<1@example.nl>: Invoice 7\n"
-    "sieve-filter(info@example.nl): Info: msgid=<1@example.nl>: stored mail into mailbox 'Bills'\n"
-    "sieve-filter(info@example.nl): Info: filtering: msgid=<2@example.nl>: Hello\n"
-)
+SIEVE_FILTER_OUTPUT = """>> Filtering message:
+
+  ID:      <1@example.nl>
+  Subject: Invoice 7
+
+Performed actions:
+
+ * store message in folder: Bills
+        + create mailbox if it does not exist
+
+Implicit keep:
+
+  (none)
+
+>> Filtering message:
+
+  ID:      <2@example.nl>
+  Subject: Hello
+
+Performed actions:
+
+  (none)
+
+Implicit keep:
+
+ * store message in folder: INBOX
+
+"""
+NOTHING_MOVED = """>> Filtering message:
+
+  ID:      <1@example.nl>
+  Subject: Hello
+
+Performed actions:
+
+  (none)
+
+Implicit keep:
+
+ * store message in folder: INBOX
+
+"""
 
 
 def with_an_active_filter(mailctl, fake_command, script="# filter"):
@@ -750,44 +787,76 @@ def with_an_active_filter(mailctl, fake_command, script="# filter"):
 def test_filters_run_moves_the_mail_that_is_already_there(mailctl, example_domain, fake_command):
     """Filters only sort mail as it arrives; this is for the mail that came in before them."""
     with_an_active_filter(mailctl, fake_command)
-    sieve_filter = fake_command("sieve-filter", f'printf %s "{SIEVE_FILTER_OUTPUT}"')
+    sieve_filter = fake_command("sieve-filter", f"cat <<'REPORT'\n{SIEVE_FILTER_OUTPUT}REPORT")
 
     output = mailctl.ok("filters", "run", "info@example.nl", "--yes")
 
-    assert "sogo looked at 2 messages in INBOX." in output
-    assert "1 message went to Bills." in output
+    assert "sogo looked at 2 messages in INBOX:" in output
+    assert "1 → Bills" in output
+    assert "Moved 1 of 2 messages out of INBOX" in output
     assert "-e" in sieve_filter.calls[0]  # without it sieve-filter changes nothing
     assert sieve_filter.calls[0][-1] == "INBOX"
 
 
 def test_filters_run_can_show_what_it_would_move(mailctl, example_domain, fake_command):
     with_an_active_filter(mailctl, fake_command)
-    sieve_filter = fake_command("sieve-filter", f'printf %s "{SIEVE_FILTER_OUTPUT}"')
+    sieve_filter = fake_command("sieve-filter", f"cat <<'REPORT'\n{SIEVE_FILTER_OUTPUT}REPORT")
 
     output = mailctl.ok("filters", "run", "info@example.nl", "--dry-run")
 
-    assert "1 message would go to Bills." in output
+    assert "1 → Bills" in output
+    assert "1 of 2 would move." in output
     assert "Nothing was moved (--dry-run)." in output
     assert "-e" not in sieve_filter.calls[0]
 
 
 def test_filters_run_takes_another_folder(mailctl, example_domain, fake_command):
     with_an_active_filter(mailctl, fake_command)
-    sieve_filter = fake_command("sieve-filter", f'printf %s "{SIEVE_FILTER_OUTPUT}"')
+    sieve_filter = fake_command("sieve-filter", f"cat <<'REPORT'\n{SIEVE_FILTER_OUTPUT}REPORT")
 
     output = mailctl.ok("filters", "run", "info@example.nl", "--folder", "Archive", "--yes")
 
-    assert "in Archive." in output
+    assert "messages in Archive:" in output
     assert sieve_filter.calls[0][-1] == "Archive"
 
 
 def test_filters_run_says_when_nothing_matches(mailctl, example_domain, fake_command):
     with_an_active_filter(mailctl, fake_command)
-    fake_command("sieve-filter", 'printf %s "x: Info: filtering: msgid=<1@example.nl>: Hello\n"')
+    fake_command("sieve-filter", f"cat <<'REPORT'\n{NOTHING_MOVED}REPORT")
 
     output = mailctl.ok("filters", "run", "info@example.nl", "--yes")
 
-    assert "Nothing in INBOX matches the filters; it all stays where it is." in output
+    assert "sogo looked at 1 message in INBOX:" in output
+    assert "Nothing in INBOX moves: the filters leave it all where it is." in output
+
+
+KEPT_AND_FILED = """>> Filtering message:
+
+  ID:      <3@example.nl>
+  Subject: Out of stock
+
+Performed actions:
+
+ * store message in folder: INBOX
+ * store message in folder: Stock
+
+Implicit keep:
+
+  (none)
+
+"""
+
+
+def test_filters_run_counts_a_rule_that_keeps_the_message_apart(mailctl, example_domain, fake_command):
+    """A rule with a keep files the message and leaves it where it is, so it comes by again on the next run."""
+    with_an_active_filter(mailctl, fake_command)
+    fake_command("sieve-filter", f"cat <<'REPORT'\n{KEPT_AND_FILED}REPORT")
+
+    output = mailctl.ok("filters", "run", "info@example.nl", "--yes")
+
+    assert "1 → Stock" in output
+    assert "1 filed back into INBOX, so they stay where they are" in output
+    assert "Moved 1 of 1 message out of INBOX" in output
 
 
 def test_filters_run_needs_a_filter_that_is_active(mailctl, example_domain, fake_command):
