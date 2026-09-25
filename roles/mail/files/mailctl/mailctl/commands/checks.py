@@ -7,7 +7,7 @@ from datetime import datetime
 from .. import ui
 from ..core import autodiscover, certificate, dkim, dns_check, reach, system, webmail
 from ..core.certificate import Certificate
-from ..core.dns_check import Check, IPAddress, Status
+from ..core.dns_check import Check, DnsRecord, IPAddress, Status
 from ..core.errors import MailctlError
 from ..session import Session
 
@@ -26,7 +26,11 @@ def server(session: Session) -> Server:
     """Fails when this server's addresses can't be read, since no check can do without them."""
     ips = system.server_ips()
     found, problem = read_certificate(session)
-    return Server(session.config.hostname, ips, found, problem, dns_check.SystemResolver())
+    resolver = dns_check.SystemResolver()
+    knows = getattr(resolver, "knows_this_server", None)
+    if knows:
+        knows(ips)
+    return Server(session.config.hostname, ips, found, problem, resolver)
 
 
 def read_certificate(session: Session) -> tuple[Certificate | None, str]:
@@ -63,8 +67,37 @@ def domain_checks(session: Session, facts: Server, domain: str, now: datetime | 
     moment = now or datetime.now().astimezone()
     site = attempt_check(lambda: autodiscover.check(session.config, domain, facts.ips, facts.resolver, moment))
     webmail_site = attempt_check(lambda: webmail.check(session.config, domain, facts.ips, facts.resolver, moment))
-    reachable = attempt_check(lambda: reach.check(_ports_of(session, domain), facts.resolver))
-    return checks + [found for found in (site, webmail_site, reachable) if found]
+    reachable = attempt_check(lambda: reach.check(_ports_of(session, domain), facts.resolver,
+                                                  advice=_how_to_fix(domain)))
+    missing = _not_set_up(session, domain, checks, site, webmail_site)
+    return checks + [found for found in (site, webmail_site, *missing, reachable) if found]
+
+
+def _not_set_up(session: Session, domain: str, checks: list[Check], site: Check | None,
+                webmail_site: Check | None) -> list[Check]:
+    """Webmail and autodiscover a domain doesn't have yet. A domain whose mail isn't delivered here is left out:
+    its mail is somewhere else, and so is the webmail of the people reading it."""
+    here = next((check.status is Status.OK for check in checks if check.name == "MX"), False)
+    if not here:
+        return []
+    found = []
+    if not webmail_site:
+        found.append(Check("Webmail", Status.WARN, f"{domain} has no webmail site. Give it one with: "
+                                                   f"mailctl webmail sync"))
+    if not site:
+        found.append(Check("Autodiscover", Status.WARN,
+                           f"{domain} has no autoconfig and autodiscover site, so mail programs don't find its "
+                           f"settings by themselves. Set it up with: mailctl autodiscover publish {domain}"))
+    return found
+
+
+def _how_to_fix(domain: str) -> dict[str, str]:
+    """Which command takes a record away, per name: mailctl publishes the mail names, and the domain itself is
+    the website's, which is domainctl's on a server that has it."""
+    mail_names = f"Take it away with: mailctl dns publish {domain}"
+    return {name: mail_names for name in (dns_check.mail_host(domain), dns_check.webmail_host(domain),
+                                          *autodiscover.names(domain))} | {
+        domain: f"It is the website's record: take it away at TransIP, or with: domainctl repair {domain}"}
 
 
 def _has_webmail(session: Session, domain: str) -> bool:
@@ -97,19 +130,40 @@ def attempt_check(check: Callable[[], Check | None]) -> Check | None:
         return None
 
 
-def show(checks: list[Check]) -> None:
-    """Each check on a line, with the records that would solve its problem below it."""
-    width = max(len(check.name) for check in checks)
-    for check in checks:
+MAX_VALUE = 60  # characters of a record's value that are shown before it is cut off; a DKIM key is far longer
+
+
+def show(checks: list[Check], everything: bool = True) -> bool:
+    """Each check on a line, with the records that would solve its problem below it. Without everything, only the
+    checks that need attention. Returns whether anything was shown."""
+    shown = [check for check in checks if everything or check.status is not Status.OK]
+    if not shown:
+        return False
+    width = max(len(check.name) for check in shown)
+    for check in shown:
         ui.line(ui.mark(check.status), " ", ui.text(check.name.ljust(width), "bold"), "  ", check.detail, indent=2)
-        ui.records(check.fixes, indent=4)
+        ui.records([_short(record) for record in check.fixes] if not everything else check.fixes, indent=4)
+    return True
 
 
-def warn_if_not_in_certificate(session: Session, domain: str) -> None:
-    """A reminder to add the mail host to the certificate, once it points here. Nothing when the certificate can't
-    be read; 'doctor' reports that."""
+def _short(record: DnsRecord) -> DnsRecord:
+    """A record with a long value cut off: a DKIM key fills the screen, and dns show has it in full."""
+    if len(record.value) <= MAX_VALUE:
+        return record
+    return DnsRecord(record.type, record.name, f"{record.value[:MAX_VALUE]}… (mailctl dns show has it in full)")
+
+
+def offer_the_certificate(session: Session, domain: str, yes: bool = False) -> bool:
+    """Whether to add the mail host to the certificate now. Asks when it points here already, and otherwise says
+    what to run once it does. Nothing when the certificate can't be read; 'doctor' reports that."""
     found, _ = read_certificate(session)
     host = dns_check.mail_host(domain)
-    if found and not certificate.covers(found, host):
-        ui.warn(f"The certificate doesn't include {host} yet. Add it once {host} points to this server, "
-                f"or mail programs get a certificate warning.")
+    if not found or certificate.covers(found, host):
+        return False
+    ui.warn(f"The certificate doesn't include {host} yet, so mail programs get a certificate warning.")
+    points_here = attempt_check(lambda: Check("", Status.OK, "")
+                                if dns_check.SystemResolver().addresses(host) & system.server_ips() else None)
+    if points_here is None:
+        ui.note(f"Add it once {host} points to this server with: mailctl certificate sync")
+        return False
+    return ui.decide(f"Put {host} in this server's certificate now?", True if yes else None, "--yes", default=True)

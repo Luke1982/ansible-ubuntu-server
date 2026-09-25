@@ -6,7 +6,7 @@ content either relative or absolute with a final dot. Records mailctl doesn't ma
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from ipaddress import ip_address, ip_network
 
 from .dns_check import DnsRecord, IPAddress, is_dmarc, mail_host
@@ -71,6 +71,25 @@ def plan(domain: str, current: list[Entry], records: list[DnsRecord], zone: str 
     return Plan(tuple(remove), tuple(add), unchanged, result)
 
 
+SHORT_EXPIRE = 300  # seconds: five minutes, short enough to move a record again soon
+
+
+def mixed_expires(entries: tuple[Entry, ...]) -> list[tuple[str, str]]:
+    """The record sets that would end up with more than one expire. TransIP refuses those: every record with the
+    same name and type has to have one."""
+    seen: dict[tuple[str, str], set[int]] = {}
+    for entry in entries:
+        seen.setdefault((entry.name.lower(), entry.type), set()).add(entry.expire)
+    return sorted(rrset for rrset, expires in seen.items() if len(expires) > 1)
+
+
+def with_one_expire(entries: tuple[Entry, ...], expire: int = SHORT_EXPIRE) -> tuple[Entry, ...]:
+    """The entries with every record set that has more than one expire set to the same one."""
+    mixed = set(mixed_expires(entries))
+    return tuple(replace(entry, expire=expire) if (entry.name.lower(), entry.type) in mixed else entry
+                 for entry in entries)
+
+
 def absolute(zone: str, name: str) -> str:
     """A name in the zone written out in full, like mail.example.nl for "mail"."""
     return zone if name == "@" else f"{name}.{zone}"
@@ -81,14 +100,16 @@ def _relative(zone: str, name: str) -> str:
 
 
 def _groups(domain: str, zone: str, records: list[DnsRecord], sender_ips: set[IPAddress] | None) -> list[_Group]:
-    mail_ips = sender_ips if sender_ips is not None else {
-        ip_address(record.value) for record in records
-        if record.type in ("A", "AAAA") and record.name == mail_host(domain)}
+    # What the mail host is published with is what an "mx" term in an SPF record allows; the server may send from
+    # more than that, and those addresses need a term of their own.
+    mail_host_ips = {ip_address(record.value) for record in records
+                     if record.type in ("A", "AAAA") and record.name == mail_host(domain)}
+    senders = sender_ips if sender_ips is not None else mail_host_ips
     grouped: dict[tuple[str, str], list[Entry]] = {}
     for record in records:
         entry = _entry(zone, record)
         grouped.setdefault((entry.name.lower(), _kind(entry)), []).append(entry)
-    groups = [_group(name, kind, entries, mail_ips) for (name, kind), entries in grouped.items()]
+    groups = [_group(name, kind, entries, senders, mail_host_ips) for (name, kind), entries in grouped.items()]
     published = {name for name, _ in grouped}
     stale = ((_relative(zone, f"{name}.{domain}").lower(), types) for name, types in STALE_AUTODETECT)
     return groups + [_removed(name, types) for name, types in stale if name not in published]
@@ -104,7 +125,8 @@ def _kind(entry: Entry) -> str:
     return entry.type
 
 
-def _group(name: str, kind: str, records: list[Entry], mail_ips: set[IPAddress]) -> _Group:
+def _group(name: str, kind: str, records: list[Entry], sender_ips: set[IPAddress],
+           mail_host_ips: set[IPAddress]) -> _Group:
     def at_name(*types: str, only: Callable[[Entry], bool] = lambda entry: True) -> Callable[[Entry], bool]:
         return lambda entry: entry.name.lower() == name and entry.type in types and only(entry)
 
@@ -116,7 +138,7 @@ def _group(name: str, kind: str, records: list[Entry], mail_ips: set[IPAddress])
     if kind == "spf":
         # Other TXT records, like site verifications, stay.
         return _Group(at_name("TXT", only=lambda entry: _is_spf(entry.content)),
-                      lambda existing: _spf(existing, records, mail_ips))
+                      lambda existing: _spf(existing, records, sender_ips, mail_host_ips))
     if kind == "dmarc":
         # The owner's policy stays. Several records are invalid, so they're replaced.
         return _Group(at_name("TXT", "CNAME", only=lambda entry: entry.type == "CNAME" or _is_dmarc(entry.content)),
@@ -131,24 +153,30 @@ def _removed(name: str, types: tuple[str, ...]) -> _Group:
     return _Group(lambda entry: entry.name.lower() == name and entry.type in types, lambda existing: [])
 
 
-def _spf(existing: list[Entry], records: list[Entry], mail_ips: set[IPAddress]) -> list[Entry]:
-    """The SPF record to have. One that doesn't allow the mail host yet gets its missing addresses, so the senders it
-    already allows can still send. Addresses take no DNS lookups, so the record stays within its limit of 10."""
+def _spf(existing: list[Entry], records: list[Entry], sender_ips: set[IPAddress],
+         mail_host_ips: set[IPAddress]) -> list[Entry]:
+    """The SPF record to have. One that doesn't allow every address this server sends from gets the missing ones,
+    so the senders it already allows can still send. Addresses take no DNS lookups, so the record stays within its
+    limit of 10."""
     if len(existing) != 1:
         return records
     entry = existing[0]
     version, *terms = _text(entry.content).split()
-    missing = _not_allowed(terms, mail_ips)
+    missing = _not_allowed(terms, sender_ips, mail_host_ips)
     if not missing:
         return existing
     added = [f"ip{ip.version}:{ip}" for ip in sorted(missing, key=lambda ip: (ip.version, ip))]
     return [Entry(entry.name, EXPIRE, "TXT", " ".join([version, *added, *terms]))]
 
 
-def _not_allowed(terms: list[str], mail_ips: set[IPAddress]) -> set[IPAddress]:
-    """The mail host's addresses the SPF terms don't allow before 'all' decides. 'mx' allows all of them, since the
-    MX record points to the mail host."""
-    missing = set(mail_ips)
+def _not_allowed(terms: list[str], sender_ips: set[IPAddress], mail_host_ips: set[IPAddress]) -> set[IPAddress]:
+    """The addresses this server sends from that the SPF terms don't allow before 'all' decides.
+
+    'mx' allows the addresses the mail host is published with, which is its IPv4 address: a name is published to
+    be reached, and this server answers on IPv4. Mail still leaves over IPv6 where the other end has it, and that
+    address is allowed by an ip6 term of its own or not at all.
+    """
+    missing = set(sender_ips)
     for term in (term.lower() for term in terms):
         qualifier, mechanism = (term[0], term[1:]) if term[0] in "+-~?" else ("+", term)
         if mechanism == "all":
@@ -156,7 +184,8 @@ def _not_allowed(terms: list[str], mail_ips: set[IPAddress]) -> set[IPAddress]:
         if qualifier != "+":
             continue
         if mechanism == "mx":
-            return set()
+            missing -= mail_host_ips
+            continue
         kind, _, network = mechanism.partition(":")
         if kind in ("ip4", "ip6"):
             try:

@@ -31,13 +31,14 @@ def answers(address: IPAddress, port: int, timeout: float = TIMEOUT) -> bool:
     return True
 
 
-def check(names: dict[str, int], resolver: Resolver, probe: Probe | None = None) -> Check | None:
+def check(names: dict[str, int], resolver: Resolver, probe: Probe | None = None,
+          advice: dict[str, str] | None = None) -> Check | None:
     """Each name's addresses on the port it is for. None when there is nothing to look at.
 
     The probe is looked up when this runs, not when it is defined, so the tests reach nothing on the network.
     """
-    probe = probe or answers
-    silent, looked_at = [], 0
+    probe, advice = probe or answers, advice or {}
+    silent, looked_at, how = [], 0, []
     for name, port in names.items():
         try:
             addresses = resolver.addresses(name)
@@ -47,11 +48,14 @@ def check(names: dict[str, int], resolver: Resolver, probe: Probe | None = None)
             looked_at += 1
             if not probe(address, port):
                 silent.append(f"{name} at {address} doesn't answer on port {port}")
+                if name in advice and advice[name] not in how:
+                    how.append(advice[name])
     if not looked_at:
         return None
     if not silent:
         return Check("Reachable", Status.OK, "Everything these names point to answers.")
     return Check("Reachable", Status.WARN, (
         f"{'; '.join(silent)}. Mail programs and browsers wait for that before trying this server's other address, "
-        f"and Outlook gives up on a name that doesn't answer. Take the record away, or let the server answer there."
+        f"and Outlook gives up on a name that doesn't answer. {' '.join(how) if how else 'Take the record away, or '
+        'let the server answer there.'}"
     ))

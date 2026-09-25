@@ -72,3 +72,17 @@ def test_the_probe_says_whether_something_accepts_a_connection():
 def test_an_address_nothing_routes_to_is_not_waited_for_forever(address):
     """Documentation ranges: no connection is made, and the timeout is what decides how long that takes."""
     assert REAL_PROBE(ip_address(address), 993, timeout=0.2) is False
+
+
+def test_the_warning_says_which_command_takes_the_record_away():
+    found = reach.check({"mail.example.nl": 993}, FakeDns(), probe=answering((IPV6, 993)),
+                        advice={"mail.example.nl": "Take it away with: mailctl dns publish example.nl"})
+
+    assert found.detail.endswith("Take it away with: mailctl dns publish example.nl")
+    assert "Take the record away, or let the server answer there." not in found.detail
+
+
+def test_a_name_nobody_gave_advice_for_gets_the_general_one():
+    found = reach.check({"mail.example.nl": 993}, FakeDns(), probe=answering((IPV6, 993)))
+
+    assert "Take the record away, or let the server answer there." in found.detail

@@ -153,5 +153,5 @@ def check_domain(certificate: Certificate, domain: str) -> Check:
         return Check("Certificate", Status.OK, f"The certificate includes {host}.")
     return Check("Certificate", Status.FAIL, (
         f"The certificate doesn't include {host}, so mail programs connecting to it get a certificate warning. "
-        f"Add it once {host} points to this server."
+        f"Add it with: mailctl certificate sync"
     ))

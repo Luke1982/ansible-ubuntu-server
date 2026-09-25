@@ -13,7 +13,7 @@ RECORDS = dns_check.recommended_records("example.nl", {ip_address(IPV4), ip_addr
 MAIL_ENTRIES = [
     Entry("@", 3600, "MX", "10 mail.example.nl."),
     Entry("mail", 3600, "A", IPV4),
-    Entry("@", 3600, "TXT", "v=spf1 mx ~all"),
+    Entry("@", 3600, "TXT", f"v=spf1 mx ip6:{IPV6} ~all"),
     Entry("mail._domainkey", 3600, "TXT", DKIM_VALUE),
     Entry("_dmarc", 3600, "TXT", "v=DMARC1; p=quarantine"),
     Entry("_imaps._tcp", 3600, "SRV", "0 1 993 mail.example.nl."),
@@ -81,15 +81,15 @@ def test_other_txt_records_at_the_domain_stay():
     result = plan(verification, *without(MAIL_ENTRIES, ("TXT", "@")))
 
     assert verification in result.result
-    assert result.add == (Entry("@", 3600, "TXT", "v=spf1 mx ~all"),)
+    assert result.add == (Entry("@", 3600, "TXT", f"v=spf1 mx ip6:{IPV6} ~all"),)
 
 
 @pytest.mark.parametrize(
     "spf",
-    ["v=spf1 mx -all", "v=spf1 +mx include:_spf.google.com ~all", f"v=spf1 ip4:93.184.216.0/24 ip6:{IPV6} -all",
-     '"v=spf1 mx " "-all"'],
+    [f"v=spf1 mx ip6:{IPV6} -all", f"v=spf1 +mx ip6:{IPV6} include:_spf.google.com ~all",
+     f"v=spf1 ip4:93.184.216.0/24 ip6:{IPV6} -all", f'"v=spf1 mx ip6:{IPV6} " "-all"'],
 )
-def test_an_spf_record_that_allows_the_mail_host_stays(spf):
+def test_an_spf_record_that_allows_every_address_this_server_sends_from_stays(spf):
     result = plan(*without(MAIL_ENTRIES, ("TXT", "@")), Entry("@", 300, "TXT", spf))
 
     assert not result.changes
@@ -101,6 +101,8 @@ def test_an_spf_record_that_allows_the_mail_host_stays(spf):
         ("v=spf1 -all", f"v=spf1 ip4:{IPV4} ip6:{IPV6} -all"),
         (f"v=spf1 ip4:{IPV4} -all", f"v=spf1 ip6:{IPV6} ip4:{IPV4} -all"),
         ("v=spf1 -mx a ~all", f"v=spf1 ip4:{IPV4} ip6:{IPV6} -mx a ~all"),
+        # "mx" allows the mail host, which is published with the IPv4 address; the IPv6 one needs its own term.
+        ("v=spf1 mx -all", f"v=spf1 ip6:{IPV6} mx -all"),
         ("v=spf1 ~all mx", f"v=spf1 ip4:{IPV4} ip6:{IPV6} ~all mx"),
         ("v=spf1", f"v=spf1 ip4:{IPV4} ip6:{IPV6}"),
         ('" v=spf1 include:_spf.google.com ~all"', f"v=spf1 ip4:{IPV4} ip6:{IPV6} include:_spf.google.com ~all"),
@@ -121,11 +123,11 @@ def test_several_spf_records_are_replaced_by_one():
     result = plan(*without(MAIL_ENTRIES, ("TXT", "@")), *old)
 
     assert result.remove == tuple(old)
-    assert result.add == (Entry("@", 3600, "TXT", "v=spf1 mx ~all"),)
+    assert result.add == (Entry("@", 3600, "TXT", f"v=spf1 mx ip6:{IPV6} ~all"),)
 
 
 def test_of_several_spf_records_the_recommended_one_stays():
-    old = [Entry("@", 300, "TXT", "v=spf1 a -all"), Entry("@", 300, "TXT", "v=spf1 mx ~all")]
+    old = [Entry("@", 300, "TXT", "v=spf1 a -all"), Entry("@", 300, "TXT", f"v=spf1 mx ip6:{IPV6} ~all")]
 
     result = plan(*without(MAIL_ENTRIES, ("TXT", "@")), *old)
 
@@ -247,3 +249,15 @@ def test_a_subdomain_in_its_parents_zone_uses_names_relative_to_the_parent():
     assert Entry("_imaps._tcp.shop", 3600, "SRV", "0 1 993 mail.shop.example.nl.") in result.add
     assert Entry("_dmarc.shop", 3600, "TXT", "v=DMARC1; p=quarantine") in result.add
     assert result.unchanged == 1  # the MX record, written relative to example.nl
+
+
+def test_record_sets_with_more_than_one_expire_are_found_and_made_the_same():
+    """TransIP refuses those: a record mailctl publishes lands next to one somebody else made."""
+    entries = (Entry("@", 300, "TXT", "brevo-code:abc"), Entry("@", 3600, "TXT", "v=spf1 mx ~all"),
+               Entry("mail", 3600, "A", IPV4))
+
+    assert zone.mixed_expires(entries) == [("@", "TXT")]
+
+    same = zone.with_one_expire(entries)
+    assert [entry.expire for entry in same] == [300, 300, 3600], "only the set that clashed is changed"
+    assert zone.mixed_expires(same) == []

@@ -43,7 +43,7 @@ def sync(no_dns: NoDns = False) -> None:
             result = webmail.sync(session.config, mail_domains, server_ips, resolver)
     for outcome in result.outcomes:
         _show(outcome)
-    # Ansible reads this line to tell whether anything changed.
+    # Says whether this run changed anything, so a run by hand shows it at a glance.
     if result.changed:
         ui.success("Changed the webmail sites.")
     else:
@@ -53,7 +53,7 @@ def sync(no_dns: NoDns = False) -> None:
 def _publish_missing_records(session: Session, mail_domains: list[str], server_ips: set[IPAddress]) -> dict:
     """Publishes webmail.DOMAIN at TransIP for the domains that have no record for it there, and waits until TransIP's
     nameservers serve them. Returns the names they serve, with their addresses."""
-    ips = {ip for ip in server_ips if ip.is_global}
+    ips = dns_check.published_ips({ip for ip in server_ips if ip.is_global})
     if not ips:
         ui.warn("This server has no public address, so no webmail records are published.")
         return {}
@@ -72,9 +72,13 @@ def _publish_missing_records(session: Session, mail_domains: list[str], server_i
             relative = "@" if name == zone_name else name.removesuffix(f".{zone_name}")
             if any(entry.name.lower() == relative and entry.type in ("A", "AAAA", "CNAME") for entry in entries):
                 continue
-            added = tuple(zone.Entry(relative, zone.EXPIRE, "A" if ip.version == 4 else "AAAA", str(ip))
+            # The expire of the records already at that name: TransIP refuses a record set that holds more
+            # than one, and a name may have a TXT record somebody else made.
+            expire = next((entry.expire for entry in entries if entry.name.lower() == relative), zone.EXPIRE)
+            added = tuple(zone.Entry(relative, expire, "A" if ip.version == 4 else "AAAA", str(ip))
                           for ip in sorted(ips, key=lambda ip: (ip.version, ip)))
-            save_zone_change(ZoneChange(client, zone_name, entries, zone.Plan((), added, 0, (*entries, *added))))
+            result = zone.with_one_expire((*entries, *added))
+            save_zone_change(ZoneChange(client, zone_name, entries, zone.Plan((), added, 0, result)))
         except transip.NotInAccount:
             continue
         except transip.LoginRefused as problem:

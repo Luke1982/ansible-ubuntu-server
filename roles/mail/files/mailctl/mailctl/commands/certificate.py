@@ -33,7 +33,7 @@ def sync(dry_run: DryRun = False, yes: Yes = False) -> None:
         mail_domains = [domain.name for domain in domains.list_domains(session.db)]
         plan = mailcert.plan(session.config, mail_domains, system.server_ips(), dns_check.SystemResolver(), now)
         for line in plan.left_out:
-            ui.warn(f"Left out {line}")
+            ui.note(f"Left out of the certificate: {line}")
         before, after = mailcert.planned_config(session.config, plan.names)
         elsewhere = mailcert.served_elsewhere(session.config, plan.names)
         if elsewhere:

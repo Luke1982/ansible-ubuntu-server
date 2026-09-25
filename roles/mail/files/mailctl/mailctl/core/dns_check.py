@@ -96,13 +96,30 @@ class SystemResolver:
         self._resolver = dns.resolver.Resolver()
         self._resolver.lifetime = timeout
         self._timeout = timeout
+        # What this server answers on. A name that should point here but doesn't in the answer from this
+        # machine's resolver is asked about at the nameservers of its zone, since a record changed a moment ago
+        # lives on in the cache and would be reported as still pointing at the old server.
+        self._server_ips: set[IPAddress] = set()
+        # Every lookup here is about what the internet is told, so the nameservers of a name's own zone are
+        # asked rather than this machine's resolver, whose cache can be a day behind a record just changed.
+        self._prefer = True
+        self._nameservers: dict[str, set[IPAddress]] = {}
+
+    def knows_this_server(self, server_ips: set[IPAddress]) -> None:
+        """Tells the resolver which addresses are this server's, so it can tell a stale answer from a real one."""
+        self._server_ips = set(server_ips)
+
+    def prefer_nameservers(self, prefer: bool = True) -> None:
+        """Whether to ask the nameservers of a name's own zone, which is what this does by default. The stub is
+        used anyway when a zone's nameservers can't be reached."""
+        self._prefer = prefer
 
     def txt(self, name: str) -> list[str]:
-        return [b"".join(answer.strings).decode(errors="replace") for answer in self._query(name, "TXT")]
+        return [b"".join(answer.strings).decode(errors="replace") for answer in self._look(name, "TXT")]
 
     def mx(self, name: str) -> list[str]:
         """The mail hosts, most preferred first."""
-        answers = sorted(self._query(name, "MX"), key=lambda answer: answer.preference)
+        answers = sorted(self._look(name, "MX"), key=lambda answer: answer.preference)
         return [answer.exchange.to_text(omit_final_dot=True) for answer in answers if answer.exchange != dns.name.root]
 
     def addresses(self, name: str) -> set[IPAddress]:
@@ -112,22 +129,46 @@ class SystemResolver:
         the machine's own resolver says the hostname points at the loopback address. That says nothing about what
         anyone else gets, so a loopback answer is put aside and the name's own nameservers are asked instead.
         """
-        found = {ip_address(answer.address) for kind in ("A", "AAAA") for answer in self._query(name, kind)}
+        found = {ip_address(answer.address) for kind in ("A", "AAAA") for answer in self._look(name, kind)}
         elsewhere = {ip for ip in found if not ip.is_loopback}
-        if elsewhere or not found:
+        if elsewhere and (not self._server_ips or elsewhere & self._server_ips):
             return elsewhere
-        return {ip for ip in self._at_nameservers(name) if not ip.is_loopback}
+        at_nameservers = {ip for ip in self._at_nameservers(name) if not ip.is_loopback}
+        return at_nameservers or elsewhere
 
     def srv(self, name: str) -> list[Srv]:
         return [
             Srv(answer.priority, answer.weight, answer.port,
                 "." if answer.target == dns.name.root else answer.target.to_text(omit_final_dot=True))
-            for answer in self._query(name, "SRV")
+            for answer in self._look(name, "SRV")
         ]
 
     def ptr(self, address: IPAddress) -> list[str]:
         name = dns.reversename.from_address(str(address)).to_text()
-        return [answer.target.to_text(omit_final_dot=True) for answer in self._query(name, "PTR")]
+        return [answer.target.to_text(omit_final_dot=True) for answer in self._look(name, "PTR")]
+
+    def ptr_at_nameservers(self, address: IPAddress) -> list[str]:
+        """The reverse DNS according to the nameservers of the reverse zone, asked directly.
+
+        A provider's panel changes it in a moment, and this machine's resolver goes on answering the old name
+        from its cache for as long as that answer lives, which for reverse DNS is often a day.
+        """
+        name = dns.reversename.from_address(str(address)).to_text()
+        servers = [str(ip) for ip in self._nameservers_of(name)]
+        if not servers:
+            return []
+        return [answer.target.to_text(omit_final_dot=True) for answer in self._query(name, "PTR", servers)]
+
+    def _look(self, name: str, kind: str) -> list:
+        """The answer, from the name's own nameservers when they are preferred and can be reached."""
+        if self._prefer:
+            servers = [str(ip) for ip in self._nameservers_of(name)]
+            if servers:
+                try:
+                    return self._query(name, kind, servers)
+                except LookupFailed:
+                    pass  # the stub knows the answer too, if a little older
+        return self._query(name, kind)
 
     def _at_nameservers(self, name: str) -> set[IPAddress]:
         """The addresses the name's own nameservers give for it, asked directly."""
@@ -137,7 +178,14 @@ class SystemResolver:
         return {ip_address(answer.address) for kind in ("A", "AAAA") for answer in self._query(name, kind, servers)}
 
     def _nameservers_of(self, name: str) -> set[IPAddress]:
-        """The addresses of the nameservers of the closest zone the name is in."""
+        """The addresses of the nameservers of the closest zone the name is in, looked up once per zone."""
+        if name in self._nameservers:
+            return self._nameservers[name]
+        found = self._find_nameservers(name)
+        self._nameservers[name] = found
+        return found
+
+    def _find_nameservers(self, name: str) -> set[IPAddress]:
         labels = name.split(".")
         for start in range(len(labels) - 1):
             hosts = [answer.target.to_text(omit_final_dot=True) for answer in self._query(".".join(labels[start:]), "NS")]
@@ -169,7 +217,7 @@ def recommended_records(domain: str, server_ips: set[IPAddress], dkim_value: str
     return [
         _mx_record(domain),
         *_address_records(domain, server_ips),
-        _spf_record(domain),
+        _spf_record(domain, server_ips),
         *dkim_records,
         _dmarc_record(domain),
         *srv_records(domain),
@@ -276,6 +324,11 @@ def _address_records(domain: str, server_ips: set[IPAddress]) -> tuple[DnsRecord
     return _host_records(mail_host(domain), _reachable(server_ips))
 
 
+def published_ips(ips: set[IPAddress]) -> set[IPAddress]:
+    """The addresses a name is published with: this server's IPv4 address, or its IPv6 one when it has no IPv4."""
+    return {ip for ip in ips if ip.version == 4} or ips
+
+
 def _host_records(host: str, ips: set[IPAddress]) -> tuple[DnsRecord, ...]:
     """The address records for a name on this server: its IPv4 address.
 
@@ -284,8 +337,7 @@ def _host_records(host: str, ips: set[IPAddress]) -> tuple[DnsRecord, ...]:
     how OpenLiteSpeed comes, makes an AAAA record a delay on every first connection. A server with no IPv4 address
     publishes its IPv6 one, since then that is the only way to it.
     """
-    published = {ip for ip in ips if ip.version == 4} or ips
-    return tuple(DnsRecord("A" if ip.version == 4 else "AAAA", host, str(ip)) for ip in _sorted(published))
+    return tuple(DnsRecord("A" if ip.version == 4 else "AAAA", host, str(ip)) for ip in _sorted(published_ips(ips)))
 
 
 def _sorted(ips: set[IPAddress]) -> list[IPAddress]:
@@ -297,8 +349,12 @@ def _reachable(server_ips: set[IPAddress]) -> set[IPAddress]:
     return {ip for ip in server_ips if ip.is_global} or server_ips
 
 
-def _spf_record(domain: str) -> DnsRecord:
-    return DnsRecord("TXT", domain, "v=spf1 mx ~all")
+def _spf_record(domain: str, server_ips: set[IPAddress]) -> DnsRecord:
+    """The SPF record: "mx" allows the mail host, whose record holds this server's IPv4 address, and an address
+    the server also sends from -- its IPv6 one -- needs a term of its own or mail from it fails SPF."""
+    reachable = _reachable(server_ips)
+    extra = [f"ip{ip.version}:{ip}" for ip in _sorted(reachable - published_ips(reachable))]
+    return DnsRecord("TXT", domain, " ".join(["v=spf1", "mx", *extra, "~all"]))
 
 
 def _dmarc_record(domain: str) -> DnsRecord:
@@ -322,7 +378,7 @@ def _check_mx(domain: _Domain) -> _Finding:
 
 
 def _check_spf(domain: _Domain) -> _Finding:
-    fixes = (_spf_record(domain.name),)
+    fixes = (_spf_record(domain.name, domain.server_ips),)
     records = _spf_records(domain.name, domain.resolver)
     if len(records) != 1:
         problem = "There is no SPF record" if not records else f"There are {len(records)} SPF records instead of one"
@@ -400,6 +456,9 @@ def _check_ptr(server: _Server) -> _Finding:
     for ip in _sorted(server.ips):
         names = server.resolver.ptr(ip)
         if server.hostname not in (name.lower() for name in names):
+            # The cache may be holding an old name; the nameservers of the reverse zone are the ones that decide.
+            names = _ptr_at_nameservers(server.resolver, ip) or names
+        if server.hostname not in (name.lower() for name in names):
             wrong.append(f"the reverse DNS of {ip} is {', '.join(names)}" if names else f"{ip} has no reverse DNS")
     if not wrong:
         return Status.OK, f"This server's addresses point back to {server.hostname}.", ()
@@ -408,6 +467,15 @@ def _check_ptr(server: _Server) -> _Finding:
         f"{found[0].upper()}{found[1:]}. Many receiving servers refuse mail from an address whose reverse DNS isn't "
         f"{server.hostname}. The provider of the server can set it."
     ), ()
+
+
+def _ptr_at_nameservers(resolver: Resolver, address: IPAddress) -> list[str]:
+    """What the reverse zone's own nameservers say, when the resolver can ask them."""
+    ask = getattr(resolver, "ptr_at_nameservers", None)
+    try:
+        return ask(address) if ask else []
+    except LookupFailed:
+        return []
 
 
 def _spf_records(domain: str, resolver: Resolver) -> list[str]:

@@ -14,17 +14,21 @@ from .shared import domain_filter
 
 OnlyDomain = Annotated[Optional[str], typer.Argument(
     metavar="[DOMAIN]", help="Only check this domain. By default every domain is checked.", show_default=False)]
+Everything = Annotated[bool, typer.Option(
+    "--all", "-a", help="Show every check, not only the ones that need attention.")]
 
 
-def doctor(domain: OnlyDomain = None) -> None:
+def doctor(domain: OnlyDomain = None, everything: Everything = False) -> None:
     """Check that this server and its domains are set up for mail.
 
     The server: its hostname and reverse DNS, which receiving servers check, and its certificate.
 
     Every domain, or the one given: the MX, SPF, DKIM, DMARC and SRV records, and whether the certificate includes
-    its mail host. Ends with exit status 1 when there is a problem.
+    its mail host. Only what needs attention is shown; --all shows every check. Ends with exit status 1 when there
+    is a problem.
 
     [dim]Example:[/] mailctl doctor example.nl
+    [dim]Everything it checked:[/] mailctl doctor --all
     """
     now = datetime.now().astimezone()
     found: list[Check] = []
@@ -33,18 +37,26 @@ def doctor(domain: OnlyDomain = None) -> None:
         with ui.console.status("Checking this server…"):
             facts = checks.server(session)
             server_checks = checks.server_checks(facts, now)
-        ui.heading(f"Server {facts.hostname}")
-        checks.show(server_checks)
+        _section(f"Server {facts.hostname}", server_checks, everything)
         found += server_checks
         for name in names:
-            ui.heading(name)
             with ui.console.status(f"Checking {name}…"):
                 domain_checks = checks.domain_checks(session, facts, name)
-            checks.show(domain_checks)
+            _section(name, domain_checks, everything)
             found += domain_checks
     if not names:
         ui.note("\nThere are no domains yet.")
     _summary(found)
+
+
+def _section(title: str, found: list[Check], everything: bool) -> None:
+    """The checks of the server or a domain. One line for a domain with nothing to report, so a long list stays
+    a list of the things that need doing."""
+    if everything or any(check.status is not Status.OK for check in found):
+        ui.heading(title)
+        checks.show(found, everything)
+    else:
+        ui.line(ui.mark(Status.OK), " ", ui.text(title, "bold"), "  everything is set up.")
 
 
 def _summary(found: list[Check]) -> None:
@@ -59,3 +71,4 @@ def _summary(found: list[Check]) -> None:
         ui.warn(f"No problems, but {ui.plural(warnings, 'warning')}.")
     else:
         ui.success("Everything is set up.")
+

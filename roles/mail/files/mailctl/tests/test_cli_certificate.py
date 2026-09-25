@@ -66,7 +66,7 @@ def test_sync_says_which_domains_are_left_out(server, db_config, fake_command):
 
     output = server.ok("certificate", "sync", "--yes")
 
-    assert "Left out mail.other.nl has no A or AAAA record yet." in output
+    assert "Left out of the certificate: mail.other.nl has no A or AAAA record yet." in output
     assert members(db_config) == ["server.hosting.example", "mail.example.nl"]
 
 

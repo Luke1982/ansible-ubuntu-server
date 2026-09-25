@@ -58,23 +58,17 @@ def test_webmail_sync_explains_itself_with_an_example(mailctl):
     assert "Example" in output
 
 
-def ansible_change_message() -> str:
-    """The output that the Ansible task running 'mailctl webmail sync' counts as a change."""
-    task = Path(__file__).resolve().parents[3] / "tasks" / "configure-webmail.yml"
-    return re.search(r"'([^']+)' in webmail_sync\.stdout", task.read_text()).group(1)
-
-
 def test_webmail_sync_sets_up_the_site_and_says_what_changed(webmail_ready):
     output = webmail_ready.ok("webmail", "sync")
 
     assert "https://webmail.example.nl is live, with a new certificate." in output
-    assert ansible_change_message() in output
+    assert "Changed the webmail sites." in output
 
     output = webmail_ready.ok("webmail", "sync")
 
     assert "https://webmail.example.nl" in output
     assert "new certificate" not in output
-    assert ansible_change_message() not in output
+    assert "Changed the webmail sites." not in output
     assert "Nothing changed." in output
 
 
@@ -182,11 +176,12 @@ def test_webmail_sync_skips_domains_outside_the_transip_account(webmail_ready, p
     assert publishing.paths("PUT") == []
 
 
-def test_the_playbook_runs_webmail_sync_where_it_cant_ask_anything():
-    """Ansible gives commands a terminal, where mailctl would ask for a missing TransIP login and wait forever."""
-    task = Path(__file__).resolve().parents[3] / "tasks" / "configure-webmail.yml"
+def test_the_playbook_leaves_the_webmail_sites_to_a_run_by_hand():
+    """A playbook run publishes no DNS records and takes no site away; it says to run the sync itself."""
+    task = (Path(__file__).resolve().parents[3] / "tasks" / "configure-webmail.yml").read_text()
 
-    assert re.search(r"^\s*shell: mailctl webmail sync </dev/null$", task.read_text(), re.MULTILINE)
+    assert not re.search(r"^\s*(shell|command):.*mailctl webmail sync", task, re.MULTILINE)
+    assert "mailctl webmail sync" in task
 
 
 def test_doctor_says_where_a_domains_webmail_is(webmail_ready, db_config, monkeypatch):
@@ -194,13 +189,14 @@ def test_doctor_says_where_a_domains_webmail_is(webmail_ready, db_config, monkey
     make_certificate(certificate_of(db_config, "webmail.example.nl"), "webmail.example.nl")
     monkeypatch.setattr(dns_check, "SystemResolver", DoctorDns)
 
-    assert "Webmail is at https://webmail.example.nl." in webmail_ready.fails("doctor", "example.nl")
+    assert "Webmail is at https://webmail.example.nl." in webmail_ready.fails("doctor", "example.nl", "--all")
 
 
-def test_doctor_leaves_out_the_webmail_of_a_domain_without_a_site(webmail_ready, monkeypatch):
+def test_doctor_says_a_domain_has_no_webmail_site_yet(webmail_ready, monkeypatch):
     monkeypatch.setattr(dns_check, "SystemResolver", DoctorDns)
 
-    assert "Webmail" not in webmail_ready.fails("doctor", "example.nl")
+    assert "has no webmail site. Give it one with: mailctl webmail sync" in webmail_ready.fails("doctor",
+                                                                                                "example.nl")
 
 
 def test_doctor_shows_the_records_that_keep_a_site_whose_name_stopped_pointing_here(webmail_ready, monkeypatch):

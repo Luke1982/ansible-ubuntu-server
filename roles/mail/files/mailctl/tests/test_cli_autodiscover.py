@@ -214,21 +214,21 @@ def test_doctor_shows_the_site_of_a_domain_that_has_one(mailctl, transip_account
     make_certificate(db_config.certificate(), "server.hosting.example", "mail.example.nl")
     mailctl.ok("autodiscover", "publish", "example.nl", "--yes")
 
-    waiting = mailctl.ok("doctor", "example.nl")  # a site without HTTPS is a warning, not a problem
+    waiting = mailctl.ok("doctor", "--all", "example.nl")  # a site without HTTPS is a warning, not a problem
     assert "autodiscover.example.nl has no HTTPS yet" in waiting
     assert "certbot certonly --webroot" in waiting
 
     certify(db_config, "autodiscover.example.nl", "autoconfig.example.nl")
     mailctl.ok("autodiscover", "publish", "example.nl", "--yes")
 
-    assert "Mail programs find the settings at https://autodiscover.example.nl" in mailctl.ok("doctor", "example.nl")
+    assert "Mail programs find the settings at https://autodiscover.example.nl" in mailctl.ok("doctor", "--all", "example.nl")
 
 
-def test_doctor_leaves_out_the_site_of_a_domain_without_one(mailctl, public_server, ols, db_config, monkeypatch):
+def test_doctor_says_a_domain_has_no_autodiscover_site_yet(mailctl, public_server, ols, db_config, monkeypatch):
     mailctl.ok("domain", "add", "example.nl")
     monkeypatch.setattr(dns_check, "SystemResolver", FakeDns)
 
-    assert "Autodiscover" not in mailctl.fails("doctor", "example.nl")
+    assert "has no autoconfig and autodiscover site" in mailctl.fails("doctor", "example.nl")
 
 
 class PointingHere(FakeDns):

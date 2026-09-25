@@ -3,10 +3,10 @@ import re
 from ipaddress import ip_address
 
 import pytest
-from conftest import FAKE_KEY_RECORD_START, make_certificate
+from conftest import FAKE_KEY_RECORD_START, FakeCommand, make_certificate
 
 from mailctl import ui
-from mailctl.core import dns_check, reach, system
+from mailctl.core import dns_check, openlitespeed, reach, system
 from mailctl.core.dns_check import Srv
 
 PUBLIC_IP = "93.184.216.34"
@@ -277,13 +277,16 @@ def test_domain_add_mentions_publishing_at_transip_the_certificate_and_the_docto
 
 
 def test_doctor_passes_a_server_and_domain_that_are_set_up(mailctl, healthy_dns):
-    output = mailctl.ok("doctor")
+    output = mailctl.ok("doctor", "--all")
 
     assert "Server server.hosting.example" in output
     assert "server.hosting.example points to this server" in output
     assert "The certificate includes mail.example.nl" in output
     assert "Mail programs can look up mail.example.nl for IMAP and sending" in output
-    assert "Everything is set up" in output
+    # Its mail is here, so what it hasn't got yet is worth saying; neither is a problem.
+    assert "example.nl has no webmail site" in output
+    assert "has no autoconfig and autodiscover site" in output
+    assert "No problems, but 2 warnings." in output
 
 
 def test_doctor_ends_with_an_error_when_there_is_a_problem(mailctl, healthy_dns, db_config):
@@ -292,7 +295,7 @@ def test_doctor_ends_with_an_error_when_there_is_a_problem(mailctl, healthy_dns,
     output = mailctl.fails("doctor", "example.nl")
 
     assert "The certificate doesn't include mail.example.nl" in output
-    assert "Found 1 problem." in output
+    assert "Found 1 problem and 2 warnings." in output  # no webmail and no autodiscover site
 
 
 def test_doctor_counts_warnings(mailctl, healthy_dns, monkeypatch):
@@ -306,7 +309,7 @@ def test_doctor_counts_warnings(mailctl, healthy_dns, monkeypatch):
 
     assert "There are no SRV records" in output
     assert re.search(r"SRV\s+_imaps\._tcp\.example\.nl\n\s+0 1 993 mail\.example\.nl\.\n", output)
-    assert "Found 1 problem and 1 warning." in output  # without a DKIM record
+    assert "Found 1 problem and 3 warnings." in output  # no DKIM record, and no webmail or autodiscover site
 
 
 def test_doctor_explains_a_missing_certificate(mailctl, public_server, monkeypatch):
@@ -337,10 +340,82 @@ def test_doctor_reports_an_address_that_answers_nothing(mailctl, healthy_dns, mo
 
     assert f"mail.example.nl at {PUBLIC_IP} doesn't answer on port 993" in output
     assert "warning" in output
-    assert "Take the record away, or let the server answer there." in output
+    assert "Take it away with: mailctl dns publish example.nl" in output
 
 
 def test_doctor_says_nothing_about_reachability_when_everything_answers(mailctl, healthy_dns):
-    output = mailctl.ok("doctor")
+    output = mailctl.ok("doctor", "--all")
 
     assert "Everything these names point to answers." in output
+
+
+def test_publishing_offers_to_put_the_mail_host_in_the_certificate(mailctl, transip_account, db_config, monkeypatch,
+                                                                   terminal, fake_command):
+    """The step that follows publishing, offered instead of only named."""
+    certbot = fake_command("certbot")
+    fake_command("postfix")
+    make_certificate(db_config.certificate(), "server.hosting.example")
+    monkeypatch.setattr(dns_check, "SystemResolver", lambda: FakeDns(None))
+    (db_config.ols_root / "conf" / "templates").mkdir(parents=True)
+    openlitespeed.config_file(db_config.ols_root).write_text(
+        "listener HTTP {\n  address *:80\n  secure 0\n}\n")
+    (db_config.ols_root / "conf" / "templates" / "mailnames.conf").write_text("")
+    (db_config.ols_root / "bin").mkdir()
+    FakeCommand(db_config.ols_root / "bin", "lswsctrl", "")
+
+    output = mailctl.ok("dns", "publish", "example.nl", "--yes")
+
+    assert "The certificate doesn't include mail.example.nl yet" in output
+    assert certbot.calls, "it went on to ask certbot for the certificate"
+    assert "Postfix and Dovecot serve a certificate" in output
+
+
+def test_publishing_only_says_what_to_run_when_the_mail_host_isnt_here_yet(mailctl, transip_account, db_config,
+                                                                           monkeypatch):
+    class Elsewhere(FakeDns):
+        def addresses(self, name):
+            return set() if name == "mail.example.nl" else super().addresses(name)
+
+    make_certificate(db_config.certificate(), "server.hosting.example")
+    monkeypatch.setattr(dns_check, "SystemResolver", lambda: Elsewhere(None))
+
+    output = mailctl.ok("dns", "publish", "example.nl", "--yes")
+
+    assert "Add it once mail.example.nl points to this server with: mailctl certificate sync" in output
+
+
+def test_publish_offers_to_give_a_record_set_one_expire(mailctl, transip_account):
+    """TransIP refuses a TXT set where mailctl's record has another expire than one that is already there."""
+    transip_account.zones["example.nl"].append({"name": "@", "expire": 300, "type": "TXT",
+                                                "content": "brevo-code:abc"})
+
+    output = mailctl.ok("dns", "publish", "example.nl", "--yes")
+
+    assert "TransIP wants one expire per record set, and these hold more than one: TXT @." in output
+    expires = {entry[1] for entry in transip_account.entries() if entry[2] == "TXT" and entry[0] == "@"}
+    assert expires == {300}, "both TXT records got the same expire"
+
+
+def test_repair_offers_each_step_a_domain_still_needs(mailctl, healthy_dns, db_config, fake_command, monkeypatch):
+    """One command after moving a domain here: it checks, then offers what would put each thing right."""
+    fake_command("certbot")
+    fake_command("postfix")
+    make_certificate(db_config.certificate(), "server.hosting.example")  # without mail.example.nl
+    (db_config.ols_root / "conf" / "templates").mkdir(parents=True)
+    openlitespeed.config_file(db_config.ols_root).write_text("listener HTTP {\n  address *:80\n  secure 0\n}\n")
+    (db_config.ols_root / "conf" / "templates" / "mailnames.conf").write_text("")
+    (db_config.ols_root / "bin").mkdir()
+    FakeCommand(db_config.ols_root / "bin", "lswsctrl", "")
+
+    output = mailctl.ok("repair", "example.nl", "--yes")
+
+    assert "The certificate doesn't include mail.example.nl" in output
+    assert "Postfix and Dovecot serve a certificate" in output
+    assert "See how it stands now with: mailctl doctor example.nl" in output
+
+
+def test_repair_says_when_a_domain_needs_nothing(mailctl, healthy_dns, db_config, monkeypatch):
+    make_certificate(db_config.certificate(), "server.hosting.example", "mail.example.nl")
+    monkeypatch.setattr("mailctl.commands.checks._not_set_up", lambda *args: [])
+
+    assert "needs nothing: everything is set up" in mailctl.ok("repair", "example.nl", "--yes")

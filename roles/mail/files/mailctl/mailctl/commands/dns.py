@@ -1,7 +1,7 @@
 """mailctl dns: the DNS records a domain needs, and publishing them at TransIP."""
 
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Annotated, Optional
 
 import typer
@@ -11,7 +11,7 @@ from ..core import autodiscover, dkim, dns_check, domains, system, transip, zone
 from ..core.dns_check import DnsRecord, IPAddress
 from ..core.errors import MailctlError
 from ..session import Session, open_session
-from .checks import warn_if_not_in_certificate
+from .checks import offer_the_certificate
 from .shared import Domain, Yes, ask_domain, group, recommended_records
 
 app = group("Show a domain's DNS records and publish them at TransIP.")
@@ -66,11 +66,30 @@ def publish(domain: Domain = None, dry_run: DryRun = False, yes: Yes = False) ->
             ui.note("Nothing was changed (--dry-run).")
             return
         ui.confirm("Make these changes at TransIP?", yes)
+        change = _one_expire_per_record_set(change, yes)
         save_zone_change(change)
         ui.success(f"Published the mail records of {domain} at TransIP.")
         note_removed_records(change)
-        warn_if_not_in_certificate(session, domain)
+        add_to_certificate = offer_the_certificate(session, domain, yes)
+    if add_to_certificate:
+        from . import certificate as certificate_command  # here: certificate.py takes DryRun from this module
+        certificate_command.sync(yes=True)
     ui.note(f"Check the domain's setup with: mailctl doctor {domain}")
+
+
+def _one_expire_per_record_set(change: "ZoneChange", yes: bool) -> "ZoneChange":
+    """TransIP refuses a record set whose records don't all have the same expire, which happens when a record
+    mailctl publishes lands next to one somebody else made with another one. Offers to make them the same."""
+    mixed = zone.mixed_expires(change.plan.result)
+    if not mixed:
+        return change
+    listed = ", ".join(f"{kind} {name}" for name, kind in mixed)
+    ui.warn(f"TransIP wants one expire per record set, and these hold more than one: {listed}.")
+    if not ui.decide(f"Set them all to {zone.SHORT_EXPIRE // 60} minutes?", True if yes else None, "--yes",
+                     default=True):
+        ui.note("TransIP will refuse the change; set their expire yourself in the control panel.")
+        return change
+    return replace(change, plan=replace(change.plan, result=zone.with_one_expire(change.plan.result)))
 
 
 @dataclass(frozen=True)

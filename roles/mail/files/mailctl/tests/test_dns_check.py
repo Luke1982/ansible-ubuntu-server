@@ -81,7 +81,8 @@ def test_recommended_records_deliver_mail_to_the_mail_host_at_the_servers_public
     assert dns_check.recommended_records("example.nl", server_ips, DKIM_VALUE) == [
         DnsRecord("MX", "example.nl", "10 mail.example.nl."),
         DnsRecord("A", "mail.example.nl", "93.184.216.34"),
-        DnsRecord("TXT", "example.nl", "v=spf1 mx ~all"),
+        # "mx" allows the mail host's IPv4 address; the server also sends from its IPv6 one.
+        DnsRecord("TXT", "example.nl", "v=spf1 mx ip6:2606:2800:220:1::5 ~all"),
         DnsRecord("TXT", "mail._domainkey.example.nl", DKIM_VALUE),
         DnsRecord("TXT", "_dmarc.example.nl", "v=DMARC1; p=quarantine"),
         DnsRecord("SRV", "_imaps._tcp.example.nl", "0 1 993 mail.example.nl."),
@@ -242,7 +243,7 @@ def test_the_system_resolver_reads_srv_records_and_the_target_for_no_service(mon
 
     monkeypatch.setattr(dns_check.SystemResolver, "_query", lambda self, name, kind: [Offered(), NotOffered()])
 
-    assert dns_check.SystemResolver().srv("_imaps._tcp.example.nl") == [
+    assert _stub().srv("_imaps._tcp.example.nl") == [
         Srv(0, 1, 993, "mail.example.nl"), Srv(0, 0, 0, "."),
     ]
 
@@ -254,7 +255,7 @@ def test_the_system_resolver_looks_up_reverse_dns_in_the_reverse_zone(monkeypatc
     queries = []
     monkeypatch.setattr(dns_check.SystemResolver, "_query", lambda self, name, kind: queries.append((name, kind)) or [Answer()])
 
-    assert dns_check.SystemResolver().ptr(ip_address("203.0.113.5")) == ["server.hosting.example"]
+    assert _stub().ptr(ip_address("203.0.113.5")) == ["server.hosting.example"]
     assert queries == [("5.113.0.203.in-addr.arpa.", "PTR")]
 
 
@@ -264,7 +265,7 @@ def test_the_system_resolver_joins_the_strings_of_a_long_txt_record(monkeypatch)
 
     monkeypatch.setattr(dns_check.SystemResolver, "_query", lambda self, name, kind: [Answer()])
 
-    assert dns_check.SystemResolver().txt("mail._domainkey.example.nl") == ["v=DKIM1; k=rsa; p=MIIBIjANBgkqh"]
+    assert _stub().txt("mail._domainkey.example.nl") == ["v=DKIM1; k=rsa; p=MIIBIjANBgkqh"]
 
 
 @pytest.mark.parametrize("records", [[], ["v=spf1 mx -all", "v=spf1 a -all"]])
@@ -499,7 +500,7 @@ def test_a_hostname_in_etc_hosts_is_looked_up_at_the_nameservers_of_its_zone(mon
     })
     monkeypatch.setattr(dns_check.SystemResolver, "_query", query)
 
-    found = dns_check.SystemResolver().addresses("server.hosting.example")
+    found = _stub().addresses("server.hosting.example")
 
     assert found == {ip_address("203.0.113.5"), ip_address("2001:db8::5")}
     assert ("server.hosting.example", "A", ("198.51.100.53",)) in asked
@@ -509,7 +510,7 @@ def test_an_answer_from_the_internet_is_taken_as_it_is(monkeypatch):
     query, asked = answering({("mail.example.nl", "A"): [Address("203.0.113.5")]})
     monkeypatch.setattr(dns_check.SystemResolver, "_query", query)
 
-    assert dns_check.SystemResolver().addresses("mail.example.nl") == {ip_address("203.0.113.5")}
+    assert _stub().addresses("mail.example.nl") == {ip_address("203.0.113.5")}
     assert [kind for _, kind, _ in asked] == ["A", "AAAA"]  # no nameservers asked
 
 
@@ -517,7 +518,7 @@ def test_a_name_with_no_records_stays_a_name_with_no_records(monkeypatch):
     query, asked = answering()
     monkeypatch.setattr(dns_check.SystemResolver, "_query", query)
 
-    assert dns_check.SystemResolver().addresses("mail.example.nl") == set()
+    assert _stub().addresses("mail.example.nl") == set()
     assert all(servers is None for _, _, servers in asked)
 
 
@@ -525,7 +526,7 @@ def test_a_loopback_answer_with_no_nameservers_to_ask_gives_nothing(monkeypatch)
     query, _ = answering({("server.hosting.example", "A"): [Address("127.0.1.1")]})
     monkeypatch.setattr(dns_check.SystemResolver, "_query", query)
 
-    assert dns_check.SystemResolver().addresses("server.hosting.example") == set()
+    assert _stub().addresses("server.hosting.example") == set()
 
 
 def test_the_hostname_check_passes_on_a_server_that_answers_itself_from_etc_hosts(monkeypatch):
@@ -544,3 +545,56 @@ def test_the_hostname_check_passes_on_a_server_that_answers_itself_from_etc_host
 
     assert checks[0].status is Status.OK
     assert checks[0].detail == "web02.example.com points to this server."
+
+
+def test_a_name_the_cache_still_sends_to_the_old_server_is_asked_about_at_the_nameservers(monkeypatch):
+    """Right after a record is moved here, this machine's resolver still answers with the old address."""
+    query, asked = answering({
+        ("mail.example.nl", "A"): [Address("178.21.116.245")],  # the old server, from the cache
+        ("example.nl", "NS"): [Target("ns1.example.nl.")],
+        ("ns1.example.nl", "A"): [Address("198.51.100.53")],
+        ("authoritative", "A"): [Address("203.0.113.5")],  # what the zone really says now
+    })
+    monkeypatch.setattr(dns_check.SystemResolver, "_query", query)
+    here = {ip_address("203.0.113.5")}
+
+    assert _knowing(here).addresses("mail.example.nl") == here
+    assert ("mail.example.nl", "A", ("198.51.100.53",)) in asked
+
+
+def test_a_name_that_really_points_at_another_server_is_reported_as_it_is(monkeypatch):
+    query, _ = answering({
+        ("mail.example.nl", "A"): [Address("178.21.116.245")],
+        ("example.nl", "NS"): [Target("ns1.example.nl.")],
+        ("ns1.example.nl", "A"): [Address("198.51.100.53")],
+        ("authoritative", "A"): [Address("178.21.116.245")],
+    })
+    monkeypatch.setattr(dns_check.SystemResolver, "_query", query)
+
+    found = _knowing({ip_address("203.0.113.5")}).addresses("mail.example.nl")
+
+    assert found == {ip_address("178.21.116.245")}
+
+
+def test_without_knowing_this_servers_addresses_the_answer_is_used_as_it_is(monkeypatch):
+    query, asked = answering({("mail.example.nl", "A"): [Address("178.21.116.245")]})
+    monkeypatch.setattr(dns_check.SystemResolver, "_query", query)
+
+    assert _stub().addresses("mail.example.nl") == {ip_address("178.21.116.245")}
+    assert all(servers is None for _, _, servers in asked)
+
+
+def _stub():
+    """A resolver that asks this machine's resolver, for the tests about reading an answer rather than about
+    which nameserver gave it."""
+    resolver = dns_check.SystemResolver()
+    resolver.prefer_nameservers(False)
+    return resolver
+
+
+def _knowing(server_ips):
+    """A resolver that knows which addresses are this server's, as the checks make it."""
+    resolver = dns_check.SystemResolver()
+    resolver.prefer_nameservers(False)
+    resolver.knows_this_server(server_ips)
+    return resolver
