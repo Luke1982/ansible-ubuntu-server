@@ -30,6 +30,10 @@
       - dovecot-fts-xapian
       - spamassassin
       - spamass-milter
+      # SpamAssassin reads its per-account settings from MariaDB (sql.cf below). Without this driver every scan
+      # ends in "Error fetching user preferences via SQL", spamass-milter lets the message through unscanned,
+      # and no mail is ever marked as spam.
+      - libdbd-mysql-perl
       - opendkim
       - opendkim-tools
       - mariadb-server
