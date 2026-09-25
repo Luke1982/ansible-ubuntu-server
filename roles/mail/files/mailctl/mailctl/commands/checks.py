@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from .. import ui
-from ..core import autodiscover, certificate, dkim, dns_check, reach, system, webmail
+from ..core import autodiscover, certificate, dkim, dns_check, reach, spamscan, system, webmail
 from ..core.certificate import Certificate
 from ..core.dns_check import Check, DnsRecord, IPAddress, Status
 from ..core.errors import MailctlError
@@ -47,6 +47,8 @@ def server_checks(facts: Server, now: datetime) -> list[Check]:
         checks.append(certificate.check_server(facts.certificate, facts.hostname, now))
     else:
         checks.append(Check("Certificate", Status.FAIL, facts.certificate_problem))
+    # Nothing about a server that stopped scanning is visible in its DNS or its certificate, so it is asked.
+    checks.append(spamscan.check())
     # Where other mail servers deliver: a hostname address that doesn't answer there delays every message.
     reachable = reach.check({facts.hostname: reach.SMTP_PORT}, facts.resolver)
     return checks + ([reachable] if reachable else [])

@@ -51,6 +51,16 @@ def _run(args: tuple[str, ...], stdin, **text_options):
     return result.stdout
 
 
+def run_answer(*args: str, stdin: str | None = None) -> str:
+    """Runs a program that says what it found in its output rather than in its exit status, like spamc, which
+    hands back the message either way."""
+    try:
+        result = subprocess.run(args, input=stdin, capture_output=True, check=False, text=True, errors="replace")
+    except FileNotFoundError:
+        raise MailctlError(f"{args[0]} isn't installed.") from None
+    return result.stdout
+
+
 def run_check(*args: str) -> str | None:
     """Runs a program that checks something, like sievec: None when it passes, or else what it said."""
     try:

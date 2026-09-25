@@ -42,6 +42,15 @@ while getopts b:d:D:s: option; do
 done
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:1024 -out "$dir/$selector.private" 2>/dev/null
 """
+# spamc as a working SpamAssassin answers: the message back, with the headers it scored it with.
+FAKE_SPAMC = r"""
+cat > /dev/null
+printf 'X-Spam-Checker-Version: SpamAssassin 4.0.0\nX-Spam-Flag: YES\n'
+printf 'X-Spam-Status: Yes, score=1000.0 required=5.0 tests=GTUBE\n\n%s\n' "the test message"
+"""
+# postconf as a server whose Postfix hands mail to spamass-milter.
+FAKE_POSTCONF = "echo unix:/var/spool/postfix/spamass/spamass.sock\n"
+
 # How the public half of those keys starts in a DKIM record.
 FAKE_KEY_RECORD_START = "v=DKIM1; h=sha256; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQ"
 
@@ -368,4 +377,6 @@ def mailctl(db_config, tmp_path, monkeypatch, fake_command, fake_opendkim_genkey
     fake_command("systemctl")
     fake_command("doveadm")
     fake_command("sievec")
+    fake_command("spamc", FAKE_SPAMC)
+    fake_command("postconf", FAKE_POSTCONF)
     return Mailctl()

@@ -320,7 +320,7 @@ Mail servers get `mailctl`, a command-line tool for the mail domains, addresses,
 | `mailctl status example.nl` | Checks the domain's DNS records and whether the certificate includes `mail.example.nl` |
 | `mailctl dns show example.nl` | Shows the DNS records the domain needs |
 | `mailctl dns publish example.nl` | Publishes those records at TransIP; shows the changes and asks first (`--dry-run` only shows them) |
-| `mailctl doctor` | Checks the server (hostname, reverse DNS, certificate) and every domain; exit status 1 when something is wrong |
+| `mailctl doctor` | Checks the server (hostname, reverse DNS, certificate, spam filter) and every domain; exit status 1 when something is wrong |
 | `mailctl autodiscover publish example.nl` | Lets Thunderbird and Outlook find the domain's mail settings by themselves (below) |
 | `mailctl certificate sync` | Puts the hostname and every `mail.DOMAIN` that points here in one certificate, and makes Postfix and Dovecot read it (below). Run it by hand; the playbook only says to |
 | `mailctl spam set example.nl required_score 4` | Changes a spam setting for an account, a domain or the whole server |
@@ -352,6 +352,12 @@ Postfix and Dovecot present one certificate to everyone, so it has to hold every
 Let's Encrypt checks each name over HTTP. Answering that is all an OpenLiteSpeed template of mailctl's does: the playbook installs it, its web root (`/var/www/mailcert`) holds nothing but the challenges, and each name is a member, so they show up in WebAdmin under Virtual Host Templates. A name another site in OpenLiteSpeed already answers for is left to that site, with a warning.
 
 Run `mailctl certificate sync` on the server after adding or removing a mail domain. It only asks certbot when a name is missing or the certificate is about to expire. Certbot renews it by itself after that, and its deploy hook reloads Postfix and Dovecot, so mail programs never get an expired certificate. A playbook run doesn't do it: a certificate that is refused, or a name that no longer points here, is something to see while you are looking.
+
+### Is spam still being filtered?
+
+Postfix hands every message to spamass-milter, which asks spamd to score it and lets the message through untouched when spamd doesn't answer. A SpamAssassin that starts but can't do its work therefore breaks nothing anybody notices: mail keeps arriving, unmarked and unfiltered, and only the missing `X-Spam-` headers of a message already delivered show it. That is what happened on a server whose settings live in MariaDB but which had no `libdbd-mysql-perl`: every scan ended in `Error fetching user preferences via SQL`.
+
+`mailctl doctor` now puts a test message down that same road -- the body every SpamAssassin scores 1000 by definition -- and says so when it comes back unscored, or when Postfix hands mail to no spam filter at all.
 
 ### Mail filters
 

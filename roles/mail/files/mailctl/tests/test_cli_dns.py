@@ -289,6 +289,26 @@ def test_doctor_passes_a_server_and_domain_that_are_set_up(mailctl, healthy_dns)
     assert "No problems, but 2 warnings." in output
 
 
+def test_doctor_says_that_spamassassin_scans_the_mail_that_comes_in(mailctl, healthy_dns):
+    assert "SpamAssassin scores the mail that comes in." in mailctl.ok("doctor", "--all")
+
+
+def test_doctor_says_when_nothing_scans_the_mail_that_comes_in(mailctl, healthy_dns, fake_command):
+    """spamc hands the message back as it went in when spamd can't answer, and the milter then lets it through."""
+    fake_command("spamc", "cat")
+
+    output = mailctl.fails("doctor", "example.nl")
+
+    assert "SpamAssassin didn't score a test message" in output
+    assert "journalctl -u spamd" in output
+
+
+def test_doctor_says_when_postfix_hands_mail_to_no_spam_filter(mailctl, healthy_dns, fake_command):
+    fake_command("postconf", "echo")
+
+    assert "smtpd_milters has no spamass-milter socket" in mailctl.fails("doctor", "example.nl")
+
+
 def test_doctor_ends_with_an_error_when_there_is_a_problem(mailctl, healthy_dns, db_config):
     make_certificate(db_config.certificate(), "server.hosting.example")
 
