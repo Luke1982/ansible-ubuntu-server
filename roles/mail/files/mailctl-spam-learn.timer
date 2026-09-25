@@ -1,0 +1,12 @@
+[Unit]
+Description=Teach SpamAssassin every night from what people filed themselves
+
+[Timer]
+OnCalendar=*-*-* 04:15:00
+# So servers that run this don't all start at the same minute.
+RandomizedDelaySec=20m
+# A server that was off at 04:15 learns as soon as it is on again.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

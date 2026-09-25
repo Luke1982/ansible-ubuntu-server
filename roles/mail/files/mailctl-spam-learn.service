@@ -1,0 +1,13 @@
+[Unit]
+Description=Teach SpamAssassin from everybody's Junk folder and inbox
+Documentation=man:sa-learn(1)
+After=mariadb.service spamd.service
+Wants=spamd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/mailctl spam learn
+# It reads years of mail on a busy server; the mail that is being delivered comes first.
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=2h

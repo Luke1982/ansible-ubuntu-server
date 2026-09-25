@@ -77,6 +77,7 @@ def config(tmp_path) -> Config:
         transip_key=tmp_path / "mailctl" / "transip.key",
         ols_root=tmp_path / "lsws",
         autodiscover_root=tmp_path / "mailautodiscover",
+        spam_learn_state=tmp_path / "spam-learn.json",
         letsencrypt_dir=tmp_path / "letsencrypt",
     )
 

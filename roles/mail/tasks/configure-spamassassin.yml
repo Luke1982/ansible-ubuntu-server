@@ -75,3 +75,24 @@
     line: OPTIONS="-u spamass-milter -i 127.0.0.1 -e {{ defaultdomain }}"
   notify: restart spamass-milter
 
+
+# Bayes, the part of SpamAssassin that learns, only helps when it is fed, and nobody does that by hand. Every
+# account's Junk folder is what people called spam themselves, and their inbox is what they kept; "mailctl spam
+# learn" hands both to sa-learn, and only the messages since its last run, so a nightly run stays short.
+- name: Install the nightly SpamAssassin learning service and timer
+  copy:
+    src: "roles/mail/files/{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: 0644
+  loop:
+    - mailctl-spam-learn.service
+    - mailctl-spam-learn.timer
+
+- name: Teach SpamAssassin every night
+  systemd:
+    name: mailctl-spam-learn.timer
+    daemon_reload: yes
+    enabled: yes
+    state: started

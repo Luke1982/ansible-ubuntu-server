@@ -4,10 +4,13 @@ from typing import Annotated, Optional
 
 import typer
 
+import time
+
 from .. import ui
-from ..core import spam
+from ..core import addresses, spam, spamlearn
 from ..core.spam import Scope
 from ..session import Session, open_session
+from .dns import DryRun
 from .shared import Yes, ask_target, group
 
 app = group("Show and change SpamAssassin settings for an account, a domain or the whole server.")
@@ -24,6 +27,55 @@ ValueToRemove = Annotated[Optional[str], typer.Argument(
     metavar="[VALUE]", help="Remove only this value of a list setting.", show_default=False)]
 
 SETTING_PROMPT = f"Setting ({', '.join(spam.SETTINGS)})"
+Everything = Annotated[bool, typer.Option(
+    "--all", "-a", help="Learn from every message again, not only from the ones since the last run.")]
+
+
+@app.command()
+def learn(everything: Everything = False, dry_run: DryRun = False) -> None:
+    """Teach SpamAssassin from the mail people file: their Junk folders are spam, their inboxes are ham.
+
+    SpamAssassin only learns what it is shown, and this shows it what everybody here decided themselves. It reads
+    the messages that arrived or were moved since the last run, so it stays quick; --all reads every message again
+    (sa-learn skips the ones it has already seen). A message nobody has opened yet is left out of the inbox side:
+    it may be spam that hasn't been filed.
+
+    The playbook runs this every night (systemctl status mailctl-spam-learn.timer).
+
+    [dim]Example:[/] mailctl spam learn
+
+    [dim]Everything there is:[/] mailctl spam learn --all
+    """
+    started = time.time()
+    with open_session() as session:
+        state = session.config.spam_learn_state
+        since = 0.0 if everything else spamlearn.last_run(state)
+        accounts = addresses.list_addresses(session.db)
+        folders = spamlearn.folders(session.config, accounts)
+        with ui.console.status("Looking for mail to learn from…"):
+            found = {folder: spamlearn.messages(folder, since) for folder in folders}
+    spam_messages = [path for folder, paths in found.items() if folder.spam for path in paths]
+    ham_messages = [path for folder, paths in found.items() if not folder.spam for path in paths]
+    if not spam_messages and not ham_messages:
+        ui.success("Nothing new to learn from." if since else "There is no mail to learn from.")
+        return
+    counted = f"{ui.plural(len(spam_messages), 'spam message')} and {ui.plural(len(ham_messages), 'other message')}"
+    if dry_run:
+        ui.line(f"Would learn from {counted}, of {ui.plural(len(accounts), 'account')}.")
+        ui.note("Nothing was learned (--dry-run).")
+        return
+    problems = []
+    with ui.console.status(f"Learning from {counted}…"):
+        learned_spam, trouble = spamlearn.learn(spam_messages, spam=True)
+        problems += trouble
+        learned_ham, trouble = spamlearn.learn(ham_messages, spam=False)
+        problems += trouble
+        spamlearn.sync()
+    spamlearn.remember(started, state)
+    ui.success(f"Learned from {ui.plural(learned_spam, 'new spam message')} and "
+               f"{ui.plural(learned_ham, 'new other message')}; the rest was known already.")
+    for problem in problems:
+        ui.warn(problem)
 
 
 @app.command()

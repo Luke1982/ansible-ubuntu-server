@@ -23,7 +23,7 @@ COMMANDS = [
     ("dns", "show"), ("dns", "publish"), ("dns", "credentials"), ("autodiscover", "publish"),
     ("certificate", "sync"),
     ("status",), ("doctor",), ("repair",),
-    ("spam", "show"), ("spam", "set"), ("spam", "unset"),
+    ("spam", "show"), ("spam", "set"), ("spam", "unset"), ("spam", "learn"),
     ("filters", "show"), ("filters", "import"), ("filters", "run"),
 ]
 
@@ -593,6 +593,83 @@ def test_import_says_to_delete_a_file_of_passwords_others_can_read(mailctl, exam
 
     assert "can be read by others, and it holds passwords" in output
     assert f"Delete {path} now" in output
+
+
+SA_LEARN = 'echo "Learned tokens from $# message(s) ($# message(s) examined)"'
+
+
+def junk_and_inbox(db_config, address="info@example.nl", junk=1, inbox=1):
+    """Mail in the account's Junk folder and inbox, as Dovecot stores it."""
+    maildir = db_config.vmail_root / "example.nl" / address.split("@")[0] / "Maildir"
+    for count, folder in ((junk, maildir / ".Junk" / "cur"), (inbox, maildir / "cur")):
+        folder.mkdir(parents=True, exist_ok=True)
+        for number in range(count):
+            (folder / f"{number}.mail:2,S").write_text("Subject: one\n\nbody\n")
+
+
+def test_spam_learn_teaches_from_junk_and_from_what_people_kept(mailctl, example_domain, db_config, fake_command):
+    add_account(mailctl, "info@example.nl")
+    junk_and_inbox(db_config, junk=2, inbox=1)
+    sa_learn = fake_command("sa-learn", SA_LEARN)
+
+    output = mailctl.ok("spam", "learn")
+
+    assert "Learned from" in output
+    spam_call = next(call for call in sa_learn.calls if "--spam" in call)
+    ham_call = next(call for call in sa_learn.calls if "--ham" in call)
+    assert len(spam_call) == 4 and len(ham_call) == 3  # --no-sync, what to learn, and the messages
+    assert ["--sync"] in sa_learn.calls  # what was learned is written at the end, once
+
+
+def test_spam_learn_only_reads_what_came_in_since_the_last_run(mailctl, example_domain, db_config, fake_command):
+    add_account(mailctl, "info@example.nl")
+    junk_and_inbox(db_config)
+    fake_command("sa-learn", SA_LEARN)
+    mailctl.ok("spam", "learn")
+
+    output = mailctl.ok("spam", "learn")
+
+    assert "Nothing new to learn from." in output
+    assert db_config.spam_learn_state.exists()
+
+
+def test_spam_learn_can_read_everything_again(mailctl, example_domain, db_config, fake_command):
+    add_account(mailctl, "info@example.nl")
+    junk_and_inbox(db_config)
+    fake_command("sa-learn", SA_LEARN)
+    mailctl.ok("spam", "learn")
+
+    assert "Learned from" in mailctl.ok("spam", "learn", "--all")
+
+
+def test_spam_learn_can_show_what_it_would_read(mailctl, example_domain, db_config, fake_command):
+    add_account(mailctl, "info@example.nl")
+    junk_and_inbox(db_config, junk=2, inbox=3)
+    sa_learn = fake_command("sa-learn", SA_LEARN)
+
+    output = mailctl.ok("spam", "learn", "--dry-run")
+
+    assert "Would learn from 2 spam messages and 3 other messages" in output
+    assert "Nothing was learned (--dry-run)." in output
+    assert sa_learn.calls == []
+
+
+def test_spam_learn_says_when_there_is_no_mail_to_learn_from(mailctl, example_domain, fake_command):
+    add_account(mailctl, "info@example.nl")
+    fake_command("sa-learn", SA_LEARN)
+
+    assert "There is no mail to learn from." in mailctl.ok("spam", "learn")
+
+
+def test_the_playbook_teaches_spamassassin_every_night():
+    """Bayes only helps when it is fed, and nobody feeds it by hand."""
+    tasks = (Path(__file__).resolve().parents[3] / "tasks" / "configure-spamassassin.yml").read_text()
+
+    assert "mailctl-spam-learn.timer" in tasks
+    timer = (Path(__file__).resolve().parents[2] / "mailctl-spam-learn.timer").read_text()
+    service = (Path(__file__).resolve().parents[2] / "mailctl-spam-learn.service").read_text()
+    assert "OnCalendar=" in timer and "Persistent=true" in timer
+    assert "mailctl spam learn" in service
 
 
 def test_filters_show_says_that_only_the_active_one_runs(mailctl, example_domain, fake_command):

@@ -32,6 +32,8 @@ class Config:
     dkim_user: str = "opendkim"
     mail_logs: tuple[Path, ...] = (Path("/var/log/mail.log.1"), Path("/var/log/mail.log"))
     sieve_after: Path = Path("/etc/dovecot/sieve-after")
+    # When SpamAssassin was last taught from everybody's Junk folder and inbox, so a run only reads what came after.
+    spam_learn_state: Path = Path("/var/lib/mailctl/spam-learn.json")
     certificate_file: Path | None = None  # by default the Let's Encrypt certificate of the hostname
     # The web root of the autoconfig and autodiscover sites, where certbot puts its challenges too.
     autodiscover_root: Path = Path("/var/www/mailautodiscover")

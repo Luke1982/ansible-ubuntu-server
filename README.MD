@@ -347,6 +347,7 @@ Mail servers get `mailctl`, a command-line tool for the mail domains, addresses,
 | `mailctl autodiscover publish example.nl` | Lets Thunderbird and Outlook find the domain's mail settings by themselves (below) |
 | `mailctl certificate sync` | Puts the hostname and every `mail.DOMAIN` that points here in one certificate, and makes Postfix and Dovecot read it (below). Run it by hand; the playbook only says to |
 | `mailctl spam set example.nl required_score 4` | Changes a spam setting for an account, a domain or the whole server |
+| `mailctl spam learn` | Teaches SpamAssassin from everybody's Junk folder and inbox; runs every night by itself (below) |
 | `mailctl filters show info@example.nl` | Shows an account's mail filters |
 | `mailctl filters import mailserver.json` | Takes only the filters from another server's file, into webmail's list (below) |
 | `mailctl filters run info@example.nl` | Runs an account's filters over the mail that is already in a folder (below) |
@@ -383,6 +384,12 @@ Run `mailctl certificate sync` on the server after adding or removing a mail dom
 Postfix hands every message to spamass-milter, which asks spamd to score it and lets the message through untouched when spamd doesn't answer. A SpamAssassin that starts but can't do its work therefore breaks nothing anybody notices: mail keeps arriving, unmarked and unfiltered, and only the missing `X-Spam-` headers of a message already delivered show it. That is what happened on a server whose settings live in MariaDB but which had no `libdbd-mysql-perl`: every scan ended in `Error fetching user preferences via SQL`.
 
 `mailctl doctor` now puts a test message down that same road -- the body every SpamAssassin scores 1000 by definition -- and says so when it comes back unscored, or when Postfix hands mail to no spam filter at all.
+
+### Teaching the spam filter
+
+SpamAssassin's Bayes half only helps when it is shown what spam and good mail look like here, and nobody has the time to do that by hand. They don't have to: every account's `Junk` folder is what people called spam themselves, and their inbox is what they kept. `mailctl spam learn` hands both to `sa-learn`, which writes what it learns to the shared `bayes` database -- `bayes.cf` overrides the username, so every account teaches the same one.
+
+A `mailctl-spam-learn.timer` runs it every night, so nothing has to be remembered. It only reads the messages that arrived or were moved since the last run, which keeps it short on a server with years of mail; `--all` reads everything again (`sa-learn` skips what it has already seen), and `--dry-run` says how much it would read. Mail nobody has opened yet is left out of the good half: it may be spam that hasn't been filed.
 
 ### Mail filters
 
