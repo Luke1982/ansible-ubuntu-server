@@ -1,0 +1,17 @@
+# What SpamAssassin's own guess is worth. Its defaults are careful, made for servers whose Bayes may be poorly
+# taught: BAYES_50 counts 0.8 and BAYES_99 3.5, so even "almost certainly spam" needs another rule to reach the
+# 5 points that mark a message. Here everybody's Junk folder teaches it every night, so its guess is worth more
+# than that: a message it puts at 99% is spam on that alone, and one at 50% is halfway there.
+#
+# None of this counts until Bayes has seen 200 spam and 200 good messages; before that SpamAssassin leaves these
+# rules out altogether.
+score BAYES_00              -1.9
+score BAYES_05              -0.5
+score BAYES_20              -0.001
+score BAYES_40              -0.001
+score BAYES_50              3.5
+score BAYES_60              4.0
+score BAYES_80              4.5
+score BAYES_95              5.0
+score BAYES_99              6.0
+score BAYES_999             1.0

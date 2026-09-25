@@ -18,6 +18,17 @@
     regexp: OPTIONS="[\w\-\s]+"
     line: OPTIONS="--create-prefs --max-children 5 --helper-home-dir -x -u vmail"
 
+# What SpamAssassin's own guess about a message is worth, apart from the settings above: a file of its own, so
+# nobody has to look at the database password to change a score.
+- name: Give SpamAssassin's own guess the weight this server's learning earns it
+  copy:
+    src: roles/mail/files/bayes-scores.cf
+    dest: /etc/spamassassin/bayes-scores.cf
+    owner: root
+    group: root
+    mode: 0644
+  notify: restart spamassassin
+
 - name: Configure Spamassassin to get user preferences from MySQL
   template:
     src: "spamassassin-sql.cf.j2"
