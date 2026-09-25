@@ -20,6 +20,29 @@ KeyStdin = Annotated[bool, typer.Option(
     "--key-stdin", help="Read the private key from standard input, for scripts. In a terminal it's asked for.")]
 
 
+Domain = Annotated[Optional[str], typer.Argument(
+    metavar="[DOMAIN]", help="The domain, or a site's name. Asked for when left out.", show_default=False)]
+Yes = Annotated[bool, typer.Option("--yes", "-y", help="Don't ask for confirmation.")]
+
+
+@app.command()
+def publish(domain: Domain = None, yes: Yes = False) -> None:
+    """Point a domain and its www name at this server at TransIP.
+
+    Publishes a record for a name that has none, and offers to move one that still points at the old server,
+    naming what it takes away. Its zone has to be in this server's TransIP account.
+
+    "domainctl add" and "domainctl repair" do this as part of setting a site up; this is the same thing on its
+    own, for a domain whose site isn't ready yet.
+
+    [dim]Example:[/] domainctl dns publish example.nl
+    """
+    from .site import publish_names  # here: site.py takes the credentials from this module
+
+    with open_session() as session:
+        publish_names(session, domain, yes)
+
+
 @app.command()
 def credentials(login: Login = None, key_stdin: KeyStdin = False) -> None:
     """Enter the TransIP login and key, or replace them.

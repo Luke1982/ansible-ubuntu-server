@@ -21,11 +21,14 @@ def add(domain: Domain = None, user: UserOption = None, no_dns: NoDns = False,
         existing_user: ExistingUser = False, yes: Yes = False) -> None:
     """Set up a site for a domain: a Linux user, its directories, a virtual host and a certificate.
 
-    The domain must already point to this server; www is included when it points here too, and left out when it
-    doesn't, because one name that doesn't resolve here would fail the whole certificate request. A name with no
-    record at all is offered to TransIP, if the domain is in that account.
+    The user and its directories are made whatever the DNS says, so the site's files can be put there before the
+    domain is moved. The virtual host and the certificate need the domain to point here, since Let's Encrypt
+    checks that; www is included when it points here too, and left out when it doesn't, because one name that
+    doesn't resolve here would fail the whole request. A name with no record at all is offered to TransIP, if the
+    domain is in that account.
 
-    Run it again for the same domain to pick up where it stopped, for instance after fixing a DNS record.
+    Run it again for the same domain to pick up where it stopped: after the DNS is moved, or after fixing a
+    record. It takes over the user and directories it made itself.
 
     [dim]Example:[/] domainctl add example.nl
     [dim]Another user name:[/] domainctl add example.nl --user examplesite
@@ -38,14 +41,46 @@ def add(domain: Domain = None, user: UserOption = None, no_dns: NoDns = False,
         if existing and existing.domain != domain:
             raise CtlError(f"The site {name} already serves {existing.domain}.",
                            hint=f"Choose another user name with --user, or remove it with: domainctl delete {name}")
+        _reserve(config, Site(name, domain), existing is not None, existing_user)
+        _make_home(config, Site(name, domain), existing_user)
         checked = _check_names(session, domain, no_dns, yes)
+        if not checked[0].ready:
+            # The files can be put in place meanwhile; the virtual host and the certificate wait for the DNS.
+            ui.warn(f"{checked[0].detail} Let's Encrypt checks the same thing, so there is no certificate and no "
+                    f"site yet.")
+            ui.note(f"The directories are ready: put the site's files in {config.docroot_of(name)}. Point {domain} "
+                    f"at {_addresses(session)} and run the same command again to finish.")
+            return
         site = Site(name, domain, tuple(found.name for found in checked[1:] if found.ready))
-        _reserve(config, site, existing is not None, existing_user)
-        _make_home(config, site, existing_user)
         if sites.save(config, site):
             openlitespeed.restart(config.ols_root)
             ui.success(f"{domain} is served from {config.docroot_of(name)}.")
         _certify(config, site, checked[0])
+
+
+def repair(domain: Domain = None, user: UserOption = None, no_dns: NoDns = False,
+           existing_user: ExistingUser = False, yes: Yes = False) -> None:
+    """Finish or repair a site: whatever it is missing.
+
+    The same work as "domainctl add", which only ever does what isn't there yet: the Linux user and its
+    directories, the DNS records at TransIP, the virtual host, the certificate. Use it after moving a domain
+    here, after fixing a record, or when "domainctl doctor" reports something.
+
+    Takes the site's name as well as its domain.
+
+    [dim]Example:[/] domainctl repair example.nl
+    [dim]By the site's name:[/] domainctl repair example
+    """
+    add(_domain_of(domain), user, no_dns, existing_user, yes)
+
+
+def _domain_of(given: str | None) -> str | None:
+    """The domain, whether the site's name or its domain was given."""
+    if not given or "." in given:
+        return given
+    with open_session() as session:
+        site = sites.find(session.config, given)
+    return site.domain if site else given
 
 
 def list_sites(user: UserFilter = None) -> None:
@@ -97,11 +132,13 @@ def delete(user: User = None, purge: Purge = False, yes: Yes = False) -> None:
                     f"Remove them with: domainctl delete {site.user} --purge")
 
 
-def check(user: UserFilter = None) -> None:
+def doctor(user: UserFilter = None) -> None:
     """Say how each site is doing: its names, its file permissions and its certificate.
 
-    [dim]Example:[/] domainctl check
-    [dim]One site:[/] domainctl check example
+    The same question mailctl's doctor answers for mail. "domainctl check" is the older name for it.
+
+    [dim]Example:[/] domainctl doctor
+    [dim]One site:[/] domainctl doctor example
     """
     with open_session() as session:
         config = session.config
@@ -143,6 +180,12 @@ def sync() -> None:
             if layout.apply_permissions(config, site.user):
                 ui.success(f"Corrected the file permissions of {site.user}.")
                 changed = True
+            # A site whose own files have arrived since keeps its placeholder in front of them otherwise.
+            if (config.docroot_of(site.user) / "index.html").exists() and \
+                    layout.remove_placeholder(config, site.user) and \
+                    not (config.docroot_of(site.user) / "index.html").exists():
+                ui.success(f"Took the placeholder page away from {site.user}: its own index is there now.")
+                changed = True
         if changed:
             openlitespeed.restart(config.ols_root)
         # Ansible reads this line to tell whether anything changed.
@@ -174,12 +217,18 @@ def _free_name(config, domain: str, existing_user: bool) -> str:
     if site:
         raise CtlError(f"The name {name}, taken from {domain}, is the site for {site.domain}.",
                        hint=f"Choose another one with --user, or remove that site with: domainctl delete {name}")
-    if users.exists(name) and not existing_user:
+    if users.exists(name) and not existing_user and not _ours(config, name):
         # A server being moved to domainctl has the user and its files already; that is what --existing-user is for.
         raise CtlError(f"There is already a Linux user {name}, taken from {domain}, but no site for it.",
                        hint=f"Give it this site with: domainctl add {domain} --existing-user\n"
                             f"Or make a site under another name with --user.")
     return names.user_name(name)
+
+
+def _ours(config, name: str) -> bool:
+    """Whether the Linux user is one domainctl made for this site: its home holds the directories it makes. That
+    is how a run that stopped at the DNS picks up where it left off, without --existing-user for its own work."""
+    return config.docroot_of(name).is_dir() and config.logs_of(name).is_dir()
 
 
 def _check_names(session: Session, domain: str, no_dns: bool, yes: bool) -> list[NameCheck]:
@@ -189,8 +238,7 @@ def _check_names(session: Session, domain: str, no_dns: bool, yes: bool) -> list
         raise CtlError(f"Can't tell where {domain} points: {found[0].detail}",
                        hint="Try again when DNS answers.")
     if not found[0].ready:
-        raise CtlError(f"{found[0].detail} Let's Encrypt checks the same thing, so no certificate is possible yet.",
-                       hint=f"Point {domain} at {_addresses(session)} and run the command again.")
+        return found  # the caller sets up what doesn't depend on the DNS and says what is left to do
     ui.success(f"{domain} points to this server.")
     if found[1].ready:
         ui.success(f"{www(domain)} points here too, so it is included.")
@@ -199,28 +247,56 @@ def _check_names(session: Session, domain: str, no_dns: bool, yes: bool) -> list
     return found
 
 
+def publish_names(session: Session, domain: str | None, yes: bool) -> None:
+    """Points the domain and its www name at this server at TransIP, for "domainctl dns publish"."""
+    domain = _domain_of(ask_domain(domain))
+    found = [_resolve(session, name, no_dns=False, yes=yes) for name in (domain, www(domain))]
+    for check in found:
+        if check.ready:
+            ui.success(f"{check.name} points to this server.")
+        else:
+            ui.warn(check.detail)
+    if found[0].ready:
+        ui.note(f"Finish the site with: domainctl repair {domain}")
+
+
 def _resolve(session: Session, name: str, no_dns: bool, yes: bool) -> NameCheck:
-    """Looks the name up, and offers to publish it at TransIP when it has no record at all."""
+    """Looks the name up, and offers to put it right at TransIP: a record for a name that has none, or the move
+    of a name that still points at the old server."""
     found = dnsnames.check(session.resolver, name, session.server_ips)
-    if found.state is not State.MISSING or no_dns:
+    if found.state not in (State.MISSING, State.ELSEWHERE) or no_dns:
         return found
     ips = dnsnames.publishable_ips(session.server_ips)
     if not ips:
         return found
+    moving = found.state is State.ELSEWHERE
+    where = ", ".join(str(ip) for ip in sorted(ips, key=lambda ip: (ip.version, ip)))
+    question = (f"{found.detail} Move it to this server ({where}) at TransIP? Visitors go here once the old "
+                f"record has expired." if moving else
+                f"{name} has no DNS record. Publish one at TransIP, pointing here?")
     if not ui.interactive() and not yes:
-        ui.note(f"{name} has no record. Add --yes to publish one at TransIP without being asked.")
+        ui.note(f"{found.detail} Add --yes to {'move it' if moving else 'publish one'} at TransIP without being "
+                f"asked.")
         return found
-    if not ui.decide(f"{name} has no DNS record. Publish one at TransIP, pointing here?", True if yes else None,
-                     "--yes", default=True):
+    # Moving a name takes a site that is live elsewhere off the internet, so it is never the default answer.
+    if not ui.decide(question, True if yes else None, "--yes", default=not moving):
         return found
     try:
-        with ui.console.status(f"Publishing {name} at TransIP…"):
-            zone, added = dnsnames.publish(dns.client(session, read_only=False), name, ips)
+        with ui.console.status(f"Changing {name} at TransIP…"):
+            if moving:
+                zone, replaced, added = dnsnames.repoint(dns.client(session, read_only=False), name, ips)
+            else:
+                zone, added = dnsnames.publish(dns.client(session, read_only=False), name, ips)
+                replaced = ()
     except (CtlError, NotInAccount) as problem:
-        ui.warn(f"Couldn't publish {name}: {problem.message}")
+        ui.warn(f"Couldn't change {name}: {problem.message}")
+        if problem.hint:
+            ui.note(problem.hint)
         return found
+    for entry in replaced:
+        ui.note(f"Took away the {entry.type} record of {name}: {entry.content}")
     ui.success(f"Published {len(added)} record(s) for {name} in the zone {zone}.")
-    with ui.console.status(f"Waiting until {name} resolves…"):
+    with ui.console.status(f"Waiting until {name} resolves here…"):
         return dnsnames.wait_until_resolving(session.resolver, name, session.server_ips)
 
 
@@ -230,7 +306,7 @@ def _reserve(config, site: Site, is_retry: bool, existing_user: bool) -> None:
     clash = sites.taken_by_another(config, site.names, site.user, lines)
     if clash:
         raise CtlError(clash, hint="Remove it first, or choose another domain.")
-    if is_retry or existing_user or not users.exists(site.user):
+    if is_retry or existing_user or not users.exists(site.user) or _ours(config, site.user):
         return
     raise CtlError(f"There is already a Linux user {site.user} on this server, but no site for it.",
                    hint="Add --existing-user to use it and its home directory, or another name with --user.")
@@ -240,7 +316,10 @@ def _make_home(config, site: Site, existing_user: bool) -> None:
     if not users.exists(site.user):
         users.create(site.user, config.home(site.user), config.user_shell)
         ui.success(f"Made the user {site.user} with {config.home(site.user)}, without a password.")
+    had_placeholder = (config.docroot_of(site.user) / "index.html").exists()
     layout.create(config, site.user, site.domain)
+    if had_placeholder and not (config.docroot_of(site.user) / "index.html").exists():
+        ui.success(f"Took the placeholder page away: {site.domain} has an index of its own now.")
     if layout.apply_permissions(config, site.user):
         ui.success(f"{config.web_user} may read {config.docroot_of(site.user)} and write in "
                    f"{config.logs_of(site.user)}.")
@@ -262,7 +341,7 @@ def _certify(config, site: Site, domain_check: NameCheck) -> None:
             certificates.obtain(config, site)
     except CtlError as problem:
         ui.warn(problem.message)
-        ui.note(f"The site is up over HTTP. Fix the reason above and run: domainctl add {site.domain}")
+        ui.note(f"The site is up over HTTP. Fix the reason above and run: domainctl repair {site.domain}")
         return
     openlitespeed.restart(config.ols_root)
     ui.success(f"https://{site.domain} is live with a Let's Encrypt certificate.")
@@ -294,7 +373,7 @@ def _checks(session: Session, site: Site, now: datetime):
     if not certificates.exists(config, site.user):
         yield Check("Certificate", Status.FAIL,
                     f"There is no certificate, so {site.domain} is only served over HTTP. "
-                    f"Get one with: domainctl add {site.domain}")
+                    f"Get one with: domainctl repair {site.domain}")
         return
     invalid = certbot.problem(certificates.path(config, site.user), site.names, now)
     if invalid:

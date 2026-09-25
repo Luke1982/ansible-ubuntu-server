@@ -214,3 +214,109 @@ def test_nothing_is_said_on_a_server_without_mailctl(config, tmp_path, monkeypat
     monkeypatch.setattr(transip, "saved_credentials", lambda access: transip.Credentials("someone", access.key))
     dns_command.saved_or_asked(Session(settings))
     assert capsys.readouterr().out == ""
+
+
+# Moving a site: the name still points at the old server, and the DNS move is the last step.
+
+def test_repointing_replaces_the_records_that_point_elsewhere():
+    client = FakeClient({"example.nl": [Entry("@", 300, "A", "45.87.2.9"), Entry("@", 300, "AAAA", "2a02:2308::1"),
+                                        Entry("@", 3600, "MX", "10 mail.example.nl.")]})
+
+    zone, replaced, added = dnsnames.repoint(client, "example.nl", {ip_address("81.4.127.10")})
+
+    assert zone == "example.nl"
+    assert {(entry.type, entry.content) for entry in replaced} == {("A", "45.87.2.9"), ("AAAA", "2a02:2308::1")}
+    assert [(entry.name, entry.type, entry.content) for entry in added] == [("@", "A", "81.4.127.10")]
+    kept = [entry for entry in client.saved[1] if entry.type == "MX"]
+    assert len(kept) == 1, "the other records of the zone stay"
+    assert not [entry for entry in client.saved[1] if entry.content == "45.87.2.9"]
+
+
+def test_repointing_takes_a_cname_away_too():
+    client = FakeClient({"example.nl": [Entry("www", 300, "CNAME", "old-host.example.com.")]})
+
+    _, replaced, added = dnsnames.repoint(client, "www.example.nl", {ip_address("81.4.127.10")})
+
+    assert [entry.type for entry in replaced] == ["CNAME"]
+    assert [entry.type for entry in added] == ["A"]
+
+
+def test_repointing_into_a_zone_the_internet_does_not_read_is_refused():
+    client = FakeClient({"example.nl": [Entry("@", 300, "A", "45.87.2.9")]},
+                        nameservers=("ns1.otherhost.com", "ns2.otherhost.com"))
+
+    with pytest.raises(CtlError, match="doesn't use TransIP's nameservers"):
+        dnsnames.repoint(client, "example.nl", {ip_address("81.4.127.10")})
+    assert client.saved is None
+
+
+def test_repointing_notices_a_zone_changed_in_the_meantime():
+    client = FakeClient({"example.nl": [Entry("@", 300, "A", "45.87.2.9")]},
+                        changed_to=[Entry("@", 300, "TXT", "someone else was here")])
+
+    with pytest.raises(CtlError, match="changed in the meantime"):
+        dnsnames.repoint(client, "example.nl", {ip_address("81.4.127.10")})
+    assert client.saved is None
+
+
+def test_only_the_ipv4_address_is_published_unless_that_is_all_there_is():
+    """OpenLiteSpeed listens on IPv4 as it comes, and a record nothing answers on costs every visitor a wait."""
+    both = {ip_address("81.4.127.10"), ip_address("2a01:7c8:aab1::10")}
+
+    assert dnsnames.publishable_ips(both) == {ip_address("81.4.127.10")}
+    assert dnsnames.publishable_ips({ip_address("2a01:7c8:aab1::10")}) == {ip_address("2a01:7c8:aab1::10")}
+    assert dnsnames.publishable_ips({ip_address("10.0.0.5")}) == set(), "a private address is no use to anyone"
+
+
+class CachingResolver:
+    """A resolver whose cache still holds the old answer, as this machine's does after a record is changed."""
+
+    def __init__(self, cached, authoritative):
+        self.cached, self.authoritative, self.asked = cached, authoritative, []
+
+    def addresses(self, name):
+        return set(self.cached.get(name, set()))
+
+    def addresses_at_nameservers(self, name):
+        self.asked.append(name)
+        return set(self.authoritative.get(name, set()))
+
+
+def test_a_name_the_cache_still_sends_elsewhere_is_checked_at_the_nameservers():
+    """Right after the move the cache holds the old record; the nameservers of the zone decide."""
+    resolver = CachingResolver({"example.nl": {ip_address("45.87.2.9")}}, {"example.nl": HERE})
+
+    found = dnsnames.check(resolver, "example.nl", HERE)
+
+    assert found.ready and found.state is State.HERE
+    assert resolver.asked == ["example.nl"]
+
+
+def test_a_name_that_really_points_elsewhere_still_says_so():
+    resolver = CachingResolver({"example.nl": {ip_address("45.87.2.9")}}, {"example.nl": {ip_address("45.87.2.9")}})
+
+    found = dnsnames.check(resolver, "example.nl", HERE)
+
+    assert found.state is State.ELSEWHERE and "45.87.2.9" in found.detail
+
+
+def test_a_name_that_points_here_is_not_asked_about_twice():
+    resolver = CachingResolver({"example.nl": HERE}, {})
+
+    assert dnsnames.check(resolver, "example.nl", HERE).ready
+    assert resolver.asked == [], "the cache agrees, so the nameservers are left alone"
+
+
+def test_a_name_with_no_record_in_the_cache_is_checked_at_the_nameservers_too():
+    """A record published a moment ago, which the cache remembers as missing."""
+    resolver = CachingResolver({}, {"example.nl": HERE})
+
+    assert dnsnames.check(resolver, "example.nl", HERE).ready
+
+
+def test_a_resolver_that_cant_ask_the_nameservers_is_used_as_it_is():
+    class Plain:
+        def addresses(self, name):
+            return {ip_address("45.87.2.9")}
+
+    assert dnsnames.check(Plain(), "example.nl", HERE).state is State.ELSEWHERE

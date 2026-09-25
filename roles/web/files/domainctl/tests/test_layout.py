@@ -83,3 +83,46 @@ def test_create_makes_the_challenge_folder_the_template_serves(config, no_chown)
     """The template gives it a context of its own, and OpenLiteSpeed complains about one that isn't there."""
     layout.create(config, "example", "example.nl")
     assert (config.docroot_of("example") / ".well-known" / "acme-challenge").is_dir()
+
+
+def test_the_placeholder_goes_when_the_site_has_an_index_of_its_own(config, no_chown):
+    """OpenLiteSpeed serves index.html before index.php, so a placeholder left there answers for the site."""
+    layout.create(config, "example", "example.nl")
+    placeholder = config.docroot_of("example") / "index.html"
+    assert placeholder.exists()
+
+    (config.docroot_of("example") / "index.php").write_text("<?php // wordpress\n")
+    layout.create(config, "example", "example.nl")
+
+    assert not placeholder.exists()
+
+
+def test_an_index_html_that_isnt_ours_is_left_alone(config, no_chown):
+    layout.create(config, "example", "example.nl")
+    docroot = config.docroot_of("example")
+    (docroot / "index.html").write_text("<h1>the site's own page</h1>")
+    (docroot / "index.php").write_text("<?php\n")
+
+    layout.create(config, "example", "example.nl")
+
+    assert (docroot / "index.html").read_text() == "<h1>the site's own page</h1>"
+
+
+def test_a_site_without_its_own_index_keeps_the_placeholder(config, no_chown):
+    layout.create(config, "example", "example.nl")
+    (config.docroot_of("example") / "style.css").write_text("body {}")
+
+    layout.create(config, "example", "example.nl")
+
+    assert (config.docroot_of("example") / "index.html").exists()
+
+
+def test_a_placeholder_from_before_the_marker_is_ours_too(config, no_chown):
+    """Servers set up earlier have one without the marker; it blocks index.php just the same."""
+    docroot = config.docroot_of("example")
+    docroot.mkdir(parents=True)
+    (docroot / "index.html").write_text("<html><body><p>This site is set up and waiting for its files.</p></body>")
+    (docroot / "index.php").write_text("<?php\n")
+
+    assert layout.remove_placeholder(config, "example") is True
+    assert not (docroot / "index.html").exists()

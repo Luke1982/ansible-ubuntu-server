@@ -33,7 +33,10 @@ app = typer.Typer(
 )
 app.add_typer(dns.app, name="dns")
 app.command()(site.add)
+app.command()(site.repair)
 app.command(name="list")(site.list_sites)
 app.command()(site.delete)
-app.command()(site.check)
+app.command()(site.doctor)
+# The name it had before both tools used the same words for the same thing.
+app.command(name="check", hidden=True)(site.doctor)
 app.command()(site.sync)

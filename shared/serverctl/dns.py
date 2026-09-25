@@ -66,6 +66,7 @@ class SystemResolver:
     def __init__(self, timeout: float = 5.0) -> None:
         self._resolver = dns.resolver.Resolver()
         self._resolver.lifetime = timeout
+        self._timeout = timeout
 
     def txt(self, name: str) -> list[str]:
         return [b"".join(answer.strings).decode(errors="replace") for answer in self._query(name, "TXT")]
@@ -89,9 +90,38 @@ class SystemResolver:
         name = dns.reversename.from_address(str(address)).to_text()
         return [answer.target.to_text(omit_final_dot=True) for answer in self._query(name, "PTR")]
 
-    def _query(self, name: str, kind: str) -> list:
+    def addresses_at_nameservers(self, name: str) -> set[IPAddress]:
+        """Where the name points according to the nameservers of its own zone, asked directly.
+
+        This machine's resolver answers from its cache, so a record changed a moment ago can still look like the
+        old one for as long as that answer lives. The nameservers of the zone are the ones that decide, and the
+        rest of the internet follows them as its own caches expire.
+        """
+        servers = [str(ip) for ip in self._nameservers_of(name)]
+        if not servers:
+            return set()
+        return {ip_address(answer.address) for kind in ("A", "AAAA") for answer in self._query(name, kind, servers)}
+
+    def _nameservers_of(self, name: str) -> set[IPAddress]:
+        """The addresses of the nameservers of the closest zone the name is in."""
+        labels = name.split(".")
+        for start in range(len(labels) - 1):
+            hosts = [answer.target.to_text(omit_final_dot=True)
+                     for answer in self._query(".".join(labels[start:]), "NS")]
+            found = {ip_address(answer.address)
+                     for host in hosts for kind in ("A", "AAAA") for answer in self._query(host, kind)}
+            if found:
+                return found
+        return set()
+
+    def _query(self, name: str, kind: str, servers: list[str] | None = None) -> list:
+        resolver = self._resolver
+        if servers is not None:
+            resolver = dns.resolver.Resolver(configure=False)
+            resolver.nameservers = servers
+            resolver.lifetime = self._timeout
         try:
-            return list(self._resolver.resolve(name, kind))
+            return list(resolver.resolve(name, kind))
         except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
             return []
         except dns.exception.DNSException as error:

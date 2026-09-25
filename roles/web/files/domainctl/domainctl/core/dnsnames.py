@@ -47,6 +47,10 @@ def check(resolver: Resolver, name: str, server_ips: set[IPAddress]) -> NameChec
     """
     try:
         addresses = resolver.addresses(name)
+        if addresses - server_ips or not addresses:
+            # This machine's resolver may still be answering from its cache, with a record that has been changed
+            # or taken away since. The nameservers of the zone are the ones that decide.
+            addresses = _at_nameservers(resolver, name) or addresses
     except LookupFailed as failure:
         return NameCheck(name, State.UNKNOWN, str(failure))
     if not addresses:
@@ -59,9 +63,21 @@ def check(resolver: Resolver, name: str, server_ips: set[IPAddress]) -> NameChec
     return NameCheck(name, State.HERE, "", frozenset(addresses))
 
 
+def _at_nameservers(resolver: Resolver, name: str) -> set[IPAddress]:
+    """What the zone's own nameservers say, when the resolver can ask them. Nothing when it can't."""
+    ask = getattr(resolver, "addresses_at_nameservers", None)
+    return ask(name) if ask else set()
+
+
 def publishable_ips(server_ips: set[IPAddress]) -> set[IPAddress]:
-    """The addresses worth publishing: the ones reachable from the internet."""
-    return {ip for ip in server_ips if ip.is_global}
+    """The addresses worth publishing: this server's IPv4 address.
+
+    A name is published to be reached, and OpenLiteSpeed listens on IPv4 as it comes, so an AAAA record would
+    cost every visitor the wait before their browser falls back. A server with no IPv4 address publishes its
+    IPv6 one, since then that is the only way to it.
+    """
+    public = {ip for ip in server_ips if ip.is_global}
+    return {ip for ip in public if ip.version == 4} or public
 
 
 def find_zone(client: transip.Client, name: str) -> tuple[str, list[Entry]]:
@@ -75,6 +91,12 @@ def find_zone(client: transip.Client, name: str) -> tuple[str, list[Entry]]:
             continue
     raise transip.NotInAccount(f"{name} isn't in the TransIP account {client.login}.",
                                hint="Publish its A record where its DNS is managed, then run the command again.")
+
+
+def _expire_at(entries: list[Entry], inside: str) -> int:
+    """The expire the name's other records have: TransIP refuses a record set that holds more than one, and a
+    name may well have a TXT record somebody else made with another one."""
+    return next((entry.expire for entry in entries if entry.name.lower() == inside), EXPIRE)
 
 
 def relative(zone: str, name: str) -> str:
@@ -98,13 +120,37 @@ def publish(client: transip.Client, name: str, ips: set[IPAddress]) -> tuple[str
     if any(entry.name.lower() == inside and entry.type in ("A", "AAAA", "CNAME") for entry in entries):
         raise CtlError(f"{name} already has a record at TransIP that doesn't point to this server.",
                        hint="Change it in TransIP's control panel, then run the command again.")
-    added = tuple(Entry(inside, EXPIRE, "A" if ip.version == 4 else "AAAA", str(ip))
+    added = tuple(Entry(inside, _expire_at(entries, inside), "A" if ip.version == 4 else "AAAA", str(ip))
                   for ip in sorted(ips, key=lambda ip: (ip.version, ip)))
     if client.dns_entries(zone) != entries:
         raise CtlError(f"The DNS records of {zone} at TransIP changed in the meantime. Nothing was changed.",
                        hint="Run the command again to see what it does now.")
     client.replace_dns_entries(zone, (*entries, *added))
     return zone, added
+
+
+def repoint(client: transip.Client, name: str, ips: set[IPAddress]) -> tuple[str, tuple[Entry, ...], tuple[Entry, ...]]:
+    """Points a name that points elsewhere at this server, and takes its old address records away.
+
+    This is the DNS move of a site: visitors go to this server as soon as the old record has expired. Nothing
+    asks here, since the caller has: from here it is one request that replaces the whole zone, so a change made
+    in the control panel meanwhile is noticed rather than overwritten.
+    """
+    zone, entries = find_zone(client, name)
+    if not transip.uses_transip_nameservers(client.nameservers(zone)):
+        raise CtlError(f"{zone} doesn't use TransIP's nameservers, so changing a record there changes nothing "
+                       f"the internet can see.",
+                       hint=f"Point {name} at this server where its DNS is managed.")
+    inside = relative(zone, name)
+    replaced = tuple(entry for entry in entries
+                     if entry.name.lower() == inside and entry.type in ("A", "AAAA", "CNAME"))
+    added = tuple(Entry(inside, _expire_at(entries, inside), "A" if ip.version == 4 else "AAAA", str(ip))
+                  for ip in sorted(ips, key=lambda ip: (ip.version, ip)))
+    if client.dns_entries(zone) != entries:
+        raise CtlError(f"The DNS records of {zone} at TransIP changed in the meantime. Nothing was changed.",
+                       hint="Run the command again to see what it does now.")
+    client.replace_dns_entries(zone, (*(entry for entry in entries if entry not in replaced), *added))
+    return zone, replaced, added
 
 
 def wait_until_resolving(resolver: Resolver, name: str, server_ips: set[IPAddress],

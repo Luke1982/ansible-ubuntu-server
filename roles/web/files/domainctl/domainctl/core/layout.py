@@ -10,12 +10,20 @@ from . import acl
 from .serving import challenge_dir
 
 # Shown until the site's own files are uploaded, so a new domain answers with something rather than an error.
-PLACEHOLDER = """<!doctype html>
+# The marker says it is ours, so it can be taken away again once the site's own files are there: index.html comes
+# before index.php, so leaving it would keep a WordPress site from ever showing.
+MARKER = "<!-- put here by domainctl; it goes when the site's own files arrive -->"
+# The sentence every placeholder has held, marker or not: the ones written before the marker existed are ours too.
+PLACEHOLDER_LINE = "This site is set up and waiting for its files."
+PLACEHOLDER = f"""<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>{domain}</title></head>
-<body><h1>{domain}</h1><p>This site is set up and waiting for its files.</p></body>
+<head><meta charset="utf-8"><title>{{domain}}</title></head>
+<body><h1>{{domain}}</h1><p>This site is set up and waiting for its files.</p></body>
 </html>
+{MARKER}
 """
+# What a site's own index is called. index.html is not among them: that is the placeholder's name.
+OWN_INDEX = ("index.php", "index.htm", "index.xhtml", "default.php")
 
 
 def create(config: Config, user: str, domain: str) -> None:
@@ -28,10 +36,32 @@ def create(config: Config, user: str, domain: str) -> None:
     for path in (config.docroot_of(user), challenge_dir(config.docroot_of(user)), config.logs_of(user)):
         path.mkdir(parents=True, exist_ok=True)
         _own(path, user)
+    if remove_placeholder(config, user):
+        return
     index = config.docroot_of(user) / "index.html"
     if not index.exists():
         index.write_text(PLACEHOLDER.format(domain=domain))
         _own(index, user)
+
+
+def remove_placeholder(config: Config, user: str) -> bool:
+    """Takes the placeholder away once the site has an index of its own, and says whether the site has one.
+
+    OpenLiteSpeed serves index.html before index.php, so a placeholder left in place would answer for a
+    WordPress site that has just been uploaded.
+    """
+    docroot = config.docroot_of(user)
+    if not any((docroot / name).exists() for name in OWN_INDEX):
+        return False
+    index = docroot / "index.html"
+    try:
+        written_here = index.is_file() and any(mark in index.read_text(errors="replace")
+                                               for mark in (MARKER, PLACEHOLDER_LINE))
+        if written_here:
+            index.unlink()
+    except OSError:
+        pass  # the site's own index answers either way; permissions are another check's business
+    return True
 
 
 def permissions(config: Config, user: str) -> dict[Path, dict[str, str]]:

@@ -90,12 +90,30 @@ def test_add_leaves_www_out_when_it_does_not_point_here(server, monkeypatch):
     assert "www.example.nl has no A or AAAA record" in result.output
 
 
-def test_add_stops_when_the_domain_points_somewhere_else(server, monkeypatch):
+def test_add_makes_the_user_and_directories_before_the_domain_points_here(server, monkeypatch):
+    """A site is moved by putting its files here first and moving the domain afterwards."""
     monkeypatch.setattr(_Resolver, "answers", {"example.nl": {ip_address("45.87.2.9")}})
+
     result = run("add", "example.nl", "--no-dns")
-    assert result.exit_code == 1
-    assert "isn't this server" in result.output
-    assert sites.list_sites(server) == []
+
+    assert result.exit_code == 0, result.output
+    assert "isn't this server" in result.output and "no certificate and no site yet" in result.output
+    assert f"put the site's files in {server.docroot_of('example')}" in result.output
+    assert server.docroot_of("example").is_dir() and server.logs_of("example").is_dir()
+    assert sites.list_sites(server) == [], "the virtual host waits for the domain"
+
+
+def test_add_finishes_the_site_once_the_domain_points_here(server, monkeypatch):
+    monkeypatch.setattr(_Resolver, "answers", {"example.nl": {ip_address("45.87.2.9")}})
+    run("add", "example.nl", "--no-dns")
+    monkeypatch.setattr(users, "exists", lambda name: name == "example")  # the user it made itself
+    monkeypatch.setattr(_Resolver, "answers", {"example.nl": HERE, "www.example.nl": HERE})
+    monkeypatch.setattr(certbot, "obtain", lambda *args, **kwargs: None)
+
+    result = run("add", "example.nl", "--no-dns")
+
+    assert result.exit_code == 0, result.output
+    assert sites.list_sites(server) == [Site("example", "example.nl", ("www.example.nl",))]
 
 
 def test_a_failed_certbot_leaves_the_site_up_over_http(server, monkeypatch):
@@ -234,3 +252,90 @@ def test_publishing_a_missing_record_is_offered_and_then_waited_for(server, monk
 def _fails(*args, **kwargs):
     from serverctl.errors import CtlError
     raise CtlError("Let's Encrypt refused it.")
+
+
+def test_a_domain_that_still_points_at_the_old_server_is_offered_the_move(server, monkeypatch):
+    """The DNS move of a site: it asks first, since it takes the old site off the internet."""
+    monkeypatch.setattr(_Resolver, "answers", {"example.nl": {ip_address("45.87.2.9")},
+                                               "www.example.nl": {ip_address("45.87.2.9")}})
+    moved = []
+
+    def repoint(client, name, ips):
+        moved.append(name)
+        _Resolver.answers = {**_Resolver.answers, name: HERE}
+        return "example.nl", (), ()
+
+    monkeypatch.setattr(dnsnames, "repoint", repoint)
+    monkeypatch.setattr("domainctl.commands.dns.client", lambda session, read_only: object())
+    monkeypatch.setattr(certbot, "obtain", lambda *args, **kwargs: None)
+
+    result = run("add", "example.nl", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert moved == ["example.nl", "www.example.nl"]
+    assert sites.find(server, "example").aliases == ("www.example.nl",)
+    assert "https://example.nl is live" in result.output
+
+
+def test_without_yes_and_without_a_terminal_the_move_is_only_named(server, monkeypatch):
+    monkeypatch.setattr(_Resolver, "answers", {"example.nl": {ip_address("45.87.2.9")}})
+    monkeypatch.setattr(dnsnames, "repoint", _fails)
+
+    result = run("add", "example.nl")
+
+    assert result.exit_code == 0, result.output
+    assert "Add --yes to move it at TransIP without being asked." in result.output
+    assert "no certificate and no site yet" in result.output
+    assert server.docroot_of("example").is_dir(), "the directories are made all the same"
+    assert sites.list_sites(server) == []
+
+
+def test_repair_finishes_a_site_and_takes_its_name_as_well(server, monkeypatch):
+    """The command people look for when something is missing; add is for making one."""
+    obtained = []
+    monkeypatch.setattr(certbot, "obtain", lambda *args, **kwargs: obtained.append(args[2]))
+    run("add", "example.nl", "--no-dns")
+
+    result = run("repair", "example", "--no-dns")
+
+    assert result.exit_code == 0, result.output
+    assert set(obtained) == {"example"} and obtained, "the site's name was understood as its domain"
+    assert "https://example.nl is live" in result.output
+
+
+def test_what_is_missing_says_to_repair_it(server, monkeypatch):
+    monkeypatch.setattr(certbot, "obtain", _fails)
+    run("add", "example.nl", "--no-dns")
+
+    assert "domainctl repair example.nl" in run("add", "example.nl", "--no-dns").output
+    assert "domainctl repair example.nl" in run("check").output
+
+
+def test_doctor_is_what_check_used_to_be(server, monkeypatch):
+    monkeypatch.setattr(certbot, "obtain", lambda *args, **kwargs: None)
+    run("add", "example.nl", "--no-dns")
+
+    assert "example.nl points to this server" in run("doctor").output
+    assert run("check").output == run("doctor").output, "the old name still works"
+    assert "check" not in run("--help").output.split("Commands")[1], "and isn't offered any more"
+
+
+def test_dns_publish_points_a_domain_here_without_setting_the_site_up(server, monkeypatch):
+    monkeypatch.setattr(_Resolver, "answers", {"example.nl": {ip_address("45.87.2.9")},
+                                               "www.example.nl": {ip_address("45.87.2.9")}})
+    moved = []
+
+    def repoint(client, name, ips):
+        moved.append(name)
+        _Resolver.answers = {**_Resolver.answers, name: HERE}
+        return "example.nl", (), ()
+
+    monkeypatch.setattr(dnsnames, "repoint", repoint)
+    monkeypatch.setattr("domainctl.commands.dns.client", lambda session, read_only: object())
+
+    result = run("dns", "publish", "example.nl", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert moved == ["example.nl", "www.example.nl"]
+    assert "Finish the site with: domainctl repair example.nl" in result.output
+    assert sites.list_sites(server) == [], "it only touches the DNS"
