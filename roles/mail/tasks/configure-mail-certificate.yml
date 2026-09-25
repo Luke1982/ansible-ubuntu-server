@@ -30,17 +30,11 @@
     mode: 0644
   notify: restart openlitespeed
 
-# Ansible gives commands a terminal, and mailctl asks questions in one, which
-# nobody would answer: --yes and input from /dev/null keep it going by itself.
-- name: Put the hostname and the mail names in one certificate
-  shell: mailctl certificate sync --yes </dev/null
-  register: mail_certificate_sync
-  changed_when: "'Postfix and Dovecot serve a certificate' in mail_certificate_sync.stdout"
-
-# Its warnings: names that don't point here yet, a refused certificate.
-- name: Show the mail names that need attention
+# The certificate is brought up to date by "mailctl certificate sync", by hand:
+# it asks certbot for a certificate and makes Postfix and Dovecot read it, so a
+# playbook run never does it.
+- name: Say that the mail certificate is brought up to date by hand
   debug:
-    msg: "{{ mail_certificate_warnings }}"
-  when: mail_certificate_warnings | length > 0
-  vars:
-    mail_certificate_warnings: "{{ mail_certificate_sync.stdout_lines | default([]) | select('match', '^!') | list }}"
+    msg: >-
+      The mail certificate is left as it is. Run "mailctl certificate sync" on the server to put the hostname and
+      every mail.DOMAIN that points here in one certificate, and to see which names need attention.

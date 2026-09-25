@@ -65,27 +65,26 @@
     daemon_reload: yes
   when: webmail_sync_units.changed
 
-# Restarts OpenLiteSpeed itself when it changes a site. Ansible gives commands
-# a terminal, and mailctl asks questions in one (like the TransIP login when
-# there is none), which nobody would answer: input from /dev/null tells it not
-# to ask.
-- name: Set up webmail for the domains whose webmail name points here
-  shell: mailctl webmail sync </dev/null
-  register: webmail_sync
-  changed_when: "'Changed the webmail sites.' in webmail_sync.stdout"
+# Where another earlier version kept the sites' settings. "mailctl webmail sync"
+# moves them to conf/vhosts; until it has, OpenLiteSpeed's config still points at
+# the old place, and they stay where they are.
+- name: Look for the earlier site settings in OpenLiteSpeed's config
+  command: grep -q /etc/mailctl/webmail {{ ols_root }}/conf/httpd_config.conf
+  register: webmail_old_settings
+  changed_when: false
+  failed_when: false
 
-# Where another earlier version kept the sites' settings; the sync above has
-# moved them to conf/vhosts.
 - name: Remove the site settings of an earlier version
   file:
     path: /etc/mailctl/webmail
     state: absent
+  when: webmail_old_settings.rc | default(0) != 0
 
-# Its warnings: domains waiting for their webmail record, refused certificates.
-# (With --check the sync doesn't run, so there's no output.)
-- name: Show the webmail sites that need attention
+# The sites are set up by "mailctl webmail sync", by hand: it publishes DNS
+# records, asks certbot for certificates, and takes away the sites of domains
+# whose webmail name no longer points here, so a playbook run never does it.
+- name: Say that webmail is set up by hand
   debug:
-    msg: "{{ webmail_warnings }}"
-  when: webmail_warnings | length > 0
-  vars:
-    webmail_warnings: "{{ webmail_sync.stdout_lines | default([]) | select('match', '^!') | list }}"
+    msg: >-
+      The webmail sites are left as they are. Run "mailctl webmail sync" on the server to give the domains whose
+      webmail name points here a site with a certificate of its own, and to see which ones need attention.

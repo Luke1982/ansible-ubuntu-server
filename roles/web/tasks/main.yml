@@ -81,13 +81,18 @@
       [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
 - include_tasks: setup-domainctl.yml
 
-# The sites themselves are added with "domainctl add DOMAIN". This only brings what is already there up to date:
-# the template block in OpenLiteSpeed's config, the redirect to HTTPS, and each site's file permissions.
-- name: Bring the sites up to date
-  command: domainctl sync
-  register: domainctl_sync
-  changed_when: "'Changed the web sites' in domainctl_sync.stdout"
+- name: Install move-wordpress, which copies a WordPress site and its database to another server
+  copy:
+    src: move-wordpress.sh
+    dest: /usr/local/bin/move-wordpress
+    owner: root
+    group: root
+    mode: 0755
 
-- name: Show what domainctl sync did
+# The sites themselves are added with "domainctl add DOMAIN", and brought up to date with "domainctl sync". Both
+# change live sites and ask certbot for certificates, so they are run by hand and never by a playbook run.
+- name: Say that the sites are brought up to date by hand
   debug:
-    var: domainctl_sync.stdout_lines
+    msg: >-
+      The web sites are left as they are. Run "domainctl sync" on the server to bring the template block in
+      OpenLiteSpeed's config, the redirect to HTTPS and the sites' file permissions up to date.

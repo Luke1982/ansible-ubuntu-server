@@ -86,7 +86,7 @@ Webmail, calendar and contact sync, and ActiveSync are at `https://webmail.DOMAI
 - Each domain whose `webmail.DOMAIN` points to the server gets a site: a virtual host in OpenLiteSpeed, its settings in `conf/vhosts/webmail.DOMAIN/vhconf.conf`, with a Let's Encrypt certificate of its own that certbot gets through the site.
 - Sites whose record no longer points here, or whose domain is gone, are removed with their certificates.
 
-It runs at the end of every playbook run; run it yourself after adding a domain or changing a `webmail.DOMAIN` record. `mail.DOMAIN` stays the name for IMAP and sending.
+Run it yourself, on the server, after adding a domain or changing a `webmail.DOMAIN` record. A playbook run never does: it publishes DNS records, asks certbot for certificates, and takes sites away again, which is not something to discover afterwards. A run says so and names the command. `mail.DOMAIN` stays the name for IMAP and sending.
 
 `mailctl domain add`, `dns show` and `dns publish` include the `webmail.DOMAIN` records and the `_caldavs._tcp` and `_carddavs._tcp` SRV records, which point calendar and contact apps at `https://webmail.DOMAIN` by themselves. `mailctl doctor` shows how a domain's webmail is doing, and `mailctl domain delete` takes its site and certificate along.
 
@@ -132,6 +132,22 @@ ansible-playbook <hostname>.yml
 ```
 
 No password prompts — Ansible authenticates via the key in `ansible_ssh_private_key_file`, and `become` uses passwordless sudo.
+
+### 7. Bring the sites, webmail and the mail certificate up to date
+
+A playbook run installs and configures; it never publishes a DNS record, asks
+certbot for a certificate, or takes a site away. Those belong to three commands
+you run on the server yourself, so you are there to read what they say. Each run
+ends by naming them. After a first run, and after adding or removing a domain:
+
+```bash
+domainctl sync              # the web sites: the template block, the HTTPS redirect, file permissions
+mailctl webmail sync        # webmail per mail domain, with a certificate of its own
+mailctl certificate sync    # the hostname and every mail.DOMAIN in one certificate
+```
+
+Until `mailctl certificate sync` has run, a new mail server has only the empty
+certificate files the playbook puts there for Dovecot to start with.
 
 ---
 
@@ -235,7 +251,7 @@ Web servers get `domainctl`, a command-line tool for the sites on the server. Ru
 | `domainctl list` | The sites with their domain, user and certificate |
 | `domainctl check [USER]` | Whether a site's names, permissions and certificate are in order |
 | `domainctl delete USER` | Removes a site; `--purge` takes the user and its files too |
-| `domainctl sync` | Brings the template block and every site's permissions up to date. The playbook runs it |
+| `domainctl sync` | Brings the template block and every site's permissions up to date. Run it by hand; the playbook only says to |
 | `domainctl dns credentials` | The TransIP login, shared with mailctl |
 
 ### How a site is put together
@@ -278,7 +294,7 @@ Nothing is rolled back when certbot fails: the site stays up over HTTP and the m
 
 The redirect lives in the shared template, between the markers `# BEGIN https-redirect` and `# END https-redirect`, so switching it off switches it off for **every** site on the server for as long as certbot runs. That is a few seconds and `domainctl` always puts it back, but it is worth knowing. The template also never redirects `/.well-known/acme-challenge/`, so `certbot renew` from its timer keeps working on its own, without anything switching anything off.
 
-If a run is killed at exactly the wrong moment, `domainctl sync` — and so the next playbook run — switches the redirect back on and says it did.
+If a run is killed at exactly the wrong moment, the next `domainctl sync` switches the redirect back on and says it did.
 
 OpenLiteSpeed's config is changed by reading it and renaming a new file into place, so two commands doing that at once would lose one another's changes. Both tools take a lock first, `/run/serverctl-openlitespeed.lock`, and hold it for the whole of the change: `domainctl add` including certbot, and `mailctl webmail sync`, `mailctl certificate sync` and `mailctl autodiscover publish` over their read and write. The second command waits; after five minutes it gives up and says another command is still busy.
 
@@ -306,11 +322,11 @@ Mail servers get `mailctl`, a command-line tool for the mail domains, addresses,
 | `mailctl dns publish example.nl` | Publishes those records at TransIP; shows the changes and asks first (`--dry-run` only shows them) |
 | `mailctl doctor` | Checks the server (hostname, reverse DNS, certificate) and every domain; exit status 1 when something is wrong |
 | `mailctl autodiscover publish example.nl` | Lets Thunderbird and Outlook find the domain's mail settings by themselves (below) |
-| `mailctl certificate sync` | Puts the hostname and every `mail.DOMAIN` that points here in one certificate, and makes Postfix and Dovecot read it (below). The playbook runs it too |
+| `mailctl certificate sync` | Puts the hostname and every `mail.DOMAIN` that points here in one certificate, and makes Postfix and Dovecot read it (below). Run it by hand; the playbook only says to |
 | `mailctl spam set example.nl required_score 4` | Changes a spam setting for an account, a domain or the whole server |
 | `mailctl filters show info@example.nl` | Shows an account's mail filters |
 | `mailctl filters import info@example.nl sieve.tar.gz` | Imports an account's filters from a tar of its sieve directory on another server |
-| `mailctl webmail sync` | Publishes missing `webmail.DOMAIN` records at TransIP, sets up webmail with a certificate for the domains whose `webmail.DOMAIN` points here, and removes it for the others. The playbook runs it too |
+| `mailctl webmail sync` | Publishes missing `webmail.DOMAIN` records at TransIP, sets up webmail with a certificate for the domains whose `webmail.DOMAIN` points here, and removes it for the others. Run it by hand; the playbook only says to |
 
 Last logins are recorded for IMAP, which webmail and phones on ActiveSync use too; accounts that only send mail show no logins.
 
@@ -335,7 +351,7 @@ Postfix and Dovecot present one certificate to everyone, so it has to hold every
 
 Let's Encrypt checks each name over HTTP. Answering that is all an OpenLiteSpeed template of mailctl's does: the playbook installs it, its web root (`/var/www/mailcert`) holds nothing but the challenges, and each name is a member, so they show up in WebAdmin under Virtual Host Templates. A name another site in OpenLiteSpeed already answers for is left to that site, with a warning.
 
-The playbook runs `mailctl certificate sync` on every run, and it only asks certbot when a name is missing or the certificate is about to expire. Certbot renews it by itself after that, and its deploy hook reloads Postfix and Dovecot, so mail programs never get an expired certificate.
+Run `mailctl certificate sync` on the server after adding or removing a mail domain. It only asks certbot when a name is missing or the certificate is about to expire. Certbot renews it by itself after that, and its deploy hook reloads Postfix and Dovecot, so mail programs never get an expired certificate. A playbook run doesn't do it: a certificate that is refused, or a name that no longer points here, is something to see while you are looking.
 
 ### Mail filters
 
