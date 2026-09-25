@@ -5,6 +5,15 @@
 # a site's settings, so WebAdmin shows it like any other.
 docRoot                   {{ phpmyadmin_root }}/
 enableGzip                1
+{% if phpmyadmin_certificate_live %}
+
+# The site's own certificate, which certbot got through the site itself.
+vhssl  {
+  keyFile                 {{ phpmyadmin_certificate_live }}/privkey.pem
+  certFile                {{ phpmyadmin_certificate_live }}/fullchain.pem
+  certChain               1
+}
+{% endif %}
 
 errorlog  {
   useServer               1
@@ -49,6 +58,13 @@ RewriteCond %{HTTPS} !on
 RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/
 RewriteRule ^ https://{{ phpmyadmin_host }}%{REQUEST_URI} [R=301,L]
   END_rules
+}
+
+# Let's Encrypt's challenges, for the site's own certificate. They are the only
+# thing the site answers over plain HTTP.
+context /.well-known/acme-challenge/  {
+  location                {{ phpmyadmin_root }}/.well-known/acme-challenge/
+  allowBrowse             1
 }
 
 # phpMyAdmin's own directories: no page lives in them, and setup writes settings.

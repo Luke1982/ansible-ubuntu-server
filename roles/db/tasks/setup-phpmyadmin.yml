@@ -4,9 +4,10 @@
 # hand in WebAdmin; pmasite.py adds this site to that config and the site's name
 # to every listener for port 80 and 443, and leaves everything else alone.
 #
-# The site has no certificate of its own, so OpenLiteSpeed serves it with the one
-# on the HTTPS listener. Visitors get a warning when that certificate is for
-# another name, which the self-signed one OpenLiteSpeed comes with is.
+# The site gets a Let's Encrypt certificate of its own, which certbot gets
+# through the site itself, as soon as the name points to this server. Until then
+# OpenLiteSpeed serves it with the certificate on its HTTPS listener, which is
+# the self-signed one it comes with unless it was replaced.
 
 - name: Check that OpenLiteSpeed and its PHP are installed
   stat:
@@ -62,36 +63,76 @@
     group: "{{ phpmyadmin_group }}"
     mode: 0700
 
-- name: Create the directory for the site's settings
+- name: Create the directory for Let's Encrypt's challenges
   file:
-    path: "{{ ols_root }}/conf/vhosts/{{ phpmyadmin_host }}"
+    path: "{{ phpmyadmin_root }}/.well-known/acme-challenge"
     state: directory
-    owner: lsadm  # like everything in OpenLiteSpeed's conf directory
-    mode: 0750
+    mode: 0755
 
-- name: Install the site's settings
+- include_tasks: phpmyadmin-site.yml
+
+# certbot asks Let's Encrypt to fetch a file from the site, so OpenLiteSpeed has
+# to be serving it before that: the handler can't wait until the end of the play.
+- name: Have OpenLiteSpeed read the site now
+  meta: flush_handlers
+
+# certbot runs every script in here after it renewed a certificate.
+- name: Create certbot's directory for hooks
+  file:
+    path: "{{ letsencrypt_dir }}/renewal-hooks/deploy"
+    state: directory
+    owner: root
+    group: root
+    mode: 0755
+  when: phpmyadmin_certificate
+
+- name: Install certbot's hook for the site's certificate
   template:
-    src: phpmyadmin-vhconf.conf.j2
-    dest: "{{ ols_root }}/conf/vhosts/{{ phpmyadmin_host }}/vhconf.conf"
-    owner: lsadm
-    mode: 0644
-  notify: restart openlitespeed
-
-- name: Copy over the script that puts the site in OpenLiteSpeed's config
-  copy:
-    src: roles/db/files/pmasite/pmasite.py
-    dest: /tmp/pmasite.py
+    src: phpmyadmin-deploy-hook.sh.j2
+    dest: "{{ letsencrypt_dir }}/renewal-hooks/deploy/2-post-deploy-hook-phpmyadmin.sh"
     mode: 0755
     owner: root
     group: root
+  when: phpmyadmin_certificate
 
-- name: Put the phpMyAdmin site in OpenLiteSpeed's config
+# The site's name has to point here, or Let's Encrypt can't reach the site. A
+# name without any address at all is the usual reason, and worth saying plainly;
+# anything else certbot reports itself.
+- name: Look up the site's name
+  command: getent ahosts {{ phpmyadmin_host }}
+  register: phpmyadmin_lookup
+  changed_when: false
+  failed_when: false
+  when: phpmyadmin_certificate and not phpmyadmin_live.stat.exists
+
+- name: Say that the site's name doesn't point anywhere yet
+  debug:
+    msg: >-
+      {{ phpmyadmin_host }} has no address, so it can't have a certificate of its own yet and OpenLiteSpeed serves the
+      site with the certificate on its HTTPS listener. Publish an A record (and an AAAA record) for {{ phpmyadmin_host }}
+      pointing to this server, then run the playbook again.
+  when: phpmyadmin_lookup.rc | default(0) != 0
+
+# Only for this one name, so the other certificates on the server are untouched.
+# A refusal doesn't stop the playbook: the site works without it.
+- name: Ask Let's Encrypt for the site's certificate
   command: >
-    /tmp/pmasite.py
-    --config {{ ols_root }}/conf/httpd_config.conf
-    --name {{ phpmyadmin_host }}
-    --root {{ phpmyadmin_root }}/
-    --vhost-config $SERVER_ROOT/conf/vhosts/{{ phpmyadmin_host }}/vhconf.conf
-  register: phpmyadmin_site
-  changed_when: "'Changed:' in phpmyadmin_site.stdout"
-  notify: restart openlitespeed
+    certbot certonly --webroot --webroot-path {{ phpmyadmin_root }}
+    --cert-name {{ phpmyadmin_host }} --domains {{ phpmyadmin_host }}
+    --non-interactive --agree-tos --config-dir {{ letsencrypt_dir }}
+    {{ '--email ' + letsencrypt_email if letsencrypt_email else '--register-unsafely-without-email' }}
+  register: phpmyadmin_certbot
+  failed_when: false
+  changed_when: phpmyadmin_certbot.rc == 0
+  when: phpmyadmin_certificate and not phpmyadmin_live.stat.exists and phpmyadmin_lookup.rc | default(1) == 0
+
+- name: Say why the site has no certificate of its own
+  debug:
+    msg: >-
+      {{ phpmyadmin_host }} got no certificate, so OpenLiteSpeed serves the site with the certificate on its HTTPS
+      listener. certbot said {{ phpmyadmin_certbot.stderr | default(phpmyadmin_certbot.stdout) | default('') }}
+  when: phpmyadmin_certbot.rc | default(0) != 0
+
+# Now the settings can point at the certificate, and the site is served with it.
+- include_tasks: phpmyadmin-site.yml
+  when: phpmyadmin_certbot.changed | default(false)

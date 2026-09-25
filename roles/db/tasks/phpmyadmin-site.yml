@@ -1,0 +1,46 @@
+---
+# The phpMyAdmin site in OpenLiteSpeed: its own settings, and the site itself in
+# OpenLiteSpeed's config. Included twice by setup-phpmyadmin.yml: once before
+# certbot, so the site answers Let's Encrypt over HTTP, and again after it got a
+# certificate, which the settings then point at.
+
+- name: Check whether the phpMyAdmin site has a certificate of its own
+  stat:
+    path: "{{ letsencrypt_dir }}/live/{{ phpmyadmin_host }}/fullchain.pem"
+  register: phpmyadmin_live
+
+- name: Create the directory for the site's settings
+  file:
+    path: "{{ ols_root }}/conf/vhosts/{{ phpmyadmin_host }}"
+    state: directory
+    owner: lsadm  # like everything in OpenLiteSpeed's conf directory
+    mode: 0750
+
+- name: Install the site's settings
+  template:
+    src: phpmyadmin-vhconf.conf.j2
+    dest: "{{ ols_root }}/conf/vhosts/{{ phpmyadmin_host }}/vhconf.conf"
+    owner: lsadm
+    mode: 0644
+  vars:
+    phpmyadmin_certificate_live: "{{ letsencrypt_dir + '/live/' + phpmyadmin_host if phpmyadmin_live.stat.exists else '' }}"
+  notify: restart openlitespeed
+
+- name: Copy over the script that puts the site in OpenLiteSpeed's config
+  copy:
+    src: roles/db/files/pmasite/pmasite.py
+    dest: /tmp/pmasite.py
+    mode: 0755
+    owner: root
+    group: root
+
+- name: Put the phpMyAdmin site in OpenLiteSpeed's config
+  command: >
+    /tmp/pmasite.py
+    --config {{ ols_root }}/conf/httpd_config.conf
+    --name {{ phpmyadmin_host }}
+    --root {{ phpmyadmin_root }}/
+    --vhost-config $SERVER_ROOT/conf/vhosts/{{ phpmyadmin_host }}/vhconf.conf
+  register: phpmyadmin_site
+  changed_when: "'Changed:' in phpmyadmin_site.stdout"
+  notify: restart openlitespeed

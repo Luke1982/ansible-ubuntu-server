@@ -14,3 +14,14 @@ phpmyadmin_host: "pma.{{ hostname }}"
 phpmyadmin_lsphp: "{{ ols_root }}/lsphp83/bin/lsphp"
 phpmyadmin_user: nobody
 phpmyadmin_group: nogroup
+
+# A certificate of its own for the phpMyAdmin site. The playbook asks Let's
+# Encrypt for one as soon as the site's name points to this server, through the
+# site itself; until then OpenLiteSpeed serves the site with the certificate on
+# its HTTPS listener. Set it to no to keep it that way.
+phpmyadmin_certificate: yes
+letsencrypt_dir: /etc/letsencrypt
+
+# Email address for the Let's Encrypt account, used when certbot has no account
+# yet. Without it, the account has no address.
+letsencrypt_email: ""
