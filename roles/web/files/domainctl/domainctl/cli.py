@@ -6,7 +6,7 @@ from typer.core import TyperGroup
 from serverctl import ui
 from serverctl.errors import CtlError
 
-from .commands import dns, site
+from .commands import dns, site, wordpress
 
 
 class _DomainctlGroup(TyperGroup):
@@ -32,6 +32,7 @@ app = typer.Typer(
     context_settings={"help_option_names": ["-h", "--help"]},
 )
 app.add_typer(dns.app, name="dns")
+app.add_typer(wordpress.app, name="wp")
 app.command()(site.add)
 app.command()(site.repair)
 app.command(name="list")(site.list_sites)

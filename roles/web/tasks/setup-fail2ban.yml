@@ -1,0 +1,25 @@
+---
+# fail2ban for the WordPress sites. fail2ban itself is installed by the basic role.
+#
+# The filters come from the WP fail2ban plugin; fail2ban has none for WordPress. They are kept in this repository
+# rather than taken from a site's copy of the plugin, so the jails work before the first WordPress site exists.
+- name: Install the WordPress fail2ban filters
+  copy:
+    src: "filter-wordpress-{{ item }}.conf"
+    dest: "/etc/fail2ban/filter.d/wordpress-{{ item }}.conf"
+    mode: 0644
+    owner: root
+    group: root
+  loop:
+    - hard
+    - soft
+  notify: restart fail2ban
+
+- name: Install the WordPress fail2ban jails
+  copy:
+    src: jail-wordpress.conf
+    dest: /etc/fail2ban/jail.d/wordpress.conf
+    mode: 0644
+    owner: root
+    group: root
+  notify: restart fail2ban

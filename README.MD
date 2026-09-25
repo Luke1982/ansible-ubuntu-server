@@ -160,7 +160,7 @@ Each server has its own playbook (e.g. `web01.whservice.nl.yml`) in the project 
 | Role | What it does |
 |------|-------------|
 | `basic` | Hostname, base packages, unattended-upgrades, Linux users, SSH hardening, iptables firewall (applied at boot), fail2ban |
-| `web` | OpenLiteSpeed with LiteSpeed's PHP 8.3, PHP-FPM and CLI from Ubuntu (8.3 on Ubuntu 24.04, 8.5 on 26.04), Composer (global), nvm (system-wide), certbot, Let's Encrypt directory, the shared virtual host template, and `domainctl` (below) |
+| `web` | OpenLiteSpeed with LiteSpeed's PHP 8.3, PHP-FPM and CLI from Ubuntu (8.3 on Ubuntu 24.04, 8.5 on 26.04), Composer (global), wp-cli, nvm (system-wide), certbot, fail2ban jails for WordPress password guessing, Let's Encrypt directory, the shared virtual host template, and `domainctl` (below) |
 | `db` | MariaDB, phpMyAdmin on a site of its own at `pma.<hostname>` |
 | `mail` | Postfix, Dovecot with full-text IMAP search (fts-xapian) and login tracking, OpenDKIM, SpamAssassin, SOGo (webmail, calendars, address books and ActiveSync), per-user sending limits (postfwd), fail2ban jails for SMTP, IMAP and webmail brute force, and `mailctl` (below) |
 
@@ -241,6 +241,21 @@ f2b-mail-ignore`. To check the rules themselves:
 bash roles/mail/tests/f2b-mail-ignore/run-tests.sh
 ```
 
+### WordPress
+
+Web servers have two jails for WordPress, `wordpress-hard` and `wordpress-soft`, that cover every site on the
+server at once. They depend on the WP fail2ban plugin on each site. The plugin doesn't write to the site's own logs:
+it sends each failed login to syslog with the site's name in the tag
+(`wordpress(example.nl)[1234]: Authentication failure for admin from 1.2.3.4`). PHP for every site writes to the
+same journal, so one jail reads them all, and a new site needs no change to fail2ban. A site without the plugin
+logs nothing, so it isn't protected: `domainctl wp check` lists those sites, and `--fix` puts the plugin on them.
+
+The hard jail bans for a day after one attempt, for things nobody does by accident, like user enumeration or
+XML-RPC multicall guessing. The soft jail bans for an hour after five wrong passwords in ten minutes, because a
+customer can mistype theirs. The filters are the plugin's own (`roles/web/files/filter-wordpress-*.conf`, from
+version 5.4.1). Replace them when a newer version logs new messages. To see what the jails have caught:
+`fail2ban-client status wordpress-soft`.
+
 ## Managing web sites with domainctl
 
 Web servers get `domainctl`, a command-line tool for the sites on the server. Run it as root; `domainctl --help` lists everything, and `--help` on a command explains it with an example.
@@ -253,6 +268,14 @@ Web servers get `domainctl`, a command-line tool for the sites on the server. Ru
 | `domainctl delete USER` | Removes a site; `--purge` takes the user and its files too |
 | `domainctl sync` | Brings the template block and every site's permissions up to date. Run it by hand; the playbook only says to |
 | `domainctl dns credentials` | The TransIP login, shared with mailctl |
+| `domainctl wp install USER` | Installs WordPress on a site with wp-cli: its own database and MariaDB user, and the WP fail2ban plugin |
+| `domainctl wp check [--fix]` | Which WordPress sites have WP fail2ban active; `--fix` installs and activates it where it isn't |
+
+`domainctl wp install` runs wp-cli as the site's user and only in an empty web root (domainctl's placeholder page
+aside). The database and its MariaDB user are named after the site, and only `wp-config.php` knows the password.
+The administrator's password is made up and shown once. OpenLiteSpeed may write in `wp-content/uploads` and nowhere
+else, so WordPress can't update itself or install plugins from its dashboard. Do that with wp-cli as the site's
+user: `su - USER -c 'wp --path=public_html/www plugin update --all'`.
 
 ### How a site is put together
 

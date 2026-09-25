@@ -61,6 +61,19 @@
   args:
     creates: /usr/local/bin/composer
 
+# "domainctl wp install" sets WordPress sites up with it. It runs on the CLI PHP installed above, not on
+# OpenLiteSpeed's lsphp. Downloaded again when the published build changes, so it stays current.
+- name: Install wp-cli
+  get_url:
+    url: https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+    checksum: sha512:https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar.sha512
+    dest: /usr/local/bin/wp
+    mode: 0755
+    owner: root
+    group: root
+
+- include_tasks: setup-fail2ban.yml
+
 - name: Install nvm system-wide
   git:
     repo: https://github.com/nvm-sh/nvm.git

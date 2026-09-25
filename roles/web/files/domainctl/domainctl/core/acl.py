@@ -70,6 +70,20 @@ def readable_by(web_user: str) -> dict[str, str]:
     }
 
 
+def shared_with(web_user: str, owner: str) -> dict[str, str]:
+    """A directory both write in, with directories of their own inside it: WordPress's uploads.
+
+    WordPress, running as OpenLiteSpeed's user, makes a directory per month, and the site's user adds to them with
+    wp-cli. So both get "rwx" by default, the owner as a named entry too, since that directory then belongs to the
+    other. Files end up "rw-" all the same: a new file's mask takes the execute bit away.
+    """
+    return {
+        "user:": "rwx", f"user:{web_user}": "rwx", f"user:{owner}": "rwx", "group:": "rwx", "mask:": "rwx",
+        "other:": "---", "default:user:": "rwx", f"default:user:{web_user}": "rwx",
+        f"default:user:{owner}": "rwx", "default:group:": "rwx", "default:mask:": "rwx", "default:other:": "---",
+    }
+
+
 def writable_by(web_user: str) -> dict[str, str]:
     """The log directory: OpenLiteSpeed creates and writes the log files, so it needs to write in the directory.
 

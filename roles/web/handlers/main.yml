@@ -5,3 +5,8 @@
 # so nothing is read from it.
 - name: restart openlitespeed
   shell: "{{ ols_root }}/bin/lswsctrl restart </dev/null >/dev/null 2>&1"
+
+- name: restart fail2ban
+  service:
+    name: fail2ban
+    state: restarted
