@@ -1,0 +1,30 @@
+# Tab completion for mailctl in bash: its commands, and file names for the arguments that are files, like the file
+# of "mailctl import". tests/test_completion.py checks these lists against mailctl's own commands.
+
+_mailctl() {
+    local current=${COMP_WORDS[COMP_CWORD]} words=""
+    case $COMP_CWORD in
+        1) words="domain address forward dkim dns autodiscover certificate spam filters webmail status doctor repair import export --help" ;;
+        2)
+            case ${COMP_WORDS[1]} in
+                domain) words="add list delete" ;;
+                address) words="add import list password delete" ;;
+                forward) words="add list delete" ;;
+                dkim) words="show create" ;;
+                dns) words="show publish credentials" ;;
+                autodiscover) words="publish" ;;
+                certificate) words="sync" ;;
+                spam) words="show set unset learn" ;;
+                filters) words="show adopt import run" ;;
+                webmail) words="sync" ;;
+            esac
+            ;;
+    esac
+    if [[ -n $words ]]; then
+        mapfile -t COMPREPLY < <(compgen -W "$words" -- "$current")
+    else
+        COMPREPLY=()  # so bash completes a file name
+    fi
+}
+
+complete -o default -F _mailctl mailctl

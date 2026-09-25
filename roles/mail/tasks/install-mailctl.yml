@@ -46,6 +46,13 @@
       #!/bin/sh
       PYTHONPATH={{ mailctl_lib }} exec /usr/bin/python3 -P -m mailctl "$@"
 
+# Completes mailctl's commands on Tab, and file names for the arguments that are files.
+- name: Install tab completion for mailctl
+  copy:
+    src: mailctl.bash-completion
+    dest: /etc/bash_completion.d/mailctl
+    mode: 0644
+
 - name: Create the mailctl configuration directory
   file:
     path: /etc/mailctl
