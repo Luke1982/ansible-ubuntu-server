@@ -1,12 +1,35 @@
 ---
 
+# Who may log in now, so a playbook run never takes away access that was given by
+# hand: the sites' users get SFTP that way, and they aren't in linuxusers.yml.
+- name: Look at who may log in over SSH now
+  slurp:
+    src: /etc/ssh/sshd_config.d/custom.conf
+  register: sshd_custom_now
+  failed_when: false
+
 - name: Copy custom SSH config file over
-  copy:
-    src: sshd_custom.conf
+  template:
+    src: sshd_custom.conf.j2
     dest: /etc/ssh/sshd_config.d/custom.conf
     mode: 0644
     owner: root
     group: root
+  vars:
+    # The names on the AllowUsers lines the file has now, if it has any.
+    ssh_allowed_now: >-
+      {{ (sshd_custom_now.content | default('') | b64decode)
+         | regex_findall('(?m)^[ \t]*AllowUsers[ \t]+([^#\n]*)')
+         | join(' ') | regex_findall('[A-Za-z0-9._*?@-]+') }}
+    ssh_allowed_add: >-
+      {{ linux_users | selectattr('state', 'eq', 'present') | selectattr('ssh_access', 'defined')
+         | selectattr('ssh_access') | map(attribute='name') | list }}
+    # A user that is being removed loses its access here too: that is asked for, not silent.
+    ssh_allowed_drop: "{{ linux_users | rejectattr('state', 'eq', 'present') | map(attribute='name') | list }}"
+    ssh_allowed_users: >-
+      {{ (((ssh_allowed_now + ssh_allowed_add) | difference(ssh_allowed_drop))
+          + [ansible_user | default('ansible')]) | unique | sort }}
+  notify: restart ssh
 
 - name: Make sure SSH uses custom config file
   lineinfile:
@@ -14,13 +37,4 @@
     line: "Include sshd_config.d/custom.conf"
     path: /etc/ssh/sshd_config
     state: present
-  notify: restart ssh
-
-- name: Only allow ssh for set users
-  replace:
-    path: /etc/ssh/sshd_config.d/custom.conf
-    regexp: '(?m)^AllowUsers\s([\s\w][^#\n]+)'
-    replace: AllowUsers \1 {{ item.name }}
-  loop: "{{ linux_users }}"
-  when: item.ssh_access == true
   notify: restart ssh

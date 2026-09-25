@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+# Who may log in over SSH.
+#
+# The playbook adds the users from linuxusers.yml that have ssh_access, and keeps
+# everyone already allowed on the server: a site user that was given SFTP by hand
+# is never locked out by a playbook run. Ansible's own user ({{ ansible_user }}) is
+# always on the line, so a run can never lock Ansible itself out.
+#
+# To take access away, remove the name from this line on the server, or give the
+# user state: absent in linuxusers.yml, which takes it out of here as well.
+PermitRootLogin no
+AllowUsers {{ ssh_allowed_users | join(' ') }}

@@ -244,7 +244,7 @@ Every site is one member of a single OpenLiteSpeed template, `conf/templates/web
 
 The block in `httpd_config.conf` is the one named in `web_template` (`webhosting`), or one already there whose name differs from it only in case: OpenLiteSpeed's own is called `Webhosting`, and a server whose sites were set up in WebAdmin has its members in that. `domainctl` manages the block that holds the sites, rather than adding a second one beside it, and says so when a server has both. A site that was made by hand therefore shows up in `domainctl list` as it is, with its user, its home directory and its certificate; `domainctl add DOMAIN --existing-user` gives a site to a Linux user that is already there.
 
-The user has no password. It exists to keep one site's files away from the others, not to log in with: root reaches it with `su - USER`, and sshd only lets in the users listed in `linuxusers.yml` with `ssh_access: true`.
+The user has no password. It exists to keep one site's files away from the others, not to log in with: root reaches it with `su - USER`, and sshd only lets in the users on the `AllowUsers` line of `/etc/ssh/sshd_config.d/custom.conf`. The playbook puts the users from `linuxusers.yml` with `ssh_access: true` on that line, and keeps everyone already on it: giving a site SFTP by hand, by adding its user there and giving it a password, survives the next run. To take that access away, remove the name from the line on the server, or give the user `state: absent` in `linuxusers.yml`, which takes it out as well.
 
 OpenLiteSpeed serves and runs PHP as `nobody`, which is not in the site's group, so it is let in by ACL and no further:
 
