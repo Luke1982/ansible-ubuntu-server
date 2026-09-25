@@ -154,6 +154,56 @@ def adopt(address: Address = None, dry_run: DryRun = False) -> None:
         ui.note("Nothing was changed (--dry-run).")
 
 
+SourceFolder = Annotated[str, typer.Option(
+    "--folder", "-f", help="The folder to run the filters over.")]
+
+
+@app.command()
+def run(address: Address = None, folder: SourceFolder = "INBOX", dry_run: DryRun = False, yes: Yes = False) -> None:
+    """Run an account's filters over the mail that is already in a folder.
+
+    Filters only sort mail as it arrives, so mail that came in before them stays where it is. This runs the
+    account's active filter -- webmail's, when its filters are used -- over a folder that is already there, with
+    Dovecot's own sieve-filter, and moves what it matches. The inbox unless --folder says otherwise.
+
+    --dry-run says what it would move without touching anything, which is worth doing first.
+
+    [dim]Example:[/] mailctl filters run info@example.nl --dry-run
+
+    [dim]And then, for real:[/] mailctl filters run info@example.nl
+    """
+    with open_session() as session:
+        address = ask_address(address)
+        addresses.require(session.db, address)
+        active = next((script for script in mailbox.sieve_scripts(address) if script.active), None)
+        if not active:
+            raise MailctlError(f"{address} has no active filter, so there is nothing to run.",
+                               hint=f"See what it has with: mailctl filters show {address}")
+        if not dry_run:
+            ui.confirm(f"Run {active.name} over {folder} of {address}? Messages it files are moved out of "
+                       f"{folder}.", yes)
+        with ui.console.status(f"Running {active.name} over {folder}…"):
+            output, looked_at = sieve.apply_to(address, active.content, folder, execute=not dry_run)
+    moved = sieve.moves(output)
+    _say_what_it_did(active.name, folder, looked_at, moved, dry_run)
+
+
+def _say_what_it_did(name: str, folder: str, looked_at: int, moved: dict[str, int], dry_run: bool) -> None:
+    would = "would go" if dry_run else "went"
+    if not looked_at:
+        ui.note(f"There is no mail in {folder}.")
+        return
+    ui.line(f"{name} looked at {ui.plural(looked_at, 'message')} in {folder}.")
+    for where, count in sorted(moved.items(), key=lambda pair: -pair[1]):
+        ui.line(f"{ui.plural(count, 'message')} {would} to {where}.", indent=2)
+    if not moved:
+        ui.note(f"Nothing in {folder} matches the filters; it all stays where it is.")
+    elif dry_run:
+        ui.note("Nothing was moved (--dry-run). Run it again without --dry-run to move them.")
+    else:
+        ui.success(f"Moved {ui.plural(sum(moved.values()), 'message')} out of {folder}.")
+
+
 @app.command()
 def show(address: Address = None) -> None:
     """Show an account's own filters, and the server-wide filters that run after them.

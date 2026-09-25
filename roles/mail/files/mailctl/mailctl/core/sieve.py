@@ -52,3 +52,31 @@ def check(scripts: list[Script]) -> list[str]:
             if complaint is not None:
                 problems.append(f"{script.name}: {' '.join(complaint.replace(str(source), script.name).split())}")
     return problems
+
+
+# What sieve-filter says about each message it looks at, whether it moves it or leaves it where it is.
+_FILTERED = re.compile(r"^.*: Info: filtering: msgid=", re.MULTILINE)
+# Where it stored a message, in the line it writes for each one: "stored mail into mailbox 'Bills'".
+_STORED = re.compile(r"(?:stored|store) mail into mailbox '([^']*)'")
+
+
+def moves(output: str) -> dict[str, int]:
+    """Which folders sieve-filter put messages in, and how many in each."""
+    found: dict[str, int] = {}
+    for folder in _STORED.findall(output):
+        found[folder] = found.get(folder, 0) + 1
+    return found
+
+
+def apply_to(address: str, script: str, folder: str, execute: bool) -> tuple[str, int]:
+    """Runs a filter over the mail already in a folder, with sieve-filter, which is what Dovecot delivers with.
+
+    Without execute nothing is moved and sieve-filter only says what it would do. Returns its output and how many
+    messages it looked at.
+    """
+    with tempfile.TemporaryDirectory(prefix="mailctl-sieve-") as directory:
+        source = Path(directory) / "filter.sieve"
+        source.write_text(script)
+        arguments = ["sieve-filter", "-u", address, "-W"] + (["-e"] if execute else []) + [str(source), folder]
+        output = system.run(*arguments)
+    return output, len(_FILTERED.findall(output))

@@ -24,7 +24,7 @@ COMMANDS = [
     ("certificate", "sync"),
     ("status",), ("doctor",), ("repair",),
     ("spam", "show"), ("spam", "set"), ("spam", "unset"),
-    ("filters", "show"), ("filters", "import"),
+    ("filters", "show"), ("filters", "import"), ("filters", "run"),
 ]
 
 
@@ -654,6 +654,73 @@ def server_file(tmp_path, filters, accounts=("info@example.nl",), name="mailserv
 
 def a_filter(address="info@example.nl", name="roundcube", active=True, content=IMPORTED_FILTER):
     return {"address": address, "name": name, "active": active, "content": content}
+
+
+SIEVE_FILTER_OUTPUT = (
+    "sieve-filter(info@example.nl): Info: filtering: msgid=<1@example.nl>: Invoice 7\n"
+    "sieve-filter(info@example.nl): Info: msgid=<1@example.nl>: stored mail into mailbox 'Bills'\n"
+    "sieve-filter(info@example.nl): Info: filtering: msgid=<2@example.nl>: Hello\n"
+)
+
+
+def with_an_active_filter(mailctl, fake_command, script="# filter"):
+    """An account whose active filter is webmail's, as doveadm reports it."""
+    fake_command("doveadm", f'if [ "$2" = "list" ]; then echo "sogo ACTIVE"; '
+                            f'elif [ "$2" = "get" ]; then echo "{script}"; fi')
+    add_account(mailctl, "info@example.nl")
+
+
+def test_filters_run_moves_the_mail_that_is_already_there(mailctl, example_domain, fake_command):
+    """Filters only sort mail as it arrives; this is for the mail that came in before them."""
+    with_an_active_filter(mailctl, fake_command)
+    sieve_filter = fake_command("sieve-filter", f'printf %s "{SIEVE_FILTER_OUTPUT}"')
+
+    output = mailctl.ok("filters", "run", "info@example.nl", "--yes")
+
+    assert "sogo looked at 2 messages in INBOX." in output
+    assert "1 message went to Bills." in output
+    assert "-e" in sieve_filter.calls[0]  # without it sieve-filter changes nothing
+    assert sieve_filter.calls[0][-1] == "INBOX"
+
+
+def test_filters_run_can_show_what_it_would_move(mailctl, example_domain, fake_command):
+    with_an_active_filter(mailctl, fake_command)
+    sieve_filter = fake_command("sieve-filter", f'printf %s "{SIEVE_FILTER_OUTPUT}"')
+
+    output = mailctl.ok("filters", "run", "info@example.nl", "--dry-run")
+
+    assert "1 message would go to Bills." in output
+    assert "Nothing was moved (--dry-run)." in output
+    assert "-e" not in sieve_filter.calls[0]
+
+
+def test_filters_run_takes_another_folder(mailctl, example_domain, fake_command):
+    with_an_active_filter(mailctl, fake_command)
+    sieve_filter = fake_command("sieve-filter", f'printf %s "{SIEVE_FILTER_OUTPUT}"')
+
+    output = mailctl.ok("filters", "run", "info@example.nl", "--folder", "Archive", "--yes")
+
+    assert "in Archive." in output
+    assert sieve_filter.calls[0][-1] == "Archive"
+
+
+def test_filters_run_says_when_nothing_matches(mailctl, example_domain, fake_command):
+    with_an_active_filter(mailctl, fake_command)
+    fake_command("sieve-filter", 'printf %s "x: Info: filtering: msgid=<1@example.nl>: Hello\n"')
+
+    output = mailctl.ok("filters", "run", "info@example.nl", "--yes")
+
+    assert "Nothing in INBOX matches the filters; it all stays where it is." in output
+
+
+def test_filters_run_needs_a_filter_that_is_active(mailctl, example_domain, fake_command):
+    fake_command("doveadm", 'if [ "$2" = "list" ]; then echo "roundcube"; elif [ "$2" = "get" ]; then echo "# f"; fi')
+    add_account(mailctl, "info@example.nl")
+
+    output = mailctl.fails("filters", "run", "info@example.nl", "--yes")
+
+    assert "has no active filter, so there is nothing to run." in output
+    assert "mailctl filters show info@example.nl" in output
 
 
 def test_filters_import_takes_only_the_filters_from_a_mail_server_file(mailctl, example_domain, tmp_path, database):
