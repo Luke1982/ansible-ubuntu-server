@@ -15,7 +15,7 @@ _mailctl() {
                 autodiscover) words="publish" ;;
                 certificate) words="sync" ;;
                 spam) words="show set unset learn" ;;
-                filters) words="show adopt import run" ;;
+                filters) words="show adopt import run repair" ;;
                 webmail) words="sync" ;;
             esac
             ;;

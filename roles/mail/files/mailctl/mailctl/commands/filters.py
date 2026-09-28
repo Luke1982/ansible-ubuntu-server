@@ -217,6 +217,41 @@ def _count(number: int, word: str) -> str:
 
 
 @app.command()
+def repair(address: Address = None, dry_run: DryRun = False) -> None:
+    """Put right the webmail filters that webmail itself refuses to save.
+
+    Webmail names the flags its editor offers "seen" and "flagged". A filter that holds one under its Sieve name,
+    as filters imported by an earlier mailctl do, makes webmail refuse to save anything at all in its filter
+    editor: [dim]Sieve generation failure: Action with invalid flag argument '\\Seen'[/]. This gives them the
+    names webmail wants, and takes out a flag its editor doesn't have at all, naming it.
+
+    Without an address, every account on this server.
+
+    [dim]Example:[/] mailctl filters repair info@example.nl
+
+    [dim]Every account:[/] mailctl filters repair --dry-run
+    """
+    with open_session() as session:
+        if address:
+            wanted = [names.address(address)]
+            addresses.require(session.db, wanted[0])
+        else:
+            wanted = addresses.list_addresses(session.db)
+        fixed = 0
+        for account in wanted:
+            result = sogofilters.normalise(session.db, account, apply=not dry_run)
+            for line in result.dropped:
+                ui.warn(f"{account}: took out {line}", indent=2)
+            if result.filters:
+                fixed += 1
+                ui.success(f"{account}: {ui.plural(result.filters, 'filter')} webmail can save now.")
+    if not fixed:
+        ui.note("Webmail can save the filters of every account as they are.")
+    elif dry_run:
+        ui.note("Nothing was changed (--dry-run).")
+
+
+@app.command()
 def show(address: Address = None) -> None:
     """Show an account's own filters, and the server-wide filters that run after them.
 

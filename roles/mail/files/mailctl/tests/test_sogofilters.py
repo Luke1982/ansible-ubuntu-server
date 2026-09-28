@@ -44,7 +44,7 @@ def test_to_and_cc_together_are_one_field_and_not_is_one_operator():
 
     assert rules[0] == {"field": "to_or_cc", "operator": "is", "value": "bills@example.nl"}
     assert rules[1] == {"field": "subject", "operator": "contains_not", "value": "reminder"}
-    assert translated()[0][1]["actions"][1] == {"method": "addflag", "argument": "\\Seen"}
+    assert translated()[0][1]["actions"][1] == {"method": "addflag", "argument": "seen"}
 
 
 def test_a_rule_without_a_name_is_named_after_the_script_it_came_from():
@@ -200,14 +200,14 @@ def test_a_list_of_flags_becomes_one_action_each():
     filters, left = translated(script, "rc")
 
     assert left == []
-    assert filters[0]["actions"] == [{"method": "addflag", "argument": "\\Seen"},
-                                     {"method": "addflag", "argument": "\\Flagged"}]
+    assert filters[0]["actions"] == [{"method": "addflag", "argument": "seen"},
+                                     {"method": "addflag", "argument": "flagged"}]
 
 
 def test_setflag_is_the_same_to_webmail_as_addflag():
     filters, _ = translated('if header :is "to" "a@b.nl" { setflag "\\\\Seen"; }\n', "rc")
 
-    assert filters[0]["actions"] == [{"method": "addflag", "argument": "\\Seen"}]
+    assert filters[0]["actions"] == [{"method": "addflag", "argument": "seen"}]
 
 
 def test_an_empty_script_holds_no_rules_and_nothing_is_wrong_with_it():
@@ -222,3 +222,23 @@ def test_several_redirects_in_one_rule_are_several_actions():
 
     assert left == []
     assert [action["argument"] for action in filters[0]["actions"]] == ["a@b.nl", "c@d.nl"]
+
+
+def test_a_flag_gets_the_name_webmail_gives_it():
+    """Webmail refuses to save a list that holds a flag under its Sieve name, and says so about the whole list."""
+    assert sogofilters.webmail_flag("\\Seen") == "seen"
+    assert sogofilters.webmail_flag("\\FLAGGED") == "flagged"
+    assert sogofilters.webmail_flag("$label1") == "$label1"  # a label of webmail's own
+
+
+def test_a_flag_webmails_editor_doesnt_have_is_left_to_the_script():
+    with pytest.raises(sogofilters.Untranslatable, match="the flag"):
+        sogofilters.webmail_flag("\\Answered")
+
+
+def test_the_script_webmail_renders_puts_the_sieve_names_back():
+    script = sogofilters.render([{"name": "Read", "match": "all", "active": True,
+                                  "rules": [{"field": "from", "operator": "is", "value": "a@b.nl"}],
+                                  "actions": [{"method": "addflag", "argument": "seen"}]}])
+
+    assert 'addflag "\\\\Seen";' in script

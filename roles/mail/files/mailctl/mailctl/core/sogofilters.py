@@ -28,6 +28,11 @@ NEGATED = {"is": "is_not", "contains": "contains_not", "matches": "matches_not"}
 EVERY_MESSAGE = "allmessages"  # webmail's third way of matching: no rules, every message
 _HEADER_TESTS = ("header", "address", "envelope")
 _FLAG_ACTIONS = ("addflag", "setflag")
+# Webmail names the two IMAP flags its editor offers, and refuses to save a filter list that holds a flag under
+# any other name ("Sieve generation failure: Action with invalid flag argument"). A label of its own, like
+# "$label1", it keeps as it is; every other flag is beyond its editor.
+WEBMAIL_FLAGS = {"\\seen": "seen", "\\flagged": "flagged"}
+SIEVE_FLAGS = {"seen": "\\Seen", "flagged": "\\Flagged"}
 _PLAIN_ACTIONS = ("discard", "keep", "stop", "reject")
 
 
@@ -106,6 +111,48 @@ def adopt(db: Database, address: str, scripts: Iterable[tuple[str, str]]) -> Ado
     mailbox.put_sieve(address, SCRIPT, render(existing + added))
     mailbox.activate_sieve(address, SCRIPT)
     return Adopted(added, len(filters) - len(added), left)
+
+
+@dataclass(frozen=True)
+class Fixed:
+    """What normalise() put right for one account."""
+    filters: int = 0  # how many of its filters were changed
+    dropped: tuple[str, ...] = ()  # actions taken out, with the reason
+
+
+def normalise(db: Database, address: str, apply: bool = True) -> Fixed:
+    """Puts right filters webmail can't save: the ones imported before mailctl gave its flags webmail's own names.
+
+    Saving anything in webmail's filter editor fails whole ("Sieve generation failure: Action with invalid flag
+    argument") when one filter anywhere in the list holds a flag under another name, so this goes through them
+    all. An action with a flag webmail's editor doesn't have at all is taken out and named.
+    """
+    stored = read(db, address)
+    filters, changed, dropped = [], 0, []
+    for one in stored:
+        actions, touched = [], False
+        for action in one.get("actions") or []:
+            if not isinstance(action, dict) or action.get("method") != "addflag":
+                actions.append(action)
+                continue
+            try:
+                flag = webmail_flag(str(action.get("argument", "")))
+            except Untranslatable as problem:
+                dropped.append(f"{one.get('name', 'a filter')}: {problem.reason}")
+                touched = True
+                continue
+            if flag != action.get("argument"):
+                action, touched = {**action, "argument": flag}, True
+            actions.append(action)
+        if touched:
+            changed += 1
+            one = {**one, "actions": actions}
+        filters.append(one)
+    if changed and apply:
+        write(db, address, filters)
+        # The script webmail renders from them runs as it did; it is written again so both say the same thing.
+        mailbox.put_sieve(address, SCRIPT, render(filters))
+    return Fixed(changed, tuple(dropped))
 
 
 def read(db: Database, address: str) -> list[dict[str, Any]]:
@@ -216,8 +263,18 @@ def _actions(action: Any) -> list[dict[str, str]]:
     if action.name in _FLAG_ACTIONS:
         flags = action.arguments[0] if action.arguments and isinstance(action.arguments[0], list) \
             else list(action.arguments)
-        return [{"method": "addflag", "argument": _one([flag], "flag")} for flag in flags]
+        return [{"method": "addflag", "argument": webmail_flag(_one([flag], "flag"))} for flag in flags]
     raise Untranslatable(f"the action {action.name}, which webmail's filters don't have")
+
+
+def webmail_flag(flag: str) -> str:
+    """The name webmail gives a flag. Raises for one its editor doesn't have, like \\Answered."""
+    known = WEBMAIL_FLAGS.get(flag.lower())
+    if known:
+        return known
+    if flag.startswith("$") or flag in SIEVE_FLAGS:
+        return flag
+    raise Untranslatable(f"the flag {flag}, which webmail's filters don't have")
 
 
 def _describe(node: Any) -> str:
@@ -261,7 +318,7 @@ def _action_line(action: dict[str, str]) -> str:
     if method == "redirect":
         return f"redirect {json.dumps(argument)};"
     if method == "addflag":
-        return f"addflag {json.dumps(argument)};"
+        return f"addflag {json.dumps(SIEVE_FLAGS.get(argument, argument))};"
     if method in _PLAIN_ACTIONS:
         return f"{method} {json.dumps(argument)};" if method == "reject" else f"{method};"
     return ""

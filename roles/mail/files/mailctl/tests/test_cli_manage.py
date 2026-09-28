@@ -24,7 +24,7 @@ COMMANDS = [
     ("certificate", "sync"),
     ("status",), ("doctor",), ("repair",),
     ("spam", "show"), ("spam", "set"), ("spam", "unset"), ("spam", "learn"),
-    ("filters", "show"), ("filters", "import"), ("filters", "run"),
+    ("filters", "show"), ("filters", "import"), ("filters", "run"), ("filters", "repair"),
     ("import",), ("export",),
 ]
 
@@ -671,6 +671,62 @@ def test_the_playbook_teaches_spamassassin_every_night():
     service = (Path(__file__).resolve().parents[2] / "mailctl-spam-learn.service").read_text()
     assert "OnCalendar=" in timer and "Persistent=true" in timer
     assert "mailctl spam learn" in service
+
+
+def stored_filter(actions, name="Read it"):
+    return {"name": name, "match": "all", "active": True,
+            "rules": [{"field": "from", "operator": "is", "value": "a@b.nl"}], "actions": actions}
+
+
+def test_filters_repair_gives_the_flags_the_names_webmail_wants(mailctl, example_domain, database, fake_command):
+    """Webmail refuses to save anything in its editor while one filter holds a flag under its Sieve name."""
+    add_account(mailctl, "info@example.nl")
+    sogofilters.write(database, "info@example.nl", [stored_filter([{"method": "addflag", "argument": "\\Seen"}])])
+    doveadm = fake_command("doveadm")
+
+    output = mailctl.ok("filters", "repair", "info@example.nl")
+
+    assert "1 filter webmail can save now" in output
+    assert sogofilters.read(database, "info@example.nl")[0]["actions"] == [{"method": "addflag",
+                                                                           "argument": "seen"}]
+    assert ["sieve", "put", "-u", "info@example.nl", "sogo"] in [call[:5] for call in doveadm.calls]
+
+
+def test_filters_repair_takes_out_a_flag_webmails_editor_doesnt_have(mailctl, example_domain, database,
+                                                                     fake_command):
+    add_account(mailctl, "info@example.nl")
+    sogofilters.write(database, "info@example.nl",
+                      [stored_filter([{"method": "addflag", "argument": "\\Answered"}, {"method": "keep"}])])
+    fake_command("doveadm")
+
+    output = mailctl.ok("filters", "repair", "info@example.nl")
+
+    assert "took out Read it: the flag \\Answered" in output
+    assert sogofilters.read(database, "info@example.nl")[0]["actions"] == [{"method": "keep"}]
+
+
+def test_filters_repair_leaves_filters_webmail_can_save_alone(mailctl, example_domain, database, fake_command):
+    add_account(mailctl, "info@example.nl")
+    sogofilters.write(database, "info@example.nl", [stored_filter([{"method": "addflag", "argument": "seen"}])])
+    doveadm = fake_command("doveadm")
+
+    output = mailctl.ok("filters", "repair")
+
+    assert "Webmail can save the filters of every account as they are." in output
+    assert doveadm.calls == []
+
+
+def test_filters_repair_can_show_what_it_would_do(mailctl, example_domain, database, fake_command):
+    add_account(mailctl, "info@example.nl")
+    sogofilters.write(database, "info@example.nl", [stored_filter([{"method": "addflag", "argument": "\\Seen"}])])
+    fake_command("doveadm")
+
+    output = mailctl.ok("filters", "repair", "--dry-run")
+
+    assert "1 filter webmail can save now" in output
+    assert "Nothing was changed (--dry-run)." in output
+    assert sogofilters.read(database, "info@example.nl")[0]["actions"] == [{"method": "addflag",
+                                                                           "argument": "\\Seen"}]
 
 
 def test_filters_show_says_that_only_the_active_one_runs(mailctl, example_domain, fake_command):
