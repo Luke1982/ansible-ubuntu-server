@@ -80,8 +80,11 @@
   SOGoAppointmentSendEMailNotifications = YES;
   SOGoACLsSendEMailNotifications = YES;
 
-  /* ActiveSync. OpenLiteSpeed closes connections that are quiet for 300
+  /* ActiveSync, which SOGo leaves off unless it is asked for: without this a
+     phone gets as far as signing in and is then refused (403) on the first
+     command it sends. OpenLiteSpeed closes connections that are quiet for 300
      seconds, so phones get an answer before that and ask again. */
+  SOGoEnableEAS = YES;
   SOGoMaximumPingInterval = 280;
   SOGoMaximumSyncInterval = 280;
   SOGoInternalSyncInterval = 30;
