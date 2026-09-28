@@ -139,14 +139,22 @@
   become: false
   register: bayes_dump
 
+# Only into a Bayes that has learned nothing yet. The dump replaces the tables whole, so importing it on every
+# run would throw away everything the server has learned since it was restored, without anybody noticing.
+- name: Count what Bayes has learned here
+  command: mysql -N -B -e "SELECT COUNT(*) FROM bayes.bayes_token"
+  register: bayes_tokens
+  changed_when: false
+  when: bayes_dump.stat.exists
+
 - name: Copy over the Bayes dump
   copy:
     src: roles/mail/files/private/bayes_dump.sql
     dest: /tmp/bayes_dump.sql
-    mode: 0644
+    mode: 0600
     owner: root
     group: root
-  when: bayes_dump.stat.exists
+  when: bayes_dump.stat.exists and bayes_tokens.stdout | int == 0
 
 - name: Restore learned Bayes data
   mysql_db:
@@ -154,8 +162,15 @@
     name: bayes
     target: /tmp/bayes_dump.sql
     login_unix_socket: /var/run/mysqld/mysqld.sock
-  when: bayes_dump.stat.exists
+  when: bayes_dump.stat.exists and bayes_tokens.stdout | int == 0
   notify: restart spamassassin
+
+- name: Say that the learning of this server was kept
+  debug:
+    msg: >-
+      Bayes already holds {{ bayes_tokens.stdout }} tokens, so the dump in roles/mail/files/private was left
+      where it is. Import it by hand if this server really should start over from it.
+  when: bayes_dump.stat.exists and bayes_tokens.stdout | int > 0
 
 - include_tasks: configure-postfix.yml
 - include_tasks: configure-postfwd.yml
