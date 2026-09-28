@@ -23,7 +23,10 @@ CREATE TABLE IF NOT EXISTS `bayes_seen` (
 
 CREATE TABLE IF NOT EXISTS `bayes_token` (
   id int(11) NOT NULL default '0',
-  token char(5) NOT NULL default '',
+  -- Binary, not char: a token is five raw bytes of a hash, and a column with a character set refuses most
+  -- of them ("Incorrect string value"), which SpamAssassin only says in its debug output. The counts go
+  -- up, no token is ever stored, and Bayes scores nothing at all.
+  token binary(5) NOT NULL default '',
   spam_count int(11) NOT NULL default '0',
   ham_count int(11) NOT NULL default '0',
   atime int(11) NOT NULL default '0',

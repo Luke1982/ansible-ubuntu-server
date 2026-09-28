@@ -114,6 +114,20 @@
     target: /tmp/setup_bayes_tables.sql
     login_unix_socket: /var/run/mysqld/mysqld.sock
 
+# A server set up before this was fixed has the old char(5) column, which the CREATE TABLE IF NOT EXISTS above
+# leaves as it is. Without this its Bayes stores no token at all, however much it is taught: every insert fails on
+# "Incorrect string value", which only shows in SpamAssassin's debug output.
+- name: Look at how the Bayes tokens are stored
+  command: >-
+    mysql -N -B -e "SELECT column_type FROM information_schema.columns WHERE table_schema = 'bayes'
+    AND table_name = 'bayes_token' AND column_name = 'token'"
+  register: bayes_token_column
+  changed_when: false
+
+- name: Store the Bayes tokens as bytes, not as characters
+  command: mysql -e "ALTER TABLE bayes.bayes_token MODIFY token binary(5) NOT NULL DEFAULT ''"
+  when: "'binary' not in bayes_token_column.stdout"
+
 # Optional: restore previously learned Bayes data when migrating servers.
 # Drop a mysqldump of the old `bayes` database at
 # roles/mail/files/private/bayes_dump.sql and it will be imported here.

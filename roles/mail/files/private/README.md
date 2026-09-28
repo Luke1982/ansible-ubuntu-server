@@ -13,8 +13,13 @@ with no learning at all.
 ### 1. Dump the Bayes database on the OLD server
 
 ```bash
-mysqldump bayes > bayes_dump.sql
+mysqldump --add-drop-table bayes > bayes_dump.sql
 ```
+
+`--add-drop-table` matters: the new server already has an empty `bayes` schema,
+and an import without it stops on the first `CREATE TABLE`. A dump written by
+phpMyAdmin has no `DROP TABLE` lines either; add one above every `CREATE TABLE`
+before you put the file here.
 
 ### 2. Place the dump here
 
@@ -39,7 +44,11 @@ directory without a dump on a brand-new server.
 sa-learn --dump magic
 ```
 
-You should see your real `nspam` / `nham` counts rather than zeros.
+You should see your real `nspam` / `nham` counts rather than zeros, **and an
+`ntokens` that isn't zero**. Counts without tokens mean the `bayes_token.token`
+column is `char(5)` instead of `binary(5)`: MySQL then refuses every token, and
+SpamAssassin says so only in its debug output (`sa-learn -D --spam FILE`). The
+playbook repairs that column by itself.
 
 > The dump can contain a large number of learned tokens but no secrets. It is
 > gitignored mainly to keep the repository clean and avoid committing host data.
