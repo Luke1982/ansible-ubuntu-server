@@ -134,7 +134,8 @@ def test_certbot_runs_with_the_account_and_directory_of_this_server(config, fake
 
     certificate.run_certbot(config, "certonly")
 
-    assert certbot.calls == [["certonly", "--agree-tos", "--register-unsafely-without-email", "--non-interactive",
+    assert certbot.calls == [["certonly", "--key-type", "rsa", "--agree-tos", "--register-unsafely-without-email",
+                              "--non-interactive",
                               "--config-dir", str(config.letsencrypt_dir)]]
 
 

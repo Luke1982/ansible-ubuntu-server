@@ -149,7 +149,7 @@ def test_a_domain_whose_webmail_name_points_here_gets_a_site_with_a_certificate(
     assert served.requests == [("203.0.113.5", "webmail.example.nl"), ("2001:db8::5", "webmail.example.nl")]
     assert certbot.calls == [[
         "certonly", "--webroot", "--webroot-path", str(config.webmail_root), "--cert-name", "webmail.example.nl",
-        "--domains", "webmail.example.nl", "--agree-tos", "--register-unsafely-without-email",
+        "--domains", "webmail.example.nl", "--key-type", "rsa", "--agree-tos", "--register-unsafely-without-email",
         "--non-interactive", "--config-dir", str(config.letsencrypt_dir),
     ]]
     # Once to serve the challenge on port 80, once to switch the site to https.

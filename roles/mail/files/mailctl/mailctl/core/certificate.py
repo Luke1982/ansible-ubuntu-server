@@ -51,11 +51,18 @@ def parse(output: str) -> Certificate:
     return Certificate(tuple(name.lower() for name in re.findall(r"DNS:([^\s,]+)", output)), expires)
 
 
+# RSA, though certbot makes an elliptic-curve key by default: these certificates are served to mail programs and
+# to Microsoft's own ActiveSync servers, which phones using Outlook go through, and those refuse a certificate
+# they see no RSA cipher suite for ("doesn't support any cipher suites compatible with Microsoft 365 services").
+KEY_TYPE = "rsa"
+
+
 def run_certbot(config: Config, *args: str) -> None:
     """certbot, with this server's Let's Encrypt account and the directory the certificates are looked for in."""
     email = config.letsencrypt_email
     account = ["--email", email] if email else ["--register-unsafely-without-email"]
-    system.run("certbot", *args, "--agree-tos", *account, "--non-interactive",
+    key = ["--key-type", KEY_TYPE] if args and args[0] == "certonly" else []
+    system.run("certbot", *args, *key, "--agree-tos", *account, "--non-interactive",
                "--config-dir", str(config.letsencrypt_dir))
 
 
