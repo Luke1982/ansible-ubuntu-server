@@ -30,9 +30,15 @@ COLOUR_FILE = "colour"  # the colour the stylesheet was made with, so it can be 
 
 # SOGo's own palette is a green-teal, never fully saturated. A colour in the stylesheet with that hue belongs to
 # it; the reds, greens and cyans of warnings, buttons and badges have a hue of their own and are left alone.
+# SOGo has two palettes: the green-teal it calls primary, on the bar and the buttons, and a green it calls accent,
+# which is the panel the login box sits in and the button that saves. Both are recoloured, or webmail comes out
+# blue with a green front door.
 PRIMARY_HUE = (166.0, 190.0)  # degrees
 PRIMARY_SATURATION = 0.62  # anything more saturated is another palette
 PRIMARY_LIGHTNESS = 0.402  # of SOGo's own primary, rgb(77,128,128): what the colour given here takes the place of
+ACCENT_HUE = (90.0, 160.0)
+ACCENT_SATURATION = 1.0  # its brightest shades are fully saturated, and they are its own
+ACCENT_LIGHTNESS = 0.494  # of rgb(86,176,76), the green of the login panel
 _RGB = re.compile(r"rgb\((\d{1,3}),\s*(\d{1,3}),\s*(\d{1,3})\)")
 _RGBA = re.compile(r"rgba\((\d{1,3}),\s*(\d{1,3}),\s*(\d{1,3}),\s*([0-9.]+)\)")
 _HEX = re.compile(r"#([0-9a-fA-F]{6})\b")
@@ -43,9 +49,10 @@ class Branding:
     """What the webmail sites serve of their own."""
     colour: str = ""
     files: tuple[str, ...] = ()  # the names SOGo asks for, as in NAMES
+    accent: str = ""  # the second colour, of the login panel and the save button, when it differs
 
     def __bool__(self) -> bool:
-        return bool(self.colour or self.files)
+        return bool(self.colour or self.files or self.accent)
 
 
 def colour_of(text: str) -> tuple[float, float, float]:
@@ -58,24 +65,36 @@ def colour_of(text: str) -> tuple[float, float, float]:
     return hue * 360, saturation, lightness
 
 
-def recolour(css: str, colour: str) -> str:
-    """SOGo's stylesheet with its own palette in this colour.
+def recolour(css: str, colour: str, accent: str = "") -> str:
+    """SOGo's stylesheet with both its palettes in these colours.
 
-    The colour given takes the place of SOGo's own primary exactly, and every other shade of the palette moves
+    The colour given takes the place of SOGo's own primary exactly, and every other shade of that palette moves
     with it, keeping how far it stood from white. A pale background therefore stays a pale background and a dark
-    surface stays dark, while the whole palette is the one colour's.
+    surface stays dark, while the whole palette is the one colour's. The accent -- the panel the login box sits
+    in, the button that saves -- is done the same way, with the same colour unless another is given.
+
+    Colours that say something, like the red of a warning, keep their own hue.
     """
-    hue, saturation, lightness = colour_of(colour)
-    # How much of the way to white each shade keeps, now that the primary sits where the given colour does.
-    towards_white = (1 - lightness) / (1 - PRIMARY_LIGHTNESS)
+    palettes = []
+    for text, hues, most_saturated, was_lightness in (
+        (colour, PRIMARY_HUE, PRIMARY_SATURATION, PRIMARY_LIGHTNESS),
+        (accent or colour, ACCENT_HUE, ACCENT_SATURATION, ACCENT_LIGHTNESS),
+    ):
+        hue, saturation, lightness = colour_of(text)
+        # How much of the way to white each shade keeps, now that this palette sits where the colour does.
+        palettes.append((hues, most_saturated, hue, saturation, (1 - lightness) / (1 - was_lightness)))
 
     def shade(red: int, green: int, blue: int) -> tuple[int, int, int] | None:
         was_hue, was_lightness, was_saturation = colorsys.rgb_to_hls(red / 255, green / 255, blue / 255)
-        if not (PRIMARY_HUE[0] <= was_hue * 360 <= PRIMARY_HUE[1]) or was_saturation > PRIMARY_SATURATION:
-            return None
-        now_lightness = min(1.0, max(0.0, 1 - (1 - was_lightness) * towards_white))
-        now = colorsys.hls_to_rgb(hue / 360, now_lightness, saturation)
-        return tuple(round(part * 255) for part in now)
+        for hues, most_saturated, hue, saturation, towards_white in palettes:
+            if not (hues[0] <= was_hue * 360 <= hues[1]) or was_saturation > most_saturated:
+                continue
+            # Never into black or white: a shade that stands out, like the button that writes a message, has to
+            # stay a colour, also when the colour it is made from is a dark one.
+            now_lightness = min(0.97, max(0.12, 1 - (1 - was_lightness) * towards_white))
+            now = colorsys.hls_to_rgb(hue / 360, now_lightness, saturation)
+            return tuple(round(part * 255) for part in now)
+        return None
 
     def as_rgb(found: re.Match) -> str:
         now = shade(*(int(part) for part in found.groups()))
@@ -96,11 +115,12 @@ def recolour(css: str, colour: str) -> str:
 def current(config: Config) -> Branding:
     """What the sites serve of their own now."""
     directory = config.webmail_branding
-    colour = ""
+    colour, accent = "", ""
     saved = directory / COLOUR_FILE
     if saved.is_file():
-        colour = saved.read_text().strip()
-    return Branding(colour, tuple(sorted(asked for asked, name in NAMES.items() if _served(directory, name))))
+        colour, _, accent = saved.read_text().strip().partition(" ")
+    return Branding(colour, tuple(sorted(asked for asked, name in NAMES.items() if _served(directory, name))),
+                    accent.strip())
 
 
 def overrides(config: Config) -> dict[str, str]:
@@ -114,8 +134,8 @@ def overrides(config: Config) -> dict[str, str]:
     return found
 
 
-def apply(config: Config, colour: str = "", logo: Path | None = None, bar_logo: Path | None = None,
-          icon: Path | None = None) -> Branding:
+def apply(config: Config, colour: str = "", accent: str = "", logo: Path | None = None,
+          bar_logo: Path | None = None, icon: Path | None = None) -> Branding:
     """Puts the files the sites serve in place. What isn't given is left as it is."""
     directory = config.webmail_branding
     directory.mkdir(parents=True, exist_ok=True)
@@ -124,20 +144,23 @@ def apply(config: Config, colour: str = "", logo: Path | None = None, bar_logo: 
             _put(directory, NAMES[asked], given)
     if colour:
         colour_of(colour)  # before anything is written
+        if accent:
+            colour_of(accent)
         source = config.sogo_resources / THEME
         if not source.is_file():
             raise MailctlError(f"SOGo's own stylesheet isn't at {source}, so it can't be recoloured.",
                                hint="Is SOGo installed? Its files are where sogo_resources in the config says.")
-        (directory / NAMES[THEME]).write_text(recolour(source.read_text(errors="replace"), colour))
-        (directory / COLOUR_FILE).write_text(colour.strip() + "\n")
+        (directory / NAMES[THEME]).write_text(recolour(source.read_text(errors="replace"), colour, accent))
+        (directory / COLOUR_FILE).write_text(" ".join(part for part in (colour.strip(), accent.strip()) if part)
+                                             + "\n")
     return current(config)
 
 
 def refresh(config: Config) -> bool:
     """Makes the stylesheet again when SOGo's own is newer than ours, which it is after SOGo is upgraded: the new
     one holds rules the old didn't. Also makes it when a colour was put here by hand, as a playbook run does."""
-    colour = current(config).colour
-    if not colour:
+    now = current(config)
+    if not now.colour:
         return False
     ours = config.webmail_branding / NAMES[THEME]
     theirs = config.sogo_resources / THEME
@@ -145,7 +168,7 @@ def refresh(config: Config) -> bool:
         return False
     if ours.is_file() and ours.stat().st_mtime >= theirs.stat().st_mtime:
         return False
-    apply(config, colour=colour)
+    apply(config, colour=now.colour, accent=now.accent)
     return True
 
 

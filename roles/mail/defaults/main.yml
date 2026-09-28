@@ -52,6 +52,9 @@ sogo_workers: 10
 
 # What new webmail users start with. They can change both.
 sogo_language: Dutch
+# What the browser tab says, where SOGo puts its own name by default. Set it to the name people know this
+# webmail by; it goes with the logo and colour in roles/mail/files/webmail-branding.
+sogo_page_title: Webmail
 sogo_timezone: Europe/Amsterdam
 
 # OpenLiteSpeed, installed by the web role

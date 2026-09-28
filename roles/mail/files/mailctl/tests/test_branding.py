@@ -59,13 +59,27 @@ def test_recolouring_puts_the_brand_hue_on_sogos_own_palette():
     assert "rgba(" in css and "0.87)" in css  # what was see-through stays see-through
 
 
-def test_recolouring_leaves_the_colours_of_another_hue_alone():
-    """The red of a warning and the green of the save button say what they are; only the palette is ours."""
+def test_recolouring_leaves_the_colours_that_say_something_alone():
+    """The red of a warning says what it is; only SOGo's two palettes are ours."""
     css = branding.recolour(SOGO_CSS, BLUE)
 
     assert "#dd2c00" in css
-    assert "rgb(86,176,76)" in css
-    assert "rgb(0,176,192)" in css  # a cyan of its own: near the hue, but far more saturated
+    assert "rgb(0,176,192)" in css  # a cyan of its own: near the primary's hue, but far more saturated
+
+
+def test_the_panel_the_login_box_sits_in_is_recoloured_too():
+    """SOGo's second palette is a green, and it is the first thing anybody sees."""
+    css = branding.recolour(SOGO_CSS, BLUE)
+
+    assert "rgb(86,176,76)" not in css
+    assert ".md-save{background-color:rgb(9,82,109)}" in css
+
+
+def test_a_second_colour_can_be_given_for_that_panel():
+    css = branding.recolour(SOGO_CSS, BLUE, accent="#E46623")
+
+    assert ".md-primary{color:rgb(9,82,109)}" in css
+    assert ".md-save{background-color:rgb(228,102,35)}" in css
 
 
 def test_every_shade_keeps_the_lightness_it_had():
@@ -157,3 +171,12 @@ def test_the_colour_given_takes_the_place_of_sogos_own_exactly():
     css = branding.recolour(".md-primary{color:rgb(77,128,128)}", BLUE)
 
     assert css == ".md-primary{color:rgb(9,82,109)}"
+
+
+def test_a_shade_that_stands_out_never_turns_black():
+    """SOGo's brightest accent is what a button to write a message is made of; with a dark brand colour the sum
+    would be black, and a black button on a dark panel is a button nobody sees."""
+    css = branding.recolour(".md-fab{background-color:rgb(0,200,83)}", "#09526D")
+
+    values = [int(part) for part in css.split("rgb(")[1].split(")")[0].split(",")]
+    assert sum(values) > 90

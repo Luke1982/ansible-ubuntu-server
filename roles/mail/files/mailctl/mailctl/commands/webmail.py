@@ -24,6 +24,9 @@ PUBLISH_POLL = 10  # seconds
 NoDns = Annotated[bool, typer.Option("--no-dns", help="Don't publish missing webmail records at TransIP.")]
 Colour = Annotated[Optional[str], typer.Option(
     "--colour", "--color", help="The colour webmail is in, as #RRGGBB.", show_default=False)]
+Accent = Annotated[Optional[str], typer.Option(
+    "--accent", help="A second colour, for the panel the login box sits in and the button that saves. "
+    "The same as --colour when left out.", show_default=False)]
 LoginLogo = Annotated[Optional[str], typer.Option(
     "--logo", help="A picture to show above the login box, in place of SOGo's.", show_default=False)]
 BarLogo = Annotated[Optional[str], typer.Option(
@@ -35,8 +38,8 @@ Clear = Annotated[bool, typer.Option("--clear", help="Take ours away and serve S
 
 
 @app.command()
-def brand(colour: Colour = None, logo: LoginLogo = None, bar_logo: BarLogo = None, icon: Icon = None,
-          clear: Clear = False) -> None:
+def brand(colour: Colour = None, accent: Accent = None, logo: LoginLogo = None, bar_logo: BarLogo = None,
+          icon: Icon = None, clear: Clear = False) -> None:
     """Put webmail in the colours and the logo of whoever runs this server.
 
     The sites serve these in SOGo's place, so an upgrade of SOGo doesn't undo them. The colour recolours SOGo's
@@ -59,7 +62,7 @@ def brand(colour: Colour = None, logo: LoginLogo = None, bar_logo: BarLogo = Non
         if not colour and not any(given.values()):
             _show_branding(branding.current(session.config))
             return
-        now = branding.apply(session.config, colour or "",
+        now = branding.apply(session.config, colour or "", accent or "",
                              **{key: Path(value) for key, value in given.items() if value})
         webmail.rewrite_sites(session.config)
     ui.success("Webmail's sites serve this now:")
@@ -73,6 +76,8 @@ def _show_branding(now: branding.Branding) -> None:
         return
     if now.colour:
         ui.line(f"Colour: {now.colour}", indent=2)
+    if now.accent:
+        ui.line(f"Colour of the login panel: {now.accent}", indent=2)
     for asked in now.files:
         ui.line(f"{_WHAT[asked]}: {branding.NAMES[asked]}", indent=2)
 
