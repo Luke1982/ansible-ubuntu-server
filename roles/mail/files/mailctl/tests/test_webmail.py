@@ -174,6 +174,8 @@ def test_the_site_serves_sogo_over_https_for_its_own_name(config):
         "RequestHeader set x-webobjects-server-name webmail.example.nl",
         "RewriteRule ^/\\.well-known/(caldav|carddav)$ /SOGo/dav/ [R=301,L]",
         "RewriteRule ^ http://sogo/SOGo/Microsoft-Server-ActiveSync [P,L]",
+        # SOGo answers a command without a password with 403, which tells a phone nothing; this asks for one.
+        "RewriteRule ^ - [R=401,L]",
         # SOGo writes "basic" in lower case, which Microsoft's servers read as no way of signing in at all.
         'Header set WWW-Authenticate Basic realm="SOGo"',
         f"location                {config.sogo_resources}/",

@@ -353,6 +353,8 @@ Header set WWW-Authenticate Basic realm="SOGo"
   rewrite {{
     enable                1
     rules                 <<<END_rules
+RewriteCond %{{HTTP:Authorization}} ^$
+RewriteRule ^ - [R=401,L]
 RewriteRule ^ http://sogo/SOGo/Microsoft-Server-ActiveSync [P,L]
     END_rules
   }}
