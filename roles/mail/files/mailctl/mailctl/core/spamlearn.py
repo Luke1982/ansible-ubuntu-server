@@ -22,6 +22,10 @@ from .config import Config
 from .errors import MailctlError
 
 JUNK = ".Junk"
+# Folders that teach nothing: mail somebody threw away is often spam they never filed, and a draft is half a
+# message. The Dutch names are here too, because a server set up before this one has them as folders of their own
+# rather than as the aliases Dovecot links to the standard ones.
+NOT_HAM = {"junk", "spam", "trash", "drafts", "ongewenste e-mail", "verwijderde items", "prullenbak", "concepten"}
 # Files per sa-learn call: a command line can't hold everything, and each call says what it learned.
 BATCH = 200
 # Where the time of the last run is kept, so the next one only looks at what came after it.
@@ -35,12 +39,14 @@ class Folder:
     address: str
     path: Path
     spam: bool
+    inbox: bool = False
 
     @property
     def parts(self) -> tuple[str, ...]:
-        """Junk teaches from read and unread mail alike; the inbox only from what was read, since mail nobody has
-        looked at yet may well be spam that hasn't been filed."""
-        return ("cur", "new") if self.spam else ("cur",)
+        """The inbox teaches only from mail that was read: what nobody has looked at yet may well be spam that
+        hasn't been filed. Everywhere else, unread mail was put there by somebody or by their own filters, so it
+        counts as it is."""
+        return ("cur",) if self.inbox else ("cur", "new")
 
 
 @dataclass(frozen=True)
@@ -52,14 +58,37 @@ class Learned:
 
 
 def folders(config: Config, addresses: list[str]) -> list[Folder]:
-    """The Junk folder and the inbox of every account that has mail on this server."""
+    """What every account teaches: its Junk folder is spam, and everything it keeps elsewhere is not.
+
+    Not only the inbox: a message that was marked as spam wrongly is dragged back out of Junk, and people drag it
+    wherever it belongs, not back into the inbox. Every folder they file in therefore teaches, which is how the
+    filter is told it was wrong.
+    """
     found = []
     for address in addresses:
         maildir = mailbox.home_dir(config, address) / "Maildir"
+        if not maildir.is_dir():
+            continue
         if (maildir / JUNK).is_dir():
             found.append(Folder(address, maildir / JUNK, spam=True))
-        if maildir.is_dir():
-            found.append(Folder(address, maildir, spam=False))
+        found.append(Folder(address, maildir, spam=False, inbox=True))
+        found += _own_folders(address, maildir)
+    return found
+
+
+def _own_folders(address: str, maildir: Path) -> list[Folder]:
+    """The account's other folders, in the layout Dovecot keeps them: ".INBOX.Invoices" next to the inbox itself.
+
+    An alias, like ".Ongewenste e-mail" beside ".Junk", is a link to one of these and is left out, so nothing is
+    read twice under two names.
+    """
+    found = []
+    for entry in sorted(maildir.iterdir()):
+        if not entry.name.startswith(".") or entry.is_symlink() or not entry.is_dir():
+            continue
+        if any(part.strip().lower() in NOT_HAM for part in entry.name.lstrip(".").split(".")):
+            continue
+        found.append(Folder(address, entry, spam=False))
     return found
 
 

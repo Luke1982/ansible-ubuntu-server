@@ -387,9 +387,9 @@ Postfix hands every message to spamass-milter, which asks spamd to score it and 
 
 ### Teaching the spam filter
 
-SpamAssassin's Bayes half only helps when it is shown what spam and good mail look like here, and nobody has the time to do that by hand. They don't have to: every account's `Junk` folder is what people called spam themselves, and their inbox is what they kept. `mailctl spam learn` hands both to `sa-learn`, which writes what it learns to the shared `bayes` database -- `bayes.cf` overrides the username, so every account teaches the same one.
+SpamAssassin's Bayes half only helps when it is shown what spam and good mail look like here, and nobody has the time to do that by hand. They don't have to: every account's `Junk` folder is what people called spam themselves, and everything they keep elsewhere is what they didn't. `mailctl spam learn` hands both to `sa-learn`, which writes what it learns to the shared `bayes` database -- `bayes.cf` overrides the username, so every account teaches the same one.
 
-A `mailctl-spam-learn.timer` runs it every night, so nothing has to be remembered. It only reads the messages that arrived or were moved since the last run, which keeps it short on a server with years of mail; `--all` reads everything again (`sa-learn` skips what it has already seen), and `--dry-run` says how much it would read. Mail nobody has opened yet is left out of the good half: it may be spam that hasn't been filed.
+A `mailctl-spam-learn.timer` runs it every night, so nothing has to be remembered. It only reads the messages that arrived or were moved since the last run, which keeps it short on a server with years of mail; `--all` reads everything again (`sa-learn` skips what it has already seen), and `--dry-run` says how much it would read. Mail nobody has opened yet is left out of the **inbox**, since it may be spam that hasn't been filed; a message filed in a folder counts whether it was read or not, because somebody put it there. That is also how a message marked as spam wrongly is put right: drag it out of `Junk` into the folder it belongs in, and the next run learns it as good mail, wherever it landed. `Trash` and `Drafts` teach nothing and are left out.
 
 ### Mail filters
 

@@ -24,10 +24,45 @@ def message(directory, name, content="Subject: hello\n\nbody\n"):
     return path
 
 
-def test_the_folders_are_every_accounts_junk_and_inbox(config, maildir):
+def test_the_folders_are_every_accounts_junk_inbox_and_own_folders(config, maildir):
+    (maildir / ".INBOX.Invoices" / "cur").mkdir(parents=True)
+
     found = spamlearn.folders(config, [ADDRESS])
 
-    assert [(one.path, one.spam) for one in found] == [(maildir / ".Junk", True), (maildir, False)]
+    assert [(one.path, one.spam) for one in found] == [
+        (maildir / ".Junk", True), (maildir, False), (maildir / ".INBOX.Invoices", False)]
+
+
+def test_the_folders_that_teach_nothing_are_left_out(config, maildir):
+    """A message somebody threw away is often spam they never filed, and a draft is half a message."""
+    for name in (".Trash", ".Drafts", ".Concepten", ".INBOX.Trash", ".Spam"):
+        (maildir / name / "cur").mkdir(parents=True)
+
+    found = spamlearn.folders(config, [ADDRESS])
+
+    assert [one.path.name for one in found if one.path != maildir] == [".Junk"]
+
+
+def test_a_folder_that_is_a_link_to_another_is_read_once(config, maildir):
+    """Dovecot gives the standard folders their Dutch names as links; the mail behind both is the same."""
+    (maildir / ".Ongewenste e-mail").symlink_to(maildir / ".Junk")
+
+    found = spamlearn.folders(config, [ADDRESS])
+
+    assert [one.path for one in found] == [maildir / ".Junk", maildir]
+
+
+def test_mail_filed_in_a_folder_teaches_even_when_it_was_never_opened(config, maildir):
+    """Somebody moved it there, or their own filters did; either way it is not spam."""
+    folder = maildir / ".INBOX.Invoices"
+    (folder / "cur").mkdir(parents=True)
+    (folder / "new").mkdir()
+    message(folder / "new", "1")
+    message(folder / "cur", "2:2,S")
+
+    invoices = next(one for one in spamlearn.folders(config, [ADDRESS]) if one.path == folder)
+
+    assert len(spamlearn.messages(invoices)) == 2
 
 
 def test_an_account_without_mail_on_this_server_has_no_folders(config):
@@ -35,7 +70,7 @@ def test_an_account_without_mail_on_this_server_has_no_folders(config):
 
 
 def test_junk_teaches_from_read_and_unread_mail_and_the_inbox_only_from_read(config, maildir):
-    junk, inbox = spamlearn.folders(config, [ADDRESS])
+    junk, inbox = spamlearn.folders(config, [ADDRESS])[:2]
     message(maildir / ".Junk" / "cur", "1:2,S")
     message(maildir / ".Junk" / "new", "2")
     message(maildir / "cur", "3:2,S")
@@ -46,7 +81,7 @@ def test_junk_teaches_from_read_and_unread_mail_and_the_inbox_only_from_read(con
 
 
 def test_the_messages_from_before_the_last_run_are_left_out(config, maildir):
-    junk, _ = spamlearn.folders(config, [ADDRESS])
+    junk = spamlearn.folders(config, [ADDRESS])[0]
     message(maildir / ".Junk" / "cur", "old:2,S")
 
     assert spamlearn.messages(junk, since=time.time() + 60) == []
@@ -55,7 +90,7 @@ def test_the_messages_from_before_the_last_run_are_left_out(config, maildir):
 
 def test_a_message_written_long_ago_but_filed_just_now_counts(config, maildir):
     """Dragging a message into Junk keeps the time it was written, so the time it was last changed decides."""
-    junk, _ = spamlearn.folders(config, [ADDRESS])
+    junk = spamlearn.folders(config, [ADDRESS])[0]
     moved = message(maildir / ".Junk" / "cur", "moved:2,S")
     long_ago = time.time() - 30 * 86400
     os.utime(moved, (long_ago, long_ago))
@@ -136,7 +171,7 @@ def test_a_state_file_that_cant_be_read_means_everything_is_learned_again(tmp_pa
 
 
 def test_a_folder_that_cant_be_read_says_which_one(config, maildir, monkeypatch):
-    junk, _ = spamlearn.folders(config, [ADDRESS])
+    junk = spamlearn.folders(config, [ADDRESS])[0]
 
     def refuse(path):
         raise PermissionError(13, "Permission denied")
