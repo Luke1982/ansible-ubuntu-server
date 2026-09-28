@@ -1,0 +1,159 @@
+import colorsys
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+
+from mailctl.core import branding
+from mailctl.core.errors import MailctlError
+
+BLUE = "#09526D"
+# SOGo's own: the teal it colours everything with, one of its pale shades, and two colours of another hue.
+SOGO_CSS = """
+.md-primary{color:rgb(77,128,128)}
+.md-primary.md-hue-1{background-color:rgb(178,214,211)}
+.md-warn{color:#dd2c00}
+.md-save{background-color:rgb(86,176,76)}
+.md-ink{background-color:rgba(77,128,128,0.87)}
+.md-cyan{color:rgb(0,176,192)}
+"""
+
+
+@pytest.fixture
+def config(config, tmp_path):
+    """A server whose SOGo files are in the test's own directory."""
+    resources = tmp_path / "sogo-resources"
+    (resources / "css").mkdir(parents=True)
+    (resources / "css" / "theme-default.css").write_text(SOGO_CSS)
+    return replace(config, sogo_resources=resources, webmail_branding=tmp_path / "branding")
+
+
+def picture(tmp_path, name="logo.png") -> Path:
+    path = tmp_path / name
+    path.write_bytes(b"\x89PNG\r\n\x1a\n and then some")
+    return path
+
+
+def hue_of(text: str) -> float:
+    red, green, blue = (int(text[at:at + 2], 16) / 255 for at in (1, 3, 5))
+    return colorsys.rgb_to_hls(red, green, blue)[0] * 360
+
+
+def test_the_colour_of_a_brand_is_read_as_hue_saturation_and_lightness():
+    hue, saturation, lightness = branding.colour_of(BLUE)
+
+    assert 195 < hue < 200  # a blue
+    assert saturation > 0.8 and lightness < 0.3  # deep and dark, as it is
+
+
+def test_something_that_isnt_a_colour_says_so():
+    with pytest.raises(MailctlError, match="isn't a colour"):
+        branding.colour_of("blue")
+
+
+def test_recolouring_puts_the_brand_hue_on_sogos_own_palette():
+    css = branding.recolour(SOGO_CSS, BLUE)
+
+    assert "rgb(77,128,128)" not in css
+    assert "rgb(178,214,211)" not in css  # its pale shade too
+    assert "rgba(" in css and "0.87)" in css  # what was see-through stays see-through
+
+
+def test_recolouring_leaves_the_colours_of_another_hue_alone():
+    """The red of a warning and the green of the save button say what they are; only the palette is ours."""
+    css = branding.recolour(SOGO_CSS, BLUE)
+
+    assert "#dd2c00" in css
+    assert "rgb(86,176,76)" in css
+    assert "rgb(0,176,192)" in css  # a cyan of its own: near the hue, but far more saturated
+
+
+def test_every_shade_keeps_the_lightness_it_had():
+    """So what was a pale background stays pale, and what was a dark bar stays dark."""
+    css = branding.recolour(SOGO_CSS, BLUE)
+    dark = css.split(".md-primary{color:")[1].split("}")[0]
+    pale = css.split(".md-hue-1{background-color:")[1].split("}")[0]
+
+    values = [tuple(int(part) for part in one.removeprefix("rgb(").removesuffix(")").split(",")) for one in
+              (dark, pale)]
+    assert sum(values[0]) < sum(values[1])  # the pale shade is still the lighter one
+    assert 190 < colorsys.rgb_to_hls(*(part / 255 for part in values[0]))[0] * 360 < 205
+
+
+def test_applying_a_colour_writes_the_stylesheet_the_sites_serve(config):
+    now = branding.apply(config, colour=BLUE)
+
+    written = (config.webmail_branding / "theme.css").read_text()
+    assert "rgb(77,128,128)" not in written
+    assert now.colour == BLUE
+    assert branding.current(config).colour == BLUE
+
+
+def test_applying_a_logo_keeps_the_kind_of_picture_it_is(config, tmp_path):
+    branding.apply(config, logo=picture(tmp_path), bar_logo=picture(tmp_path, "white.svg"))
+
+    assert (config.webmail_branding / "login-logo.png").is_file()
+    assert (config.webmail_branding / "bar-logo.svg").is_file()
+    assert branding.overrides(config) == {branding.LOGIN_LOGO: "login-logo.png", branding.BAR_LOGO: "bar-logo.svg"}
+
+
+def test_a_new_logo_takes_the_place_of_the_one_before_it(config, tmp_path):
+    branding.apply(config, logo=picture(tmp_path, "first.png"))
+    branding.apply(config, logo=picture(tmp_path, "second.svg"))
+
+    assert not (config.webmail_branding / "login-logo.png").exists()
+    assert branding.overrides(config) == {branding.LOGIN_LOGO: "login-logo.svg"}
+
+
+def test_a_file_that_isnt_a_picture_is_refused(config, tmp_path):
+    text = tmp_path / "notes.txt"
+    text.write_text("hello")
+
+    with pytest.raises(MailctlError, match="isn't a picture"):
+        branding.apply(config, logo=text)
+
+
+def test_a_colour_without_sogos_own_stylesheet_says_where_it_looked(config):
+    (config.sogo_resources / "css" / "theme-default.css").unlink()
+
+    with pytest.raises(MailctlError, match="isn't at"):
+        branding.apply(config, colour=BLUE)
+
+
+def test_clearing_puts_sogos_own_back(config, tmp_path):
+    branding.apply(config, colour=BLUE, logo=picture(tmp_path))
+
+    assert branding.clear(config) is True
+    assert branding.current(config) == branding.Branding()
+    assert branding.overrides(config) == {}
+    assert branding.clear(config) is False
+
+
+def test_a_server_that_was_never_branded_serves_sogos_own(config):
+    assert not branding.current(config)
+    assert branding.overrides(config) == {}
+
+
+def test_the_stylesheet_is_made_again_when_sogos_own_is_newer(config):
+    import os
+    import time
+
+    branding.apply(config, colour=BLUE)
+    ours = config.webmail_branding / "theme.css"
+    ours.write_text("stale")
+    os.utime(ours, (time.time() - 60, time.time() - 60))
+
+    assert branding.refresh(config) is True
+    assert "stale" not in ours.read_text()
+    assert branding.refresh(config) is False  # nothing to do the second time
+
+
+def test_nothing_is_made_again_on_a_server_without_a_colour(config):
+    assert branding.refresh(config) is False
+
+
+def test_the_colour_given_takes_the_place_of_sogos_own_exactly():
+    """So webmail is in the brand's colour, not in something near it."""
+    css = branding.recolour(".md-primary{color:rgb(77,128,128)}", BLUE)
+
+    assert css == ".md-primary{color:rgb(9,82,109)}"

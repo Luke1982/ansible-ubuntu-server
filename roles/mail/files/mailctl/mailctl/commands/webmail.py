@@ -1,12 +1,13 @@
 """mailctl webmail: the webmail sites at webmail.DOMAIN."""
 
 import time
-from typing import Annotated
+from pathlib import Path
+from typing import Annotated, Optional
 
 import typer
 
 from .. import ui
-from ..core import dns_check, domains, names, system, transip, webmail, zone
+from ..core import branding, dns_check, domains, names, system, transip, webmail, zone
 from ..core.dns_check import IPAddress, Resolver
 from ..core.errors import MailctlError
 from ..core.webmail import Outcome, State
@@ -21,6 +22,67 @@ PUBLISH_WAIT = 300  # seconds
 PUBLISH_POLL = 10  # seconds
 
 NoDns = Annotated[bool, typer.Option("--no-dns", help="Don't publish missing webmail records at TransIP.")]
+Colour = Annotated[Optional[str], typer.Option(
+    "--colour", "--color", help="The colour webmail is in, as #RRGGBB.", show_default=False)]
+LoginLogo = Annotated[Optional[str], typer.Option(
+    "--logo", help="A picture to show above the login box, in place of SOGo's.", show_default=False)]
+BarLogo = Annotated[Optional[str], typer.Option(
+    "--bar-logo", help="A picture for the bar at the top, which carries the colour, so a light one.",
+    show_default=False)]
+Icon = Annotated[Optional[str], typer.Option(
+    "--icon", help="The icon for the browser tab (.ico or .png).", show_default=False)]
+Clear = Annotated[bool, typer.Option("--clear", help="Take ours away and serve SOGo's own again.")]
+
+
+@app.command()
+def brand(colour: Colour = None, logo: LoginLogo = None, bar_logo: BarLogo = None, icon: Icon = None,
+          clear: Clear = False) -> None:
+    """Put webmail in the colours and the logo of whoever runs this server.
+
+    The sites serve these in SOGo's place, so an upgrade of SOGo doesn't undo them. The colour recolours SOGo's
+    own palette: the bar, the buttons, what is selected and the badges, throughout webmail, with every shade
+    keeping the lightness it had. Without anything to change, this says what is in place now.
+
+    [dim]Example:[/] mailctl webmail brand --colour '#09526D' --logo logo.png --bar-logo logo-white.png
+
+    [dim]What is set now:[/] mailctl webmail brand
+    """
+    with open_session() as session:
+        if clear:
+            if not branding.clear(session.config):
+                ui.note("Webmail was already in SOGo's own colours.")
+                return
+            webmail.rewrite_sites(session.config)
+            ui.success("Webmail is in SOGo's own colours and logo again.")
+            return
+        given = {"logo": logo, "bar_logo": bar_logo, "icon": icon}
+        if not colour and not any(given.values()):
+            _show_branding(branding.current(session.config))
+            return
+        now = branding.apply(session.config, colour or "",
+                             **{key: Path(value) for key, value in given.items() if value})
+        webmail.rewrite_sites(session.config)
+    ui.success("Webmail's sites serve this now:")
+    _show_branding(now)
+    ui.note("A browser may hold the old ones for a while; ask it for the page again with Ctrl+Shift+R.")
+
+
+def _show_branding(now: branding.Branding) -> None:
+    if not now:
+        ui.note("Webmail is in SOGo's own colours and logo.")
+        return
+    if now.colour:
+        ui.line(f"Colour: {now.colour}", indent=2)
+    for asked in now.files:
+        ui.line(f"{_WHAT[asked]}: {branding.NAMES[asked]}", indent=2)
+
+
+_WHAT = {
+    branding.LOGIN_LOGO: "Logo above the login box",
+    branding.BAR_LOGO: "Logo in the bar at the top",
+    branding.ICON: "Icon in the browser tab",
+    branding.THEME: "Stylesheet in that colour",
+}
 
 
 @app.command()

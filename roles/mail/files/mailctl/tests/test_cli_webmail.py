@@ -230,3 +230,37 @@ def test_domain_delete_says_nothing_about_webmail_for_a_domain_without_a_site(we
     output = webmail_ready.ok("domain", "delete", "example.nl", "--yes", "--keep-mail")
 
     assert "webmail site" not in output
+
+
+def test_webmail_brand_serves_our_logo_and_colour(webmail_ready, db_config, tmp_path):
+    """The sites serve them by the names SOGo's own pages ask for, so an upgrade of SOGo doesn't undo them."""
+    (db_config.sogo_resources / "css").mkdir(parents=True, exist_ok=True)
+    (db_config.sogo_resources / "css" / "theme-default.css").write_text(".md-primary{color:rgb(77,128,128)}")
+    logo = tmp_path / "logo.png"
+    logo.write_bytes(b"\x89PNG")
+
+    output = webmail_ready.ok("webmail", "brand", "--colour", "#09526D", "--logo", str(logo))
+
+    assert "Colour: #09526D" in output
+    assert "Logo above the login box" in output
+    assert (db_config.webmail_branding / "login-logo.png").is_file()
+    assert "rgb(77,128,128)" not in (db_config.webmail_branding / "theme.css").read_text()
+
+
+def test_webmail_brand_says_what_is_in_place_when_asked_for_nothing(webmail_ready):
+    assert "SOGo's own colours and logo" in webmail_ready.ok("webmail", "brand")
+
+
+def test_webmail_brand_can_put_sogos_own_back(webmail_ready, db_config, tmp_path):
+    logo = tmp_path / "logo.png"
+    logo.write_bytes(b"\x89PNG")
+    webmail_ready.ok("webmail", "brand", "--logo", str(logo))
+
+    output = webmail_ready.ok("webmail", "brand", "--clear")
+
+    assert "SOGo's own colours and logo again" in output
+    assert not (db_config.webmail_branding / "login-logo.png").exists()
+
+
+def test_webmail_brand_refuses_something_that_isnt_a_colour(webmail_ready):
+    assert "isn't a colour" in webmail_ready.fails("webmail", "brand", "--colour", "blue")

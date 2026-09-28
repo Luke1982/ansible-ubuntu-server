@@ -524,3 +524,26 @@ def test_check_warns_when_the_lookup_for_the_webmail_name_fails(config):
 
     assert found.status is Status.WARN
     assert found.detail == "The A lookup for webmail.example.nl failed: timed out"
+
+
+def test_a_branded_server_serves_its_own_logo_and_stylesheet(config, tmp_path):
+    """By the names SOGo's own pages ask for, so nothing in SOGo has to be changed."""
+    from mailctl.core import branding
+
+    config = replace(config, webmail_branding=tmp_path / "branding")
+    (config.webmail_branding).mkdir(parents=True)
+    (config.webmail_branding / "login-logo.png").write_bytes(b"\x89PNG")
+    (config.webmail_branding / "theme.css").write_text("/* ours */")
+
+    settings = webmail._site(config, "webmail.example.nl", certified=True)
+
+    assert ("RewriteRule ^/SOGo\\.woa/WebServerResources/css/theme\\-default\\.css$ "
+            "/sogo-branding/theme.css [L]") in settings
+    assert "/sogo-branding/login-logo.png [L]" in settings
+    assert f"location                {config.webmail_branding}/" in settings
+
+
+def test_a_server_without_branding_serves_sogos_own(config):
+    settings = webmail._site(config, "webmail.example.nl", certified=True)
+
+    assert "sogo-branding" not in settings

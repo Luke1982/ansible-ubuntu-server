@@ -16,7 +16,7 @@ _mailctl() {
                 certificate) words="sync" ;;
                 spam) words="show set unset learn" ;;
                 filters) words="show adopt import run repair" ;;
-                webmail) words="sync" ;;
+                webmail) words="sync brand" ;;
             esac
             ;;
     esac

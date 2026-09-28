@@ -80,6 +80,30 @@
     state: absent
   when: webmail_old_settings.rc | default(0) != 0
 
+# The logo and colour the webmail sites serve in SOGo's place, so an upgrade of SOGo doesn't undo them. The
+# stylesheet in that colour is made from SOGo's own by "mailctl webmail brand", and by "mailctl webmail sync"
+# whenever SOGo's is newer, so nothing here has to know which version is installed.
+- name: Create the webmail branding directory
+  file:
+    path: /var/www/webmail/branding
+    state: directory
+    owner: root
+    group: root
+    mode: 0755
+
+- name: Install the logo and colour webmail is served in
+  copy:
+    src: "roles/mail/files/webmail-branding/{{ item }}"
+    dest: "/var/www/webmail/branding/{{ item }}"
+    owner: root
+    group: root
+    mode: 0644
+  loop:
+    - login-logo.png
+    - bar-logo.png
+    - icon.ico
+    - colour
+
 # The sites are set up by "mailctl webmail sync", by hand: it publishes DNS
 # records, asks certbot for certificates, and takes away the sites of domains
 # whose webmail name no longer points here, so a playbook run never does it.

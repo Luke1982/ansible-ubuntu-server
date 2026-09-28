@@ -49,6 +49,8 @@ class Config:
     sogo_resources: Path = Path("/usr/lib/GNUstep/SOGo/WebServerResources")
     ols_root: Path = Path("/usr/local/lsws")
     webmail_root: Path = Path("/var/www/webmail")
+    # The logo and colours the webmail sites serve in SOGo's place (mailctl webmail brand).
+    webmail_branding: Path = Path("/var/www/webmail/branding")
     # The sites' own settings: root's, not in OpenLiteSpeed's conf directory, which belongs to lsadm.
     ols_user: str = "lsadm"  # owns OpenLiteSpeed's config directory, and WebAdmin runs as it
     letsencrypt_dir: Path = Path("/etc/letsencrypt")

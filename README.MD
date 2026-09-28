@@ -90,6 +90,8 @@ Run it yourself, on the server, after adding a domain or changing a `webmail.DOM
 
 `mailctl domain add`, `dns show` and `dns publish` include the `webmail.DOMAIN` records and the `_caldavs._tcp` and `_carddavs._tcp` SRV records, which point calendar and contact apps at `https://webmail.DOMAIN` by themselves. `mailctl doctor` shows how a domain's webmail is doing, and `mailctl domain delete` takes its site and certificate along.
 
+Webmail carries the colours and the logo of whoever runs the server. `mailctl webmail brand --colour '#09526D' --logo logo.png --bar-logo logo-white.png --icon icon.ico` puts them in place; without arguments it says what is set, and `--clear` puts SOGo's own back. The sites serve these files by the names SOGo's pages ask for, so an upgrade of SOGo doesn't undo them, and the colour is SOGo's own stylesheet with its palette recoloured: the colour given takes the place of SOGo's green-teal exactly, and every shade of it moves along, keeping how far it stood from white. Colours that say something -- the red of a warning, the green of the save button -- keep their own hue. The files the playbook installs are in [`roles/mail/files/webmail-branding`](roles/mail/files/webmail-branding); `mailctl webmail sync` makes the stylesheet again whenever SOGo's own is newer, which it is after an upgrade.
+
 Calendars, address books and SOGo's settings live in the MariaDB database `sogo`: back it up along with the mail.
 
 Roundcube's database stays, with the contacts people saved in it. Filters made in Roundcube keep working until someone saves filters or a vacation reply in SOGo; from then on SOGo's apply. `mailctl filters show ADDRESS` shows both.
@@ -352,6 +354,7 @@ Mail servers get `mailctl`, a command-line tool for the mail domains, addresses,
 | `mailctl filters show info@example.nl` | Shows an account's mail filters |
 | `mailctl filters import mailserver.json` | Takes only the filters from another server's file, into webmail's list (below) |
 | `mailctl filters run info@example.nl` | Runs an account's filters over the mail that is already in a folder (below) |
+| `mailctl webmail brand --colour '#09526D'` | Puts webmail in the colours and the logo of whoever runs the server (below) |
 | `mailctl webmail sync` | Publishes missing `webmail.DOMAIN` records at TransIP, sets up webmail with a certificate for the domains whose `webmail.DOMAIN` points here, and removes it for the others. Run it by hand; the playbook only says to |
 
 Last logins are recorded for IMAP, which webmail and phones on ActiveSync use too; accounts that only send mail show no logins.

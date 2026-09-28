@@ -79,6 +79,8 @@ def config(tmp_path) -> Config:
         autodiscover_root=tmp_path / "mailautodiscover",
         spam_learn_state=tmp_path / "spam-learn.json",
         sogo_cache="127.0.0.1:1",  # nothing listens there: a test never empties a cache this machine is using
+        sogo_resources=tmp_path / "sogo-resources",
+        webmail_branding=tmp_path / "branding",
         letsencrypt_dir=tmp_path / "letsencrypt",
     )
 

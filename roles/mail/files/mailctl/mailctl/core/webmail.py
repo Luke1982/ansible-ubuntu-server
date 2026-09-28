@@ -12,13 +12,14 @@ make mailctl, running as root, write or delete anything lsadm couldn't. The note
 exist; mailctl leaves every other virtual host alone.
 """
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
-from . import certificate, files, names, openlitespeed, system
+from . import branding, certificate, files, names, openlitespeed, system
 from .config import Config
 from .dns_check import (
     Check, IPAddress, LookupFailed, NotPointingHere, Resolver, Status, resolve_to_this_server, webmail_records,
@@ -27,6 +28,8 @@ from .errors import MailctlError
 from .openlitespeed import VirtualHost
 
 PREFIX = "webmail."
+# Where the sites serve what is ours: the logo, the icon and the recoloured stylesheet.
+_BRANDING = "/sogo-branding/"
 SERVE_TIMEOUT = 10  # seconds OpenLiteSpeed gets to serve a new site after a restart
 _HEADER = "# Written by mailctl webmail sync. Changes are overwritten.\n"
 _NOTE = "Managed by mailctl: webmail (mailctl webmail sync)"
@@ -91,6 +94,7 @@ def has_certificate(config: Config, name: str) -> bool:
 
 def sync(config: Config, domains: Iterable[str], server_ips: set[IPAddress], resolver: Resolver) -> Result:
     """Gives every domain whose webmail name points here a site with a certificate, and removes the other sites."""
+    branding.refresh(config)  # after an upgrade of SOGo, and for a colour a playbook run left here
     lines = openlitespeed.read(config.ols_root)
     http, https = openlitespeed.listeners(lines)
     if not http:
@@ -115,6 +119,12 @@ def sync(config: Config, domains: Iterable[str], server_ips: set[IPAddress], res
     # Moves the sites that got their certificate to the HTTPS listeners.
     _publish(config, plan.kept)
     return Result(tuple(plan.outcomes[name] for name in sorted(plan.outcomes)), changed)
+
+
+def rewrite_sites(config: Config) -> bool:
+    """Writes the settings of the sites that are there again, and has OpenLiteSpeed read them. For a change that
+    is about how they look, not about which of them exist. Returns whether anything changed."""
+    return _publish(config, set(sites(config)))
 
 
 def _plan(config: Config, lines: list[str], domains: Iterable[str], server_ips: set[IPAddress],
@@ -294,6 +304,17 @@ context / {{
         ]
     )
     live = _live(config, name)
+    ours = branding.overrides(config)
+    # Served in SOGo's place, by the name its own pages ask for. A rewrite rather than a context per file, so
+    # nothing depends on OpenLiteSpeed serving a single file as a context of its own.
+    branded = "\n".join(f"RewriteRule ^/SOGo\\.woa/WebServerResources/{re.escape(asked)}$ {_BRANDING}{file} [L]"
+                        for asked, file in sorted(ours.items()))
+    branding_context = f"""
+context {_BRANDING} {{
+  location                {config.webmail_branding}/
+  allowBrowse             1
+}}
+""" if ours else ""
     return f"""{_HEADER}docRoot                 {config.webmail_root}/
 enableGzip              1
 
@@ -320,9 +341,10 @@ RewriteCond %{{HTTPS}} !on
 RewriteCond %{{REQUEST_URI}} !^/\\.well-known/acme-challenge/
 RewriteRule ^ https://{name}%{{REQUEST_URI}} [R=301,L]
 RewriteRule ^/\\.well-known/(caldav|carddav)$ /SOGo/dav/ [R=301,L]
+{branded}
   END_rules
 }}
-{challenges}
+{challenges}{branding_context}
 context /SOGo.woa/WebServerResources/ {{
   location                {config.sogo_resources}/
   allowBrowse             1
