@@ -12,7 +12,9 @@ from ..core import accountfile, addresses, dkim, domains, forwards, mailbox, sen
 from ..core.errors import MailctlError
 from ..session import Session, open_session
 from .dns import DryRun
-from .shared import Yes, activate_imported, attempt, into_webmail, would_be_in_webmail
+from .shared import (
+    Yes, activate_imported, attempt, into_webmail, tell_webmail_to_read_them, would_be_in_webmail,
+)
 
 ServerFile = Annotated[Optional[str], typer.Argument(
     metavar="[FILE]", help="The JSON file of the mail server. Asked for when left out.", show_default=False)]
@@ -74,6 +76,8 @@ def import_server(file: ServerFile = None, dry_run: DryRun = False, keep_hashes:
         ui.confirm("Import it?", yes)
         plan.ask_passwords()
         warnings = plan.carry_out()
+        if plan.filters:
+            tell_webmail_to_read_them(session)
     ui.success(f"Imported {plan.summary()} from {path}.")
     for warning in warnings:
         ui.warn(warning)

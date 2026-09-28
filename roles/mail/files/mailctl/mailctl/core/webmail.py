@@ -339,10 +339,16 @@ context /SOGo {{
 
 # Phones ask for /Microsoft-Server-ActiveSync, which SOGo answers under /SOGo. A
 # pattern, so OpenLiteSpeed doesn't first redirect it to a folder with a "/".
+#
+# SOGo asks for the password with "WWW-Authenticate: basic", in lower case.
+# Microsoft's servers, which a phone using Outlook goes through, read the name
+# of the method as it is written and answer that the server supports no way of
+# signing in at all, so it is written here the way they expect it.
 context exp:^/Microsoft-Server-ActiveSync {{
   allowBrowse             1
   extraHeaders            <<<END_extraHeaders
 {headers}
+Header set WWW-Authenticate Basic realm="SOGo"
   END_extraHeaders
   rewrite {{
     enable                1

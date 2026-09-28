@@ -44,6 +44,8 @@ class Config:
     transip_key: Path = Path("/etc/mailctl/transip.key")
     # Webmail: SOGo, behind a site at webmail.DOMAIN in OpenLiteSpeed with a Let's Encrypt certificate
     sogo_address: str = "127.0.0.1:20000"
+    # Where SOGo keeps a copy of every account's settings while it runs (SOGoMemcachedHost in sogo.conf).
+    sogo_cache: str = "127.0.0.1:11211"
     sogo_resources: Path = Path("/usr/lib/GNUstep/SOGo/WebServerResources")
     ols_root: Path = Path("/usr/local/lsws")
     webmail_root: Path = Path("/var/www/webmail")

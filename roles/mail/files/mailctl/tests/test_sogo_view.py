@@ -61,3 +61,39 @@ def test_a_password_changed_through_the_view_reaches_the_account(sogo, database)
 def test_the_sogo_user_cant_read_the_mail_database_itself(sogo):
     with pytest.raises(pymysql.err.OperationalError, match="denied"):
         query(sogo, "SELECT password FROM mailserver.virtual_users")
+
+
+def test_webmail_is_told_to_read_its_settings_again():
+    """SOGo keeps every account's settings while it runs and writes that copy back when anybody saves, so a change
+    made behind its back is undone unless its cache goes first."""
+    import socket
+    import threading
+
+    from mailctl.core import sogo
+
+    listening = socket.socket()
+    listening.bind(("127.0.0.1", 0))
+    listening.listen(1)
+    asked = []
+
+    def answer():
+        connection, _ = listening.accept()
+        with connection:
+            asked.append(connection.recv(64))
+            connection.sendall(b"OK\r\n")
+
+    server = threading.Thread(target=answer)
+    server.start()
+    try:
+        assert sogo.forget_cached_settings(f"127.0.0.1:{listening.getsockname()[1]}") is True
+    finally:
+        server.join(timeout=5)
+        listening.close()
+    assert asked == [b"flush_all\r\n"]
+
+
+def test_a_cache_that_cant_be_reached_is_reported_not_raised():
+    from mailctl.core import sogo
+
+    assert sogo.forget_cached_settings("127.0.0.1:1", timeout=0.5) is False
+    assert sogo.forget_cached_settings("nonsense", timeout=0.5) is False

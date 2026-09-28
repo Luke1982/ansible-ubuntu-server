@@ -78,6 +78,7 @@ def config(tmp_path) -> Config:
         ols_root=tmp_path / "lsws",
         autodiscover_root=tmp_path / "mailautodiscover",
         spam_learn_state=tmp_path / "spam-learn.json",
+        sogo_cache="127.0.0.1:1",  # nothing listens there: a test never empties a cache this machine is using
         letsencrypt_dir=tmp_path / "letsencrypt",
     )
 

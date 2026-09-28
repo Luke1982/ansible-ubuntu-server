@@ -11,7 +11,10 @@ from ..core import addresses, mailbox, names, sieve, sogofilters, transfer
 from ..core.errors import MailctlError
 from ..session import Session, open_session
 from .dns import DryRun
-from .shared import Address, Yes, activate_imported, ask_address, attempt, group, into_webmail, would_be_in_webmail
+from .shared import (
+    Address, Yes, activate_imported, ask_address, attempt, group, into_webmail, tell_webmail_to_read_them,
+    would_be_in_webmail,
+)
 
 app = group("Show the mail filters (Sieve scripts) of an account.")
 
@@ -71,6 +74,7 @@ def import_filters(file: ServerFile = None, address: OnlyAddress = None, replace
         for account, scripts in per_account.items():
             attempt(warnings, f"Couldn't import the filters of {account}",
                     lambda account=account, scripts=scripts: _put_filters(session, account, scripts))
+        tell_webmail_to_read_them(session)
     for warning in warnings:
         ui.warn(warning)
 
@@ -150,6 +154,8 @@ def adopt(address: Address = None, dry_run: DryRun = False) -> None:
                            f"from webmail's own filter now.")
             for line in adopted.left:
                 ui.warn(f"Not in webmail: {line}", indent=2)
+        if not dry_run:
+            tell_webmail_to_read_them(session)
     if dry_run:
         ui.note("Nothing was changed (--dry-run).")
 
@@ -245,6 +251,8 @@ def repair(address: Address = None, dry_run: DryRun = False) -> None:
             if result.filters:
                 fixed += 1
                 ui.success(f"{account}: {ui.plural(result.filters, 'filter')} webmail can save now.")
+        if fixed and not dry_run:
+            tell_webmail_to_read_them(session)
     if not fixed:
         ui.note("Webmail can save the filters of every account as they are.")
     elif dry_run:

@@ -8,10 +8,13 @@ Nothing here touches mail. SOGo reads its tables when it starts a session, so an
 """
 
 import re
+import socket
 from dataclasses import dataclass
 
 from .db import Database
 from .errors import MailctlError
+
+CACHE_TIMEOUT = 2.0  # seconds; the cache is next door, and a slow answer is no reason to keep anybody waiting
 
 PROFILE = "sogo_user_profile"
 FOLDERS = "sogo_folder_info"
@@ -67,3 +70,19 @@ def _drop(db: Database, location: str | None) -> None:
     if not _TABLE.fullmatch(name):
         raise MailctlError(f"{FOLDERS} names a table mailctl won't touch: {name!r}.")
     db.execute(f"DROP TABLE IF EXISTS sogo.{name}")
+
+
+def forget_cached_settings(cache: str, timeout: float = CACHE_TIMEOUT) -> bool:
+    """Tells webmail to read its settings from the database again. False when its cache can't be reached.
+
+    SOGo keeps every account's settings in memcached while it runs, and writes that copy back whenever anything is
+    saved. A change made here is therefore undone the next time somebody saves anything in webmail, unless the
+    copy goes first. memcached can only be emptied whole, so webmail's sessions go with it: people log in again.
+    """
+    host, _, port = cache.rpartition(":")
+    try:
+        with socket.create_connection((host or "127.0.0.1", int(port or 11211)), timeout=timeout) as cached:
+            cached.sendall(b"flush_all\r\n")
+            return cached.recv(64).startswith(b"OK")
+    except (OSError, ValueError):
+        return False

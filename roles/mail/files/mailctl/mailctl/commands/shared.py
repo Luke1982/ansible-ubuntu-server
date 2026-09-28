@@ -7,7 +7,9 @@ from typing import Annotated, Optional
 import typer
 
 from .. import ui
-from ..core import addresses, autodiscover, dkim, dns_check, domains, mailbox, names, sogofilters, spam, system
+from ..core import (
+    addresses, autodiscover, dkim, dns_check, domains, mailbox, names, sogo, sogofilters, spam, system,
+)
 from ..core.dns_check import DnsRecord
 from ..core.errors import MailctlError
 from ..core.forwards import Forward
@@ -136,3 +138,14 @@ def activate_imported(address: str, scripts: list, was_active: str | None) -> No
             # An account has one active filter, and webmail keeps its own in a filter of its own.
             ui.warn(f"{was_active} was the active filter and stops running: an account has one. Saving filters in "
                     f"webmail makes {was_active} the active one again, and then the imported filters stop instead.")
+
+
+def tell_webmail_to_read_them(session: Session) -> None:
+    """After changing what webmail keeps for an account. Webmail holds a copy of every account's settings while it
+    runs and writes that copy back whenever anybody saves anything in it, so a change made here that it doesn't
+    know about is undone the moment somebody saves."""
+    if sogo.forget_cached_settings(session.config.sogo_cache):
+        ui.note("Webmail reads its settings again; whoever is signed in to it signs in once more.")
+        return
+    ui.warn("Couldn't reach webmail's cache, so webmail may go on using the settings it already had, and write "
+            "them back over these. Have it read them again with: systemctl restart sogo memcached")
