@@ -25,7 +25,8 @@ LOGIN_LOGO = "img/sogo-full.svg"
 BAR_LOGO = "img/sogo-compact.svg"
 ICON = "img/sogo.ico"
 THEME = "css/theme-default.css"
-NAMES = {LOGIN_LOGO: "login-logo", BAR_LOGO: "bar-logo", ICON: "icon", THEME: "theme.css"}
+SCRIPT = "js/Common.js"
+NAMES = {LOGIN_LOGO: "login-logo", BAR_LOGO: "bar-logo", ICON: "icon", THEME: "theme.css", SCRIPT: "common.js"}
 COLOUR_FILE = "colour"  # the colour the stylesheet was made with, so it can be shown and made again
 
 # SOGo's own palette is a green-teal, never fully saturated. A colour in the stylesheet with that hue belongs to
@@ -42,6 +43,12 @@ ACCENT_LIGHTNESS = 0.494  # of rgb(86,176,76), the green of the login panel
 _RGB = re.compile(r"rgb\((\d{1,3}),\s*(\d{1,3}),\s*(\d{1,3})\)")
 _RGBA = re.compile(r"rgba\((\d{1,3}),\s*(\d{1,3}),\s*(\d{1,3}),\s*([0-9.]+)\)")
 _HEX = re.compile(r"#([0-9a-fA-F]{6})\b")
+# Webmail itself doesn't use the stylesheet: it builds its own from two palettes written out in its JavaScript,
+# so the same colours have to be put there as well, or only the login page is ours. The shade the theme is built
+# around is named beside each palette: its own colour becomes the colour given here, and the rest moves with it.
+PALETTES = (("sogo-blue", "900"), ("sogo-green", "500"))  # the primary and the accent, as SOGo names them
+_PALETTE = "definePalette(\"{name}\",{{"
+_SHADE = re.compile(r'(\w+):"([0-9a-fA-F]{6})"')
 
 
 @dataclass(frozen=True)
@@ -112,6 +119,32 @@ def recolour(css: str, colour: str, accent: str = "") -> str:
     return _HEX.sub(as_hex, _RGBA.sub(as_rgba, _RGB.sub(as_rgb, css)))
 
 
+def recolour_script(script: str, colour: str, accent: str = "") -> str:
+    """Webmail's JavaScript with the two palettes it builds its own colours from in these colours."""
+    for (name, anchor), given in zip(PALETTES, (colour, accent or colour)):
+        start = script.find(_PALETTE.format(name=name))
+        if start < 0:
+            continue
+        opened = script.index("{", start)
+        closed = script.index("}", opened)
+        shades = script[opened:closed]
+        anchored = dict(_SHADE.findall(shades)).get(anchor)
+        if not anchored:
+            continue
+        hue, saturation, lightness = colour_of(f"#{given.lstrip('#')}")
+        towards_white = (1 - lightness) / (1 - colour_of(f"#{anchored}")[2])
+
+        def shade(found: re.Match) -> str:
+            was_hue, was_lightness, was_saturation = colorsys.rgb_to_hls(
+                *(int(found.group(2)[at:at + 2], 16) / 255 for at in (0, 2, 4)))
+            now_lightness = min(0.97, max(0.12, 1 - (1 - was_lightness) * towards_white))
+            now = colorsys.hls_to_rgb(hue / 360, now_lightness, saturation)
+            return '%s:"%02x%02x%02x"' % (found.group(1), *(round(part * 255) for part in now))
+
+        script = script[:opened] + _SHADE.sub(shade, shades) + script[closed:]
+    return script
+
+
 def current(config: Config) -> Branding:
     """What the sites serve of their own now."""
     directory = config.webmail_branding
@@ -151,6 +184,10 @@ def apply(config: Config, colour: str = "", accent: str = "", logo: Path | None 
             raise MailctlError(f"SOGo's own stylesheet isn't at {source}, so it can't be recoloured.",
                                hint="Is SOGo installed? Its files are where sogo_resources in the config says.")
         (directory / NAMES[THEME]).write_text(recolour(source.read_text(errors="replace"), colour, accent))
+        script = config.sogo_resources / SCRIPT
+        if script.is_file():
+            (directory / NAMES[SCRIPT]).write_text(
+                recolour_script(script.read_text(errors="replace"), colour, accent))
         (directory / COLOUR_FILE).write_text(" ".join(part for part in (colour.strip(), accent.strip()) if part)
                                              + "\n")
     return current(config)
@@ -162,11 +199,11 @@ def refresh(config: Config) -> bool:
     now = current(config)
     if not now.colour:
         return False
-    ours = config.webmail_branding / NAMES[THEME]
-    theirs = config.sogo_resources / THEME
-    if not theirs.is_file():
+    made = [(config.sogo_resources / what, config.webmail_branding / NAMES[what]) for what in (THEME, SCRIPT)]
+    made = [(theirs, ours) for theirs, ours in made if theirs.is_file()]
+    if not made:
         return False
-    if ours.is_file() and ours.stat().st_mtime >= theirs.stat().st_mtime:
+    if all(ours.is_file() and ours.stat().st_mtime >= theirs.stat().st_mtime for theirs, ours in made):
         return False
     apply(config, colour=now.colour, accent=now.accent)
     return True

@@ -180,3 +180,41 @@ def test_a_shade_that_stands_out_never_turns_black():
 
     values = [int(part) for part in css.split("rgb(")[1].split(")")[0].split(",")]
     assert sum(values) > 90
+
+
+SOGO_JS = ('r.definePalette("sogo-blue",{50:"f0faf9",400:"b2d6d3",900:"4d8080",A700:"00b0c0",'
+           'contrastDefaultColor:"light",contrastDarkColors:["50","100"]});'
+           'r.definePalette("sogo-green",{500:"56b04c",A400:"00e676"});'
+           'r.theme("default").primaryPalette("sogo-blue",{default:"900"})')
+
+
+def test_webmail_builds_its_own_colours_from_its_javascript():
+    """The stylesheet is the login page's; webmail itself builds its colours from two palettes written out in its
+    script, so the same colours go there or only the front door is ours."""
+    js = branding.recolour_script(SOGO_JS, BLUE, accent="#0693E3")
+
+    assert '900:"09526d"' in js  # the shade the theme is built around, exactly the colour given
+    assert '500:"0693e3"' in js
+    assert '4d8080' not in js and '56b04c' not in js
+
+
+def test_recolouring_a_script_leaves_everything_else_as_it_was():
+    js = branding.recolour_script(SOGO_JS, BLUE)
+
+    assert 'contrastDefaultColor:"light"' in js
+    assert 'contrastDarkColors:["50","100"]' in js
+    assert 'r.theme("default").primaryPalette("sogo-blue",{default:"900"})' in js
+
+
+def test_a_script_without_the_palettes_is_left_alone():
+    assert branding.recolour_script("nothing to see", BLUE) == "nothing to see"
+
+
+def test_applying_a_colour_writes_the_script_webmail_builds_from(config):
+    (config.sogo_resources / "js").mkdir(parents=True, exist_ok=True)
+    (config.sogo_resources / "js" / "Common.js").write_text(SOGO_JS)
+
+    branding.apply(config, colour=BLUE)
+
+    assert '900:"09526d"' in (config.webmail_branding / "common.js").read_text()
+    assert branding.overrides(config)[branding.SCRIPT] == "common.js"

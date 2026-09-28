@@ -87,6 +87,7 @@ _WHAT = {
     branding.BAR_LOGO: "Logo in the bar at the top",
     branding.ICON: "Icon in the browser tab",
     branding.THEME: "Stylesheet in that colour",
+    branding.SCRIPT: "Webmail's own colours",
 }
 
 
