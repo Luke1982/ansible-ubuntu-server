@@ -155,7 +155,7 @@ Each server has its own playbook (e.g. `web01.whservice.nl.yml`) in the project 
 | Role | What it does |
 |------|-------------|
 | `basic` | Hostname, base packages, unattended-upgrades, Linux users, SSH hardening, iptables firewall (applied at boot), fail2ban |
-| `web` | OpenLiteSpeed with LiteSpeed's PHP 8.3, PHP-FPM and CLI from Ubuntu (8.3 on Ubuntu 24.04, 8.5 on 26.04), Composer (global), wp-cli, nvm (system-wide), certbot, fail2ban jails for WordPress password guessing, Let's Encrypt directory, the shared virtual host template, and `domainctl` (below) |
+| `web` | OpenLiteSpeed with LiteSpeed's PHP 8.3, PHP-FPM and CLI from Ubuntu (8.3 on Ubuntu 24.04, 8.5 on 26.04), Composer (global), wp-cli, nvm (system-wide), Redis with the PHP extension for it (object caching), certbot, fail2ban jails for WordPress password guessing, Let's Encrypt directory, the shared virtual host template, and `domainctl` (below) |
 | `db` | MariaDB, phpMyAdmin on a site of its own at `pma.<hostname>` |
 | `mail` | Postfix, Dovecot with full-text IMAP search (fts-xapian) and login tracking, OpenDKIM, SpamAssassin, SOGo (webmail, calendars, address books and ActiveSync), per-user sending limits (postfwd), fail2ban jails for SMTP, IMAP and webmail brute force, and `mailctl` (below) |
 

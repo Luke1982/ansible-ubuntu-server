@@ -1,0 +1,40 @@
+---
+# Redis, for WordPress object caching: a site with the Redis Object Cache plugin keeps what it looked up in the
+# database here instead of asking again on every page. The PHP extension is already installed with OpenLiteSpeed's
+# PHP (lsphp83-redis) and with Ubuntu's, which wp-cli runs on.
+#
+# It listens on localhost only, as the package leaves it. Every site on this server shares the one Redis, so a site
+# can read another site's cached data: give each site a database index and a prefix of its own
+# (WP_REDIS_DATABASE and WP_REDIS_PREFIX in wp-config.php), and keep nothing in there that isn't in the database
+# anyway.
+
+- name: Install Redis and the PHP extension for it
+  apt:
+    pkg:
+      - redis-server
+      - "php{{ php_version }}-redis"
+    state: present
+
+# Kept at the end of the file, where these override what the package's own lines above say. A cache doesn't need
+# to survive a restart, so nothing is written to disk: no snapshots, no append log, no I/O for data that is only a
+# copy of what the database holds. When it is full it throws out what was used least recently, rather than
+# refusing to store anything new, which is what a cache is for.
+- name: Set up Redis as a cache
+  blockinfile:
+    path: /etc/redis/redis.conf
+    marker: "# {mark} ANSIBLE MANAGED: cache settings"
+    block: |
+      maxmemory {{ redis_max_memory }}
+      maxmemory-policy allkeys-lru
+      save ""
+      appendonly no
+    owner: redis
+    group: redis
+    mode: 0640
+  notify: restart redis
+
+- name: Start Redis and have it start with the server
+  systemd:
+    name: redis-server
+    enabled: yes
+    state: started

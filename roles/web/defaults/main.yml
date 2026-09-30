@@ -7,6 +7,10 @@ php_versions:
 
 php_version: "{{ php_versions[ansible_distribution_version] }}"
 
+# How much Redis may hold before it throws out what was used least recently. It caches what the sites read from
+# their databases, so more of it means fewer queries; it is not storage, and losing it costs nothing but speed.
+redis_max_memory: 256mb
+
 # --- Sites and domainctl -----------------------------------------------------
 # Where a site's Linux user gets its home directory, which is the virtual host's root.
 web_home_root: /home

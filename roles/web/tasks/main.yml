@@ -49,6 +49,7 @@
     mode: 0600
 
 - include_tasks: setup-php-fpm.yml
+- include_tasks: setup-redis.yml
 
 - name: Download Composer installer
   get_url:
