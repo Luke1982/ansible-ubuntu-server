@@ -161,18 +161,18 @@ Each server has its own playbook (e.g. `web01.whservice.nl.yml`) in the project 
 
 ## Database backups
 
-Every night at three, a dump of every database on the server, gzipped, in `/var/backups/mariadb`. The ones older than 14 days go, but only after a run in which every database was dumped: failing backups shouldn't quietly eat the last good ones. A dump is written under a temporary name and renamed once it is whole, so nothing that looks like a backup is half a backup.
+Every night at three, a dump of every database on the server, gzipped, in `/home/dbbackups`. The ones older than 14 days go, but only after a run in which every database was dumped: failing backups shouldn't quietly eat the last good ones. A dump is written under a temporary name and renamed once it is whole, so nothing that looks like a backup is half a backup.
 
-They are made by `dbbackup`, a user with no password at all: MariaDB knows it by its Linux name (`unix_socket`), so only that Linux user can be it, and there is nothing to read out of a file, a process list or one of the backups. It may read every database and nothing else -- `SELECT`, and what a dump needs besides: views, triggers, events and a lock on a table that isn't InnoDB.
+They are made by `dbbackups`, a user with no password at all: MariaDB knows it by its Linux name (`unix_socket`), so only that Linux user can be it, and there is nothing to read out of a file, a process list or one of the backups. It may read every database and nothing else -- `SELECT`, and what a dump needs besides: views, triggers, events and a lock on a table that isn't InnoDB.
 
 ```bash
 systemctl list-timers mariadb-backup.timer     # when it last ran, and when it runs next
 systemctl start mariadb-backup                 # now, rather than tonight
 journalctl -u mariadb-backup -n 20             # what it did, with the size of each dump
-zcat /var/backups/mariadb/sogo-20260930-030001.sql.gz | mariadb sogo   # putting one back
+zcat /home/dbbackups/sogo-20260930-030001.sql.gz | mariadb sogo   # putting one back
 ```
 
-The hour, where they go, how long they are kept and the user's name are `db_backup_time`, `db_backup_home`, `db_backup_keep_days` and `db_backup_user` in [`roles/db/defaults/main.yml`](roles/db/defaults/main.yml). The dumps hold everything the databases hold, including the accounts in `mysql` and the password hashes in `mailserver`: they are readable by root and by `dbbackup`, and by nobody else. This server keeps them on its own disk, which is a copy, not a backup; copy them off it as well.
+The hour, where they go, how long they are kept and the user's name are `db_backup_time`, `db_backup_home`, `db_backup_keep_days` and `db_backup_user` in [`roles/db/defaults/main.yml`](roles/db/defaults/main.yml). The dumps hold everything the databases hold, including the accounts in `mysql` and the password hashes in `mailserver`: they are readable by root and by `dbbackups`, and by nobody else. This server keeps them on its own disk, which is a copy, not a backup; copy them off it as well.
 
 ## phpMyAdmin
 

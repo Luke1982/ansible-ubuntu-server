@@ -3,6 +3,9 @@
 #
 #   backup-databases [DIRECTORY] [DAYS_TO_KEEP]
 #
+# Without a directory it writes to /home/dbbackups, where the nightly run puts them too: run by hand it should
+# land where the backups live, not in the home directory of whoever happened to run it.
+#
 # Run as the backup user, which MariaDB knows by its Linux name (unix_socket): no password anywhere, and nothing
 # to read out of a file or a process list. It may read every database and nothing else, so a dump is all it can do.
 #
@@ -14,7 +17,7 @@
 
 set -euo pipefail
 
-directory=${1:-$HOME}
+directory=${1:-/home/dbbackups}
 keep_days=${2:-14}
 stamp=$(date +%Y%m%d-%H%M%S)
 
@@ -25,6 +28,7 @@ dump=$(command -v mariadb-dump || command -v mysqldump) || { say "Neither mariad
 
 mkdir -p "$directory"
 cd "$directory"
+say "Writing to $directory, as $(id -un), keeping $keep_days days."
 
 # What MariaDB keeps about itself: information_schema and performance_schema are made anew at every start, and
 # sys is a set of views over them. The mysql database is dumped: it holds the accounts and their grants.
