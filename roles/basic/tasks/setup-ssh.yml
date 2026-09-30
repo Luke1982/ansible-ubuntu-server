@@ -8,10 +8,13 @@
   register: sshd_custom_now
   failed_when: false
 
-- name: Copy custom SSH config file over
+# Written once, when the server has no file yet. Who may log in changes on the server itself -- a site user given
+# SFTP, somebody who left -- and a playbook run is the wrong place to decide any of that.
+- name: Write the custom SSH config file, if the server has none
   template:
     src: sshd_custom.conf.j2
     dest: /etc/ssh/sshd_config.d/custom.conf
+    force: no
     mode: 0644
     owner: root
     group: root
@@ -28,7 +31,7 @@
     ssh_allowed_drop: "{{ linux_users | rejectattr('state', 'eq', 'present') | map(attribute='name') | list }}"
     ssh_allowed_users: >-
       {{ (((ssh_allowed_now + ssh_allowed_add) | difference(ssh_allowed_drop))
-          + [ansible_user | default('ansible')]) | unique | sort }}
+          + ssh_always_allowed + [ansible_user | default('ansible')]) | unique | sort }}
   notify: restart ssh
 
 - name: Make sure SSH uses custom config file

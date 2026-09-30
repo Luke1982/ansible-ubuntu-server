@@ -1,12 +1,12 @@
-# {{ ansible_managed }}
 # Who may log in over SSH.
 #
-# The playbook adds the users from linuxusers.yml that have ssh_access, and keeps
-# everyone already allowed on the server: a site user that was given SFTP by hand
-# is never locked out by a playbook run. Ansible's own user ({{ ansible_user }}) is
-# always on the line, so a run can never lock Ansible itself out.
+# Ansible wrote this file once, when the server had none, and never writes it
+# again: who may log in changes on the server itself -- a site user given SFTP,
+# somebody who left -- and none of that is a playbook's to decide. Add and remove
+# names on the AllowUsers line here, then: systemctl reload ssh
 #
-# To take access away, remove the name from this line on the server, or give the
-# user state: absent in linuxusers.yml, which takes it out of here as well.
+# It started with the users from linuxusers.yml that have ssh_access, the backup
+# user (ssh_always_allowed), and Ansible's own user ({{ ansible_user }}), which
+# is on the line so a run can never lock Ansible out.
 PermitRootLogin no
 AllowUsers {{ ssh_allowed_users | join(' ') }}

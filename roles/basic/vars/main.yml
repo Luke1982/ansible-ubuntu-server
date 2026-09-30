@@ -2,3 +2,9 @@
 linux_groups:
   - name: "webusers"
     state: "present"
+
+# Beside Ansible's own user, who is allowed over SSH on a server that has no custom.conf yet. The backup user is
+# here so the dumps it makes can be fetched from another machine; it can read every database, so treat its key
+# with the same care as the databases themselves.
+ssh_always_allowed:
+  - "{{ db_backup_user | default('dbbackups') }}"

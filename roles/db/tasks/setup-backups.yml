@@ -10,14 +10,17 @@
     pkg: python3-pymysql
     state: present
 
+# A shell, because the dumps are fetched over SSH as this user (it is on the AllowUsers line, ssh_always_allowed
+# in the basic role), and rsync and scp need one. No password: a key in its authorized_keys is the only way in,
+# and that key can read every database on this server, so it belongs where the dumps themselves belong.
 - name: Create the user that makes the backups
   user:
     name: "{{ db_backup_user }}"
     home: "{{ db_backup_home }}"
-    shell: /usr/sbin/nologin
+    shell: /bin/bash
     system: yes
     create_home: yes
-    password: "!"  # no password: this user is only ever become, never logged in as
+    password: "!"
 
 - name: Keep the backups readable by nobody else
   file:
