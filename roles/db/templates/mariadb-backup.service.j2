@@ -1,0 +1,15 @@
+[Unit]
+Description=Dump every database on this server, gzipped
+Documentation=man:mariadb-dump(1)
+After=mariadb.service
+Requires=mariadb.service
+
+[Service]
+Type=oneshot
+User={{ db_backup_user }}
+Group={{ db_backup_user }}
+ExecStart=/usr/local/bin/backup-databases {{ db_backup_home }} {{ db_backup_keep_days }}
+# A dump reads every table of every site; what the sites themselves are doing comes first.
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=4h

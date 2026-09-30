@@ -156,8 +156,23 @@ Each server has its own playbook (e.g. `web01.whservice.nl.yml`) in the project 
 |------|-------------|
 | `basic` | Hostname, base packages, unattended-upgrades, Linux users, SSH hardening, iptables firewall (applied at boot), fail2ban |
 | `web` | OpenLiteSpeed with LiteSpeed's PHP 8.3, PHP-FPM and CLI from Ubuntu (8.3 on Ubuntu 24.04, 8.5 on 26.04), Composer (global), wp-cli, nvm (system-wide), Redis with the PHP extension for it (object caching), certbot, fail2ban jails for WordPress password guessing, Let's Encrypt directory, the shared virtual host template, and `domainctl` (below) |
-| `db` | MariaDB, phpMyAdmin on a site of its own at `pma.<hostname>` |
+| `db` | MariaDB, phpMyAdmin on a site of its own at `pma.<hostname>`, and a gzipped dump of every database every night (below) |
 | `mail` | Postfix, Dovecot with full-text IMAP search (fts-xapian) and login tracking, OpenDKIM, SpamAssassin, SOGo (webmail, calendars, address books and ActiveSync), per-user sending limits (postfwd), fail2ban jails for SMTP, IMAP and webmail brute force, and `mailctl` (below) |
+
+## Database backups
+
+Every night at three, a dump of every database on the server, gzipped, in `/var/backups/mariadb`. The ones older than 14 days go, but only after a run in which every database was dumped: failing backups shouldn't quietly eat the last good ones. A dump is written under a temporary name and renamed once it is whole, so nothing that looks like a backup is half a backup.
+
+They are made by `dbbackup`, a user with no password at all: MariaDB knows it by its Linux name (`unix_socket`), so only that Linux user can be it, and there is nothing to read out of a file, a process list or one of the backups. It may read every database and nothing else -- `SELECT`, and what a dump needs besides: views, triggers, events and a lock on a table that isn't InnoDB.
+
+```bash
+systemctl list-timers mariadb-backup.timer     # when it last ran, and when it runs next
+systemctl start mariadb-backup                 # now, rather than tonight
+journalctl -u mariadb-backup -n 20             # what it did, with the size of each dump
+zcat /var/backups/mariadb/sogo-20260930-030001.sql.gz | mariadb sogo   # putting one back
+```
+
+The hour, where they go, how long they are kept and the user's name are `db_backup_time`, `db_backup_home`, `db_backup_keep_days` and `db_backup_user` in [`roles/db/defaults/main.yml`](roles/db/defaults/main.yml). The dumps hold everything the databases hold, including the accounts in `mysql` and the password hashes in `mailserver`: they are readable by root and by `dbbackup`, and by nobody else. This server keeps them on its own disk, which is a copy, not a backup; copy them off it as well.
 
 ## phpMyAdmin
 

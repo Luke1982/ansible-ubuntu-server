@@ -22,6 +22,14 @@ phpmyadmin_group: nogroup
 phpmyadmin_certificate: yes
 letsencrypt_dir: /etc/letsencrypt
 
+# A dump of every database, every night, by a user MariaDB knows by its Linux
+# name (unix_socket): no password anywhere, and read rights only. The dumps are
+# gzipped in its home directory, and the ones older than this many days go.
+db_backup_user: dbbackup
+db_backup_home: /var/backups/mariadb
+db_backup_keep_days: 14
+db_backup_time: "03:00:00"
+
 # Email address for the Let's Encrypt account, used when certbot has no account
 # yet. Without it, the account has no address.
 letsencrypt_email: ""

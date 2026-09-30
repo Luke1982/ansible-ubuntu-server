@@ -8,6 +8,7 @@
     state: present
 
 - include_tasks: setup-phpmyadmin.yml
+- include_tasks: setup-backups.yml
 
 - name: Copy custom mysql config file over
   copy:

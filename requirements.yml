@@ -1,2 +1,4 @@
 collections:
   - name: community.general
+  # mysql_db and mysql_user, which set up the databases and their users
+  - name: community.mysql

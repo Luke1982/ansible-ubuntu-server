@@ -1,0 +1,66 @@
+---
+# A dump of every database, every night.
+#
+# The user that makes them has no password anywhere: MariaDB knows it by its Linux name (unix_socket), so only
+# that Linux user can be it, and there is nothing to read out of a file, a process list or a backup. It may read
+# every database and nothing else, which is all a dump needs.
+
+- name: Install the Python MySQL library Ansible needs to manage the database
+  apt:
+    pkg: python3-pymysql
+    state: present
+
+- name: Create the user that makes the backups
+  user:
+    name: "{{ db_backup_user }}"
+    home: "{{ db_backup_home }}"
+    shell: /usr/sbin/nologin
+    system: yes
+    create_home: yes
+    password: "!"  # no password: this user is only ever become, never logged in as
+
+- name: Keep the backups readable by nobody else
+  file:
+    path: "{{ db_backup_home }}"
+    state: directory
+    owner: "{{ db_backup_user }}"
+    group: "{{ db_backup_user }}"
+    mode: 0700
+
+# SELECT is the read grant; the rest is what a dump of a whole database needs: its views, its triggers, its
+# events, and a lock while it reads a table that isn't InnoDB.
+- name: Let that user read every database, and nothing else
+  mysql_user:
+    name: "{{ db_backup_user }}"
+    host: localhost
+    plugin: unix_socket
+    priv: "*.*:SELECT,SHOW VIEW,TRIGGER,EVENT,LOCK TABLES"
+    state: present
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+
+- name: Install the backup script
+  copy:
+    src: roles/db/files/backup-databases.sh
+    dest: /usr/local/bin/backup-databases
+    owner: root
+    group: root
+    mode: 0755
+
+- name: Install the nightly backup service and timer
+  template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: 0644
+  loop:
+    - mariadb-backup.service
+    - mariadb-backup.timer
+  notify: reload systemd
+
+- name: Back up the databases every night
+  systemd:
+    name: mariadb-backup.timer
+    daemon_reload: yes
+    enabled: yes
+    state: started

@@ -1,0 +1,10 @@
+[Unit]
+Description=Back up the databases every night
+
+[Timer]
+OnCalendar=*-*-* {{ db_backup_time }}
+# A server that was off at that hour backs up as soon as it is on again.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
