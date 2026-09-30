@@ -10,10 +10,15 @@
 - include_tasks: setup-phpmyadmin.yml
 - include_tasks: setup-backups.yml
 
-- name: Copy custom mysql config file over
+# Only when there is none: a server that has been running is tuned to the machine it runs on, and that tuning is
+# nobody's to throw away from here. What is in the file below is a starting point for a new server; on one that
+# already has a my.cnf, change it there, or in a file of its own under /etc/mysql/mariadb.conf.d/, which is read
+# after it.
+- name: Put a starting my.cnf in place, if the server has none
   copy:
     src: roles/db/files/my.cnf
     dest: /etc/my.cnf
+    force: no
     mode: 0644
     owner: root
     group: root
