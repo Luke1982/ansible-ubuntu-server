@@ -21,7 +21,21 @@
       - lsphp83-tidy
       - lsphp83-intl
     state: present
-  
+
+# WebAdmin, on port 7080, gets the opcache settings of the sites' PHP (lsphp83's mods-available/opcache.ini), but
+# OpenLiteSpeed always caps the panel's PHP at 500 MB of memory. An opcache sized for the sites doesn't fit in that
+# (512 MB doesn't, and 256 MB didn't either), and the panel's PHP then crashes on every start: a 503 on port 7080.
+# The panel doesn't need opcache, so it is off there, whatever the sites have. An OpenLiteSpeed upgrade can replace
+# this php.ini; the next playbook run puts the line back.
+- name: Turn opcache off for WebAdmin's PHP
+  ini_file:
+    path: "{{ ols_root }}/admin/conf/php.ini"
+    section: opcache
+    option: opcache.enable
+    value: "0"
+    no_extra_spaces: yes
+  notify: restart openlitespeed
+
 # OpenLiteSpeed comes with one listener, on port 8088. Everything on these servers expects the usual two: Let's
 # Encrypt checks a name over plain HTTP on 80, and every site is served on 443. They are added here rather than
 # by hand in WebAdmin, so a new server doesn't fail halfway through the playbook on a step nobody remembers.
