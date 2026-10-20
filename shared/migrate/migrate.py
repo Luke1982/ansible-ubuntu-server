@@ -1333,9 +1333,19 @@ def run(connection, items, ask, move=None, notes=None, status=None, php=None,
             said = (status or {}).get(item.get("id")) or {}
             if (left.get("status") == "made" and left.get("docroot")
                     and said.get("state") == "exists"):
-                # Made in an earlier run: only its files are missing.
+                # Made in an earlier run: only its files are missing. No
+                # apply happens here, so the question the apply would have
+                # asked about the database is asked here: a run that got
+                # halfway may have left data in it, and the dump replaces
+                # whatever is there.
                 answer = {"ok": True, "docroot": left["docroot"],
                           "database": left.get("database")}
+                if left.get("database") and not _is_yes(
+                        ask(REPLACE_QUESTION % (left["database"],
+                                                _title(item)))):
+                    report.skipped.append((item, NOT_REPLACED % _title(item)))
+                    _say(NOT_REPLACED % _title(item))
+                    continue
                 unanswered = None
             else:
                 answer, unanswered = _apply_with_questions(
@@ -1861,6 +1871,17 @@ def _database_problem(name):
     return None
 
 
+REPLACE_QUESTION = ("The database %s on the new server, for the site %s, "
+                    "will be emptied and replaced by the one on this "
+                    "server. Go on?")
+NOT_REPLACED = ("Nothing was done for %s: the database was not to be "
+                "replaced.")
+
+
+def _is_yes(reply):
+    return isinstance(reply, str) and reply.strip().lower() == "yes"
+
+
 class MoveFailed(Exception):
     """A site's files or database did not come across. The message says
     what, in words for a person. 'told' says the message itself says how far
@@ -1968,14 +1989,10 @@ def move_site(connection, site, answer, again=False, notes=None, ask=None,
                              "its wp-config.php, so nothing was copied."
                              % name)
     if again and database:
-        question = ("The database %s on the new server, for the site %s, "
-                    "will be emptied and replaced by the one on this "
-                    "server. Go on?" % (made_database, name))
-        reply = ask(question) if ask is not None else None
-        if not isinstance(reply, str) or reply.strip().lower() != "yes":
+        reply = ask(REPLACE_QUESTION % (made_database, name)) if ask is not None else None
+        if not _is_yes(reply):
             return {"ok": False, "skipped": True,
-                    "message": "Nothing was done for %s: the database was "
-                               "not to be replaced." % name}
+                    "message": NOT_REPLACED % name}
     if notes is not None:
         notes.made(site, answer)  # not moved until every step is done
     steps = []

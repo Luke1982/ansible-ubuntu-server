@@ -331,10 +331,14 @@ def test_a_second_run_offers_a_site_whose_files_did_not_arrive(tmp_path):
     assert "files still to come" in migrate.dashboard([site], exists, again)
     ok = Fakes()
     connection.requests.clear()
+    asked = []
     report = migrate.run(
-        connection, [site], lambda text: None, notes=again, status=exists,
+        connection, [site], lambda text: asked.append(text) or "yes",
+        notes=again, status=exists,
         move=migrate.mover(connection, again, None, runner=ok.runner,
                            piper=ok.piper, settings_of=lambda p: dict(WP)))
+    # No apply happens on this path, so the question about the database is asked here instead.
+    assert len(asked) == 1 and "emptied and replaced" in asked[0]
     assert [r["request"] for r in connection.requests] == ["finish_site"]
     assert ok.rsync[0][-1] == "ansible@new.example.nl:" + ROOT + "/"
     assert [i for i, _ in report.moved] == [site]
@@ -705,3 +709,27 @@ def test_a_site_the_new_server_refuses_is_still_said_to_have_moved(tmp_path):
     refused = {site["id"]: {"state": "refused", "detail": "The user shop already serves another site here."}}
     assert migrate.offered([site], refused, notes) == []
     assert "already moved from here" in migrate.dashboard([site], refused, notes)
+
+
+def test_a_resumed_site_asks_before_its_database_is_replaced_and_no_stops_it(tmp_path):
+    """A run that got halfway may have left data in that database, and the dump replaces whatever is there."""
+    site = _shop()
+    notes = _notes(tmp_path)
+    notes.made(site, ANSWER)
+    exists = {site["id"]: {"state": "exists", "detail": "waiting for the DNS"}}
+    connection = NewServer(tmp_path, {"apply": ANSWER})
+    moved = []
+
+    report = migrate.run(connection, [site], lambda text: "no", notes=notes, status=exists,
+                         move=lambda item, answer: moved.append(item))
+
+    assert moved == [] and connection.requests == []
+    assert report.skipped == [(site, migrate.NOT_REPLACED % "shop.example.nl")]
+    assert notes.entry(site)["status"] == "made"  # still outstanding, and still offered next run
+
+    # A site with no database of its own is resumed without a question.
+    plain = _shop(id="site:plain.nl", name="plain.nl", database=None)
+    notes.made(plain, {"docroot": ROOT})
+    migrate.run(connection, [plain], lambda text: "no", notes=notes,
+                status={plain["id"]: {"state": "exists"}}, move=lambda item, answer: moved.append(item))
+    assert moved == [plain]
