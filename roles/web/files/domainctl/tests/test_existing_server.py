@@ -133,7 +133,7 @@ def server(split, tmp_path, monkeypatch):
     monkeypatch.setattr(acl, "apply", lambda path, entries: True)
     monkeypatch.setattr(layout, "_own", lambda path, user: None)
     monkeypatch.setattr(users, "create", lambda name, home, shell: home.mkdir(parents=True, exist_ok=True))
-    monkeypatch.setattr(serving, "wait_until_served", lambda docroot, name, addresses, timeout=0: None)
+    monkeypatch.setattr(serving, "wait_until_served", lambda docroot, name, addresses, timeout=0: [])
     monkeypatch.setattr(certbot, "obtain", lambda *args, **kwargs: None)
     return split
 

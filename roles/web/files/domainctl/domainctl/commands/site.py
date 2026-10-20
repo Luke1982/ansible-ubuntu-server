@@ -196,7 +196,9 @@ def hostname(no_dns: NoDns = False, yes: Yes = False) -> None:
             return
         ui.note(reason)
         with ui.console.status("Checking that OpenLiteSpeed serves the site…"):
-            serving.wait_until_served(hostsite.webroot(config), name, set(found.addresses))
+            unanswered = serving.wait_until_served(hostsite.webroot(config), name, set(found.addresses))
+        for line in unanswered:
+            ui.note(line)
         with ui.console.status("Asking Let's Encrypt for a certificate…"):
             hostsite.obtain(config)
         if hostsite.publish(config, True):
@@ -409,7 +411,9 @@ def _certify(config, site: Site, domain_check: NameCheck) -> None:
             return
         ui.note(f"The certificate doesn't cover {', '.join(missing)} yet, so it is extended.")
     with ui.console.status("Checking that OpenLiteSpeed serves the site…"):
-        serving.wait_until_served(config.docroot_of(site.user), site.domain, set(domain_check.addresses))
+        unanswered = serving.wait_until_served(config.docroot_of(site.user), site.domain, set(domain_check.addresses))
+    for line in unanswered:
+        ui.note(line)
     try:
         with ui.console.status("Asking Let's Encrypt for a certificate…"):
             certificates.obtain(config, site)
