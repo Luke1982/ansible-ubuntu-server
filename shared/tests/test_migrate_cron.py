@@ -1,5 +1,7 @@
 import os
 
+import pytest
+
 from migrate import migrate
 
 SITES = [
@@ -148,3 +150,98 @@ def test_a_note_says_etc_crontab_was_not_read(tmp_path):
     notes = []
     _jobs(tmp_path, {}, notes=notes)
     assert any("/etc/crontab" in note for note in notes)
+
+
+# ---- What a job looks like on the new server --------------------------------
+
+SITE_ITEMS = migrate.site_items(
+    [{"name": "shop.example.nl", "aliases": [], "docroot": "/var/www/shop", "database": "shopdb",
+      "db_user": "u", "db_host": "localhost", "size": 1, "problem": None}], owner_of=lambda path: "www")
+NEW_ROOT = "/home/shopexample/public_html/www"
+PLESK = ("PATH=/opt/plesk/php/8.1/bin:/usr/bin\n"
+         "*/15 * * * * /opt/plesk/php/8.1/bin/php -q /var/www/shop/wp-cron.php >> /dev/null 2>&1\n")
+
+
+def _item(tmp_path, text, sites=SITE_ITEMS):
+    return migrate.cron_items(_jobs(tmp_path, {"shopper": text}), sites)[0]
+
+
+def test_a_plesk_job_gets_the_new_servers_php_and_web_root(tmp_path):
+    item = _item(tmp_path, PLESK)
+    assert item["problem"] is None and item["user"] == "shopexample"
+
+    sent, said = migrate.cron_for_new_server(item, NEW_ROOT, "/usr/bin/php")
+
+    assert sent["line"] == ("*/15 * * * * /usr/bin/php -q %s/wp-cron.php >> /dev/null 2>&1" % NEW_ROOT)
+    assert "/opt/plesk" not in sent["line"] and "/var/www/shop" not in sent["line"]
+    assert sent["settings"] == ["PATH=/usr/bin"]
+    assert any("/usr/bin/php" in line and NEW_ROOT in line for line in said)
+    assert any(line.startswith("The PATH") for line in said)
+    assert sent["id"] == item["id"]  # the marker on the new server stays the same job
+
+
+def test_a_job_that_uses_something_outside_the_site_is_shown_and_not_offered(tmp_path):
+    item = _item(tmp_path, "0 3 * * * /usr/local/bin/wp cron event run --path=/var/www/shop\n")
+    assert "/usr/local/bin/wp" in item["problem"] and "by hand" in item["problem"]
+    assert migrate.offered([item], {item["id"]: {"state": "new"}}) == []
+
+
+def test_a_job_of_a_site_whose_folder_is_unknown_is_not_offered(tmp_path):
+    sites = migrate.site_items([{"name": "shop.example.nl", "aliases": [], "docroot": None, "problem": None}])
+    item = _item(tmp_path, "*/5 * * * * php /var/www/shop/cron.php\n", sites)
+    assert item["problem"] and "don't know where" in item["problem"]
+
+
+def test_a_job_whose_site_needs_a_look_first_is_not_offered_either(tmp_path):
+    sites = migrate.site_items([{"name": "shop.example.nl", "aliases": [], "docroot": "/var/www/shop",
+                                 "problem": "Its wp-config.php can't be read."}])
+    item = _item(tmp_path, "*/5 * * * * php /var/www/shop/cron.php\n", sites)
+    assert item["problem"] == migrate.SITE_FIRST % "shop.example.nl"
+
+
+def test_a_job_whose_site_has_not_moved_is_not_sent_and_says_why(tmp_path):
+    item = _item(tmp_path, PLESK)
+    asked = []
+
+    class Connection(object):
+        def ask(self, request):
+            asked.append(request)
+            return {"ok": True}
+
+    report = migrate.run(Connection(), [item], lambda text: None, php="/usr/bin/php")
+    assert asked == [] and report.moved == []
+    assert len(report.skipped) == 1 and "has not moved yet" in report.skipped[0][1]
+
+
+def test_a_job_sent_after_its_site_carries_the_new_paths(tmp_path):
+    item = _item(tmp_path, PLESK)
+    site = SITE_ITEMS[0]
+    sent = []
+
+    class Connection(object):
+        def ask(self, request):
+            sent.append(request)
+            return {"ok": True, "docroot": NEW_ROOT, "database": "shopdb"}
+
+    extra = []
+    report = migrate.run(Connection(), [site, item], lambda text: None, php="/usr/bin/php", extra_notes=extra,
+                         move=lambda item, answer: None)
+    installed = [r["item"]["line"] for r in sent if r["item"].get("kind") == "cron"]
+    assert installed == ["*/15 * * * * /usr/bin/php -q %s/wp-cron.php >> /dev/null 2>&1" % NEW_ROOT]
+    assert [i["id"] for i, _ in report.moved] == [site["id"], item["id"]]
+    assert any(NEW_ROOT in line for line in extra)
+
+
+def test_without_a_php_from_the_new_server_a_php_job_is_not_sent(tmp_path):
+    item = _item(tmp_path, PLESK)
+    with pytest.raises(migrate.MoveFailed) as failed:
+        migrate.cron_for_new_server(item, NEW_ROOT, None)
+    assert "didn't say which PHP" in str(failed.value)
+
+
+def test_a_lock_file_in_tmp_travels_as_it_is(tmp_path):
+    """/tmp is /tmp on any server, and the job makes the file itself: that is not a reason to skip the job."""
+    item = _item(tmp_path, "@daily flock -n /tmp/x.lock /usr/bin/php /var/www/shop/x.php\n")
+    assert item["problem"] is None
+    sent, _ = migrate.cron_for_new_server(item, NEW_ROOT, "/usr/bin/php")
+    assert sent["line"] == "@daily flock -n /tmp/x.lock /usr/bin/php %s/x.php" % NEW_ROOT

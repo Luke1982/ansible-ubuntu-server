@@ -26,6 +26,26 @@ def test_hello_says_which_tools_the_server_has(fake_command):
     assert isinstance(answer["server"], str) and answer["server"]
 
 
+def test_hello_says_which_php_a_cron_job_must_run_here(monkeypatch):
+    monkeypatch.setattr(migratectl.shutil, "which", lambda name: "/usr/bin/php" if name == "php" else None)
+    assert migratectl.answer({"request": "hello"})["php"] == "/usr/bin/php"
+
+
+def test_hello_falls_back_to_openlitespeeds_own_php(monkeypatch, tmp_path):
+    monkeypatch.setattr(migratectl.shutil, "which", lambda name: None)
+    lsphp = tmp_path / "lsphp83" / "bin" / "lsphp"
+    lsphp.parent.mkdir(parents=True)
+    lsphp.write_text("")
+    monkeypatch.setattr(migratectl, "OLS_PHP", str(tmp_path / "lsphp*" / "bin" / "lsphp"))
+    assert migratectl.answer({"request": "hello"})["php"] == str(lsphp)
+
+
+def test_hello_says_php_is_none_when_this_server_has_none(monkeypatch):
+    monkeypatch.setattr(migratectl.shutil, "which", lambda name: None)
+    monkeypatch.setattr(migratectl, "OLS_PHP", "/nowhere/lsphp*/bin/lsphp")
+    assert migratectl.answer({"request": "hello"})["php"] is None
+
+
 def test_a_request_it_doesnt_know_is_an_error_not_a_crash():
     answer = migratectl.answer({"request": "dance"})
     assert answer["ok"] is False

@@ -699,12 +699,13 @@ def _cron_job(found, sites):
     interpreter = _interpreter(command) if command is not None else None
     if problem is None and interpreter is None:
         problem = "I can't tell which program this job runs, so it can't be set up for the new server by itself."
-    return {"user": user, "line": line, "site": _site_of(command or "", sites), "interpreter": interpreter,
-            "settings": settings, "problem": problem}
+    return {"user": user, "line": line, "command": command, "site": _site_of(command or "", sites),
+            "interpreter": interpreter, "settings": settings, "problem": problem}
 
 
 def cron_jobs(run, sites, notes=None, passwd=PASSWD, cron_dir=CRON_DIR):
-    """One dict per cron job on the server: user, line (as written), settings (the NAME=value lines above it),
+    """One dict per cron job on the server: user, line (as written), command (the part of the line that is the
+    command, so the time fields are never read as paths), settings (the NAME=value lines above it),
     site (the name of the site its paths point
     into, or None), interpreter (as the job writes it, or None) and problem (plain words, or None). Everything
     that couldn't be read goes into notes: a job nobody knows about stops running after the move."""
@@ -1184,7 +1185,24 @@ def _apply_with_questions(connection, item, ask, report):
         answers[about] = reply
 
 
-def run(connection, items, ask, move=None, notes=None, status=None):
+def _say(text, say=print):
+    say("\n".join(textwrap.wrap(str(text), _WIDTH)) or "")
+
+
+def _new_web_root(item, docroots, notes):
+    """Where the files of a cron job's site are on the new server: what this
+    run was told when the site was made, or what the notes remember of the
+    run that made it."""
+    name = item.get("site")
+    if name in docroots:
+        return docroots[name]
+    if notes is not None and item.get("site_id"):
+        return notes.entry({"id": item["site_id"]}).get("docroot")
+    return None
+
+
+def run(connection, items, ask, move=None, notes=None, status=None, php=None,
+        extra_notes=None):
     """Moves the items one by one and returns a Report. 'ask' is called with
     the new server's question and gives "yes" or "no". 'move' is called with
     a site and the new server's answer to its apply, after it was made, to
@@ -1195,7 +1213,10 @@ def run(connection, items, ask, move=None, notes=None, status=None):
     'notes' is the State: it is told what was made and what is completely
     moved, and it must be writable, or nothing is moved. 'status' is what the
     new server said in this run: a site is not made a second time only when
-    the new server says it is there and the notes say it was never filled."""
+    the new server says it is there and the notes say it was never filled.
+    'php' is the PHP the new server says it has: a cron job is rewritten to
+    run that one, with its paths under the new web root, before it is sent,
+    and what changed is put in 'extra_notes' for the report."""
     report = Report()
     if notes is not None and items:
         problem = notes.unwritable()
@@ -1204,10 +1225,22 @@ def run(connection, items, ask, move=None, notes=None, status=None):
             report.not_tried = list(items)
             print(problem)
             return report
+    docroots = {}  # where this run put each site's files, for the jobs of that site
     for index, item in enumerate(items):
         print("Moving %d of %d: %s" % (index + 1, len(items), _title(item)))
         made = False  # a site the new server made, whose files are not there yet
         try:
+            if item.get("kind") == "cron":
+                try:
+                    item, changed = cron_for_new_server(
+                        item, _new_web_root(item, docroots, notes), php)
+                except MoveFailed as problem:
+                    report.skipped.append((item, problem.message))
+                    _say(problem.message)
+                    continue
+                for text in changed:
+                    if extra_notes is not None and text not in extra_notes:
+                        extra_notes.append(text)
             left = notes.entry(item) if notes is not None else {}
             said = (status or {}).get(item.get("id")) or {}
             if (left.get("status") == "made" and left.get("docroot")
@@ -1225,6 +1258,8 @@ def run(connection, items, ask, move=None, notes=None, status=None):
                                       % unanswered.get("question")))
             elif answer.get("ok"):
                 made = item.get("kind") == "site"
+                if made and isinstance(answer.get("docroot"), str):
+                    docroots[item.get("name")] = answer["docroot"]
                 if made and notes is not None:
                     notes.made(item, answer)
                 if made and move is not None:
@@ -1322,14 +1357,174 @@ def site_items(found, owner_of=_owner_of):
 
 NO_SITE_JOB = ("This job belongs to no site on this server, so it is not "
                "moved. If the new server needs it, add it by hand.")
+SITE_FIRST = ("The site %s is not being moved, so this job isn't either: "
+              "its paths would point at files that aren't there.")
+NO_OLD_ROOT = ("I don't know where the files of %s are on this server, so "
+               "the paths in this job can't be pointed at the new server.")
+NO_NEW_ROOT = ("The site %s has not moved yet, so where its files are on the "
+               "new server isn't known and this job's paths can't be pointed "
+               "at them. Move the site first, then this job.")
+OUTSIDE_SITE = ("This job uses %s, which is not part of the site, so there "
+                "is no way to know where it is on the new server. Set this "
+                "job up there by hand.")
+NO_NEW_PHP = ("The new server didn't say which PHP it has, so %s can't be "
+              "replaced by it and this job would not run there.")
+# Paths that mean the same on any server, so they travel as they are: the places a job throws its output away,
+# and the scratch folders where a job makes its own lock file.
+_KEEP_PATHS = ("/dev/null", "/dev/zero", "/dev/stdout", "/dev/stderr")
+_KEEP_FOLDERS = ("/tmp/", "/var/tmp/")
 
 
-def cron_items(jobs):
+def _is_php(word):
+    """Whether a program is a PHP: php, php7.4, lsphp81, /opt/plesk/php/8.1/bin/php and the panel copies."""
+    return bool(word) and _PHP_NAME.match(os.path.basename(word)) is not None
+
+
+def _cron_parts(item):
+    """(the start of the job's line that is not rewritten, its command). The
+    time fields are left alone: "*/15" would otherwise read as the path
+    /15."""
+    line, command = item.get("line") or "", item.get("command")
+    if isinstance(command, str) and command and line.endswith(command):
+        return line[:len(line) - len(command)], command
+    return "", line
+
+
+def _mapped_path(path, old_root, new_root, interpreter, php):
+    """A path of a cron job as it must read on the new server, or None when
+    there is no way to know: inside the site it is the same path under the
+    new web root, the PHP becomes the one the new server has, and a path
+    that means the same everywhere stays as it is."""
+    inside = os.path.normpath(path)
+    if old_root and (inside == old_root or inside.startswith(old_root + "/")):
+        return new_root.rstrip("/") + inside[len(old_root):]
+    if path in _KEEP_PATHS or path.startswith(_KEEP_FOLDERS):
+        return path
+    if interpreter and path == interpreter and _is_php(path):
+        return php
+    return None
+
+
+def _rewrite_paths(text, old_root, new_root, interpreter, php):
+    """(the text with every path pointing at the new server, the paths it
+    has no mapping for, which are left as they were)."""
+    loose = []
+
+    def one(found):
+        path = found.group(0)
+        mapped = _mapped_path(path, old_root, new_root, interpreter, php)
+        if mapped is None:
+            loose.append(path)
+            return path
+        return mapped
+
+    return _CRON_PATH.sub(one, text), loose
+
+
+def _rewrite_settings(settings, old_root, new_root, interpreter, php):
+    """(the NAME=value lines as they must be on the new server, what changed
+    in plain words). A PATH is the old server's own: the part of it that
+    named the old PHP's directory becomes the new one's, paths inside the
+    site are moved with the site, and a PATH with nothing left is dropped."""
+    old_php = os.path.dirname(interpreter) if _is_php(interpreter) and interpreter.startswith("/") else None
+    new_php = os.path.dirname(php) if php else None
+    kept, said = [], []
+    for line in settings:
+        name, sign, value = line.partition("=")
+        if not sign:
+            kept.append(line)
+            continue
+        if name.strip().upper() == "PATH":
+            places, changed = [], False
+            for place in value.split(":"):
+                place = place.strip()
+                if not place:
+                    continue
+                if old_php and place.rstrip("/") == old_php:
+                    changed = True
+                    if not new_php:
+                        continue  # nothing to put in its place: it would only name a directory that isn't there
+                    place = new_php
+                else:
+                    moved = _mapped_path(place, old_root, new_root, None, None)
+                    if moved is not None and moved != place:
+                        place, changed = moved, True
+                if place not in places:
+                    places.append(place)
+            if not places:
+                said.append("The PATH this job ran with was left out: "
+                            "nothing in it is on the new server.")
+                continue
+            if changed:
+                said.append("The PATH this job runs with on the new server "
+                            "is %s." % ":".join(places))
+            kept.append("PATH=" + ":".join(places))
+            continue
+        moved = _rewrite_paths(value, old_root, new_root, None, None)[0]
+        if moved != value:
+            said.append("The %s this job runs with on the new server is %s."
+                        % (name.strip(), moved.strip()))
+        kept.append(name + sign + moved)
+    return kept, said
+
+
+def cron_for_new_server(item, docroot, php):
+    """The cron job as it must be sent: every path inside the site pointing
+    at the new server's web root, and the PHP replaced by the one the new
+    server has. Returns (the item to send, what changed in plain words).
+    Raises MoveFailed, with the same words the dashboard showed, when there
+    is something it can't rewrite; nothing on either server is touched then.
+    """
+    name = item.get("site") or "its site"
+    old_root = (item.get("site_docroot") or "").rstrip("/")
+    if not old_root:
+        raise MoveFailed(NO_OLD_ROOT % name, told=False)
+    if not docroot:
+        raise MoveFailed(NO_NEW_ROOT % name, told=False)
+    interpreter = item.get("interpreter") or ""
+    if _is_php(interpreter) and not php:
+        raise MoveFailed(NO_NEW_PHP % interpreter, told=False)
+    before, command = _cron_parts(item)
+    command, loose = _rewrite_paths(command, old_root, docroot, interpreter,
+                                    php)
+    if loose:
+        raise MoveFailed(OUTSIDE_SITE % ", ".join(sorted(set(loose))),
+                         told=False)
+    line = before + command
+    settings, said = _rewrite_settings(item.get("settings") or [], old_root,
+                                       docroot, interpreter, php)
+    if line != item.get("line"):
+        said.insert(0, "The job of %s runs this on the new server: %s"
+                    % (name, line))
+    return dict(item, line=line, settings=settings), said
+
+
+def _cron_problem(item):
+    """Why a job of a site can't be set up on the new server as it is, in
+    plain words; None when it can. The same paths are looked at as when it
+    is sent, but the new server's own places aren't known yet, so each one
+    stands in for itself and only what cannot be mapped at all counts."""
+    old_root = (item.get("site_docroot") or "").rstrip("/")
+    if not old_root:
+        return NO_OLD_ROOT % (item.get("site") or "its site")
+    interpreter = item.get("interpreter") or ""
+    loose = _rewrite_paths(_cron_parts(item)[1], old_root, old_root,
+                           interpreter, interpreter)[1]
+    if loose:
+        return OUTSIDE_SITE % ", ".join(sorted(set(loose)))
+    return None
+
+
+def cron_items(jobs, found=()):
     """One item per cron job from cron_jobs(). The id comes from the OLD
     user and the job's own line, so the new server, which installs a job
     behind a marker with this id, never installs the same job twice. A job
-    of a site runs as that site's new user; one that belongs to no site is
-    reported and not moved."""
+    of a site runs as that site's new user, with its paths and its PHP
+    rewritten for the new server when it is sent; one that belongs to no
+    site, or that uses something outside the site, is reported and not
+    moved. 'found' are the site items of the same run, which say where each
+    site's files are and whether the site is being moved at all."""
+    sites = {item["name"]: item for item in found if item.get("kind") == "site"}
     items, seen = [], {}
     for job in jobs:
         text = "%s\n%s" % (job["user"], job["line"])
@@ -1338,8 +1533,15 @@ def cron_items(jobs):
         suffix = "" if seen[digest] == 1 else "-%d" % seen[digest]
         item = dict(job, kind="cron", id="cron:" + digest + suffix,
                     old_user=job["user"])
+        site = sites.get(job.get("site"))
         if job.get("site"):
-            item["user"] = site_user(job["site"])
+            item["user"] = (site or {}).get("user") or site_user(job["site"])
+            item["site_id"] = (site or {}).get("id")
+            item["site_docroot"] = (site or {}).get("docroot")
+            if not item.get("problem") and site is not None and site.get("problem"):
+                item["problem"] = SITE_FIRST % site["name"]
+            if not item.get("problem"):
+                item["problem"] = _cron_problem(item)
         elif not item.get("problem"):
             item["problem"] = NO_SITE_JOB
         items.append(item)
@@ -1449,7 +1651,13 @@ WRONG_CONFIG = (" The site's wp-config.php on the new server now points at "
 
 class MoveFailed(Exception):
     """A site's files or database did not come across. The message says
-    what, in words for a person."""
+    what, in words for a person. 'told' says the message itself says how far
+    it got, so nothing may be put in front of it."""
+
+    def __init__(self, message, told=True):
+        super().__init__(message)
+        self.message = message
+        self.told = told
 
 
 def run_visible(*args):
@@ -1997,7 +2205,8 @@ def _look_around(args, notes, run=run_command):
         names = set(s["name"] for s in found)
         jobs = [j for j in jobs if j.get("site") in names]
     items = _domain_items(mail) if mail else []
-    items += site_items(found) + cron_items(jobs)
+    minted = site_items(found)
+    items += minted + cron_items(jobs, minted)
     return mail, database, found, (None if domain else sizes), items
 
 
@@ -2024,9 +2233,11 @@ def _to_do_again(items, state, status):
             and (status.get(item["id"]) or {}).get("state") == "exists"]
 
 
-def _work(args, connection, state, notes, doing=None):
+def _work(args, connection, state, notes, doing=None, hello=None):
     """Does the whole run after the connection works and returns its Report.
-    'doing' is a list whose one place always holds what is being done."""
+    'doing' is a list whose one place always holds what is being done.
+    'hello' is what the new server answered when it was first asked: which
+    PHP it has, for the cron jobs."""
     doing = doing if doing is not None else [""]
     doing[0] = "looking around this server"
     mail, database, found, sizes, items = _look_around(args, notes)
@@ -2056,7 +2267,8 @@ def _work(args, connection, state, notes, doing=None):
                              "Enter for none): ")
         move = mover(connection, state, _question, extra)
         result = run(connection, chosen, _question, move=move, notes=state,
-                     status=status)
+                     status=status, php=(hello or {}).get("php"),
+                     extra_notes=extra)
         moved_domains = [i["name"] for i, _ in result.moved
                          if i.get("kind") == "mail_domain"]
         mail = _left_out_of(mail, moved_domains)
@@ -2089,8 +2301,8 @@ def main(argv=None, geteuid=os.geteuid):
               % (AUTHORIZED_KEYS, key))
         doing[0] = "connecting to the new server"
         connection = Connection(host)
-        check(connection, show_key=False)
-        result = _work(args, connection, State(), [], doing)
+        hello = check(connection, show_key=False)
+        result = _work(args, connection, State(), [], doing, hello)
         if result.interrupted:
             print("You stopped the run; the report above says what moved.")
             return 1

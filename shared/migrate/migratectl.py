@@ -6,6 +6,7 @@ a JSON object out. Standard output carries nothing else, so anything a person sh
 mailctl and domainctl are only ever run as commands, never imported, so either may be missing.
 """
 
+import glob
 import json
 import os
 import re
@@ -20,6 +21,15 @@ import unicodedata
 PROTOCOL_VERSION = 1
 TOOLS = ("mailctl", "domainctl")
 LIST_TIMEOUT = 60
+# OpenLiteSpeed's own PHP, where the web role installs it, for a server that has no php on the path at all.
+OLS_PHP = "/usr/local/lsws/lsphp*/bin/lsphp"
+
+
+def _php():
+    """The PHP a cron job must run on this server: its own php, which is also the one wp-cli uses, or else
+    OpenLiteSpeed's lsphp. The old server says which PHP its jobs ran, never where a PHP is here."""
+    found = shutil.which("php")
+    return found or max(glob.glob(OLS_PHP), default=None)
 
 
 def hello(request):
@@ -28,6 +38,7 @@ def hello(request):
         "version": PROTOCOL_VERSION,
         "server": socket.gethostname(),
         "tools": {name: shutil.which(name) is not None for name in TOOLS},
+        "php": _php(),
     }
 
 
