@@ -8,10 +8,12 @@ old server has an old Python and none of our other files.
 import copy
 import getpass
 import glob
+import hashlib
 import json
 import os
 import pwd
 import re
+import shlex
 import subprocess
 import textwrap
 
@@ -36,6 +38,8 @@ PROTOCOL_VERSION = 1  # of the talk with migratectl on the new server; both halv
 KEY_NAME = "migrate_key"
 KNOWN_HOSTS_NAME = "migrate_known_hosts"
 AUTHORIZED_KEYS = "/home/ansible/.ssh/authorized_keys"
+STATE_PATH = "/var/lib/migrate/state.json"
+MAX_USER_NAME = 32  # the limit of Linux's user database, as in serverctl.names
 
 
 class CommandFailed(Exception):
@@ -47,10 +51,12 @@ class CommandFailed(Exception):
         self.missing = missing
 
 
-def run_command(*args, stdin=None):
-    """The output of a command. This is the one place a command is run, so tests and dry runs can stand in for it."""
+def run_command(*args, stdin=None, env=None):
+    """The output of a command. This is the one place a command is run, so tests and dry runs can stand in for it.
+    'env' is added to this program's own environment for that one command (a password goes here, never in args)."""
     try:
-        process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   env=dict(os.environ, **env) if env else None)
     except FileNotFoundError:
         raise CommandFailed("%s isn't installed" % args[0], missing=True)
     except OSError as problem:
@@ -792,12 +798,19 @@ class Connection(object):
         self.known_hosts = os.path.join(os.path.dirname(self.key), KNOWN_HOSTS_NAME)
         self.host_check = "accept-new"
 
-    def _command(self, host_check):
+    def options(self, host_check=None):
+        """The ssh words that choose the key and the known-hosts file, for ssh itself and for rsync's -e."""
         # BatchMode: ssh must never wait for a password, a passphrase or a yes/no that nobody would see.
-        return ["ssh", "-i", self.key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+        return ["-i", self.key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
                 "-o", "ServerAliveInterval=30", "-o", "UserKnownHostsFile=" + self.known_hosts,
-                "-o", "StrictHostKeyChecking=" + host_check, "%s@%s" % (self.user, self.host),
-                "sudo", "-n", "migratectl"]
+                "-o", "StrictHostKeyChecking=" + (host_check or self.host_check)]
+
+    def command(self, *words, host_check=None):
+        """The ssh command that runs 'sudo -n' and these words on the new server."""
+        return ["ssh"] + self.options(host_check) + ["%s@%s" % (self.user, self.host), "sudo", "-n"] + list(words)
+
+    def _command(self, host_check):
+        return self.command("migratectl", host_check=host_check)
 
     def _once(self, host_check, line, timeout, what):
         # LC_ALL=C: the failures are told apart by ssh's and sudo's English words. Bytes are decoded here, since a
@@ -1016,11 +1029,14 @@ def cost(item):
     return ""
 
 
-def _verdict(item, status):
-    """(what the new server said in short, can it move, the longer reason or None)."""
+def _verdict(item, status, notes=None):
+    """(what the new server said in short, can it move, the longer reason or None). 'notes' is the State: a site
+    it remembers as made but not filled is offered again, for its files and database only."""
     said = status.get(item.get("id")) if isinstance(status, dict) else None
     state = said.get("state") if isinstance(said, dict) else None
     detail = said.get("detail") if isinstance(said, dict) else None
+    if state == "exists" and notes is not None and notes.outstanding(item):
+        return "made, files still to come", True, None
     if state == "exists":
         return "already on the new server", False, None
     if state == "refused":
@@ -1032,9 +1048,9 @@ def _verdict(item, status):
     return cost(item), True, None
 
 
-def offered(inventory, status):
+def offered(inventory, status, notes=None):
     """The items that can be moved, in the order the dashboard numbers them."""
-    return [item for item in inventory if _verdict(item, status)[1]]
+    return [item for item in inventory if _verdict(item, status, notes)[1]]
 
 
 def _fit(text, width, middle=False):
@@ -1048,12 +1064,12 @@ def _fit(text, width, middle=False):
     return text[:width - 3] + "..."
 
 
-def dashboard(inventory, status):
+def dashboard(inventory, status, remembered=None):
     """The list as it is printed. 'status' is what the new server said, by item id: {id: {"state", "detail"}}.
     Only an item that can be moved gets a number (the same order as offered()); the others show why not."""
     rows, notes, number = [], [], 0
     for item in inventory:
-        info, movable, reason = _verdict(item, status)
+        info, movable, reason = _verdict(item, status, remembered)
         label = ""
         if movable:
             number += 1
@@ -1149,28 +1165,36 @@ def _apply_with_questions(connection, item, ask, report):
         answers[about] = reply
 
 
-def run(connection, items, ask, move=None):
+def run(connection, items, ask, move=None, notes=None):
     """Moves the items one by one and returns a Report. 'ask' is called with the new server's question and gives
     "yes" or "no". 'move' is called with a site after it was made, to bring its files and database. One item going
     wrong stops that item only; the new server not answering ends the run. A site that was made but not filled is
-    in files_to_copy, whatever went wrong after it was made."""
+    in files_to_copy, whatever went wrong after it was made. 'notes' is the State: it is told what was made and
+    what is completely moved, and a site it remembers as made is not made a second time."""
     report = Report()
     for index, item in enumerate(items):
         print("Moving %d of %d: %s" % (index + 1, len(items), _title(item)))
         made = False  # a site the new server made, whose files are not there yet
         try:
-            answer, unanswered = _apply_with_questions(connection, item, ask, report)
+            if notes is not None and notes.outstanding(item):
+                answer, unanswered = {"ok": True}, None  # made in an earlier run: only its files are missing
+            else:
+                answer, unanswered = _apply_with_questions(connection, item, ask, report)
             if unanswered is not None:
                 report.failed.append((item, "The new server asked a question that got no answer: %s"
                                       % unanswered.get("question")))
             elif answer.get("ok"):
                 made = item.get("kind") == "site"
+                if made and notes is not None:
+                    notes.made(item, answer)
                 if made and move is not None:
                     move(item)
                     made = False
                 if made:
                     report.files_to_copy.append(item)
                 else:
+                    if notes is not None:
+                        notes.moved(item)
                     report.moved.append((item, answer))
             elif answer.get("skipped"):
                 report.skipped.append((item, answer.get("error") or "Left alone, as you asked."))
@@ -1194,4 +1218,237 @@ def run(connection, items, ask, move=None):
                 report.files_to_copy.append(item)
                 message = "The site was made, but its files and database were not brought over: " + message
             report.failed.append((item, message))
+    return report
+
+
+# ---- The items the dashboard shows ---------------------------------------------------------------------------
+
+def site_user(domain):
+    """The user name domainctl itself gives a domain (serverctl.names.user_name_for): its labels without the public
+    suffix, joined. The old server's owner of the files is not used: it may be www, a shared account or a panel
+    user that would clash with another site here."""
+    labels = domain.lower().split(".")
+    keep = labels[:-1]
+    if len(keep) > 1 and len(keep[-1]) <= 2:
+        keep = keep[:-1]
+    name = "".join(re.sub(r"[^a-z0-9]", "", label) for label in keep)
+    return name[:MAX_USER_NAME].lstrip("-_") or "site"
+
+
+def _owner_of(path):
+    try:
+        return pwd.getpwuid(os.stat(path).st_uid).pw_name
+    except (OSError, KeyError):
+        return None
+
+
+def site_items(found, owner_of=_owner_of):
+    """One item per site from sites(). The id is the same on every run. The database password is not in the item:
+    move_site reads it from the site's wp-config.php when it needs it."""
+    items = []
+    for site in found:
+        name = site["name"].strip().lower()
+        items.append({"id": "site:" + name, "kind": "site", "name": name, "user": site_user(name),
+                      "old_owner": owner_of(site["docroot"]) if site.get("docroot") else None,
+                      "aliases": site.get("aliases") or [], "docroot": site.get("docroot"),
+                      "database": site.get("database"), "db_user": site.get("db_user"),
+                      "db_host": site.get("db_host"), "size": site.get("size"), "problem": site.get("problem")})
+    return items
+
+
+def cron_items(jobs):
+    """One item per cron job from cron_jobs(). The id comes from the job's user and its own line, so the new
+    server, which installs a job behind a marker with this id, never installs the same job twice."""
+    items, seen = [], {}
+    for job in jobs:
+        digest = hashlib.sha1(("%s\n%s" % (job["user"], job["line"])).encode("utf-8")).hexdigest()[:16]
+        seen[digest] = seen.get(digest, 0) + 1  # the same line twice in one crontab is two jobs
+        item = dict(job, kind="cron", id="cron:%s%s" % (digest, "" if seen[digest] == 1 else "-%d" % seen[digest]))
+        items.append(item)
+    return items
+
+
+# ---- What is remembered between runs --------------------------------------------------------------------------
+
+class State(object):
+    """What this tool did, kept in a file so a second run knows. It never holds a password. It is only a help: the
+    new server's own status is the truth, so a file that can't be written is said once and then left alone."""
+
+    def __init__(self, path=STATE_PATH, say=print):
+        self.path, self.say, self.items, self.warned = path, say, {}, False
+        try:
+            with open(path, encoding="utf-8") as handle:
+                data = json.load(handle)
+            if isinstance(data, dict) and isinstance(data.get("items"), dict):
+                self.items = {k: v for k, v in data["items"].items() if isinstance(v, dict)}
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        except (OSError, ValueError):
+            say("I couldn't read my notes in %s, so I start without them. The new server's own list is what counts."
+                % path)
+
+    def entry(self, item):
+        return self.items.get(item.get("id"), {})
+
+    def outstanding(self, item):
+        """True for a site that was made on the new server and not completely filled."""
+        return self.entry(item).get("status") == "made"
+
+    def made(self, item, answer):
+        old = self.entry(item)
+        entry = {"status": "made" if old.get("status") != "moved" else "moved"}
+        for field in ("docroot", "database"):
+            value = answer.get(field) if isinstance(answer, dict) else None
+            entry[field] = value if isinstance(value, str) and value else old.get(field)
+        self.items[item["id"]] = entry
+        self.save()
+
+    def moved(self, item):
+        entry = dict(self.entry(item), status="moved")
+        self.items[item["id"]] = entry
+        self.save()
+
+    def save(self):
+        folder = os.path.dirname(self.path) or "."
+        temporary = os.path.join(folder, ".state.json.%d.tmp" % os.getpid())
+        try:
+            os.makedirs(folder, exist_ok=True)
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump({"version": 1, "items": self.items}, handle, indent=1, sort_keys=True)
+                handle.write("\n")
+            os.replace(temporary, self.path)
+        except OSError as problem:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            if not self.warned:
+                self.warned = True
+                self.say("I can't keep notes in %s (%s), so I carry on without remembering what is done. The new "
+                         "server's own list stays right." % (folder, problem.strerror or problem))
+
+
+# ---- Moving a site's files and database -----------------------------------------------------------------------
+
+NO_DELETE_NOTE = ("Files that are gone on the old server were not removed from the new one; the copy only adds and "
+                  "replaces.")
+
+
+class MoveFailed(Exception):
+    """A site's files or database did not come across. The message says what, in words for a person."""
+
+
+def _dump_command(settings):
+    """The mysqldump words for a site, without its password. DB_HOST may be host, host:port or host:/socket."""
+    words = ["mysqldump", "--single-transaction", "--hex-blob", "-u", settings["DB_USER"]]
+    host = settings.get("DB_HOST") or ""
+    name, _, rest = host.partition(":")
+    if rest.startswith("/"):
+        words.append("--socket=" + rest)
+    elif rest.isdigit():
+        words += ["-P", rest]
+    if name and name != "localhost":
+        words += ["-h", name]
+    return words + [settings["DB_NAME"]]
+
+
+def move_site(connection, site, again=False, notes=None, ask=None, run=run_command, say=print,
+              settings_of=wp_settings, extra_notes=None):
+    """Brings a site's files and database to the new server, then has it finish the site. Returns a dict with
+    'ok' and 'steps' (or 'skipped' and 'message'); raises MoveFailed, or Stopped when the new server can't be
+    reached. The files go where the new server's own answer to 'apply' said (kept in the State, or asked for
+    here when the State has none). With again=True the files are copied again and the database is REPLACED, after
+    'ask' (called with a question, gives "yes" or "no") was told which database is emptied and said yes."""
+    notes = notes if notes is not None else State(path=os.devnull, say=lambda text: None)
+    name, database = site["name"], site.get("database")
+    docroot = notes.entry(site).get("docroot")
+    if not docroot:
+        answer, _ = apply_item(connection, site)
+        docroot = answer.get("docroot") if answer.get("ok") else None
+        if not isinstance(docroot, str) or not docroot:
+            raise MoveFailed(answer.get("error") or "The new server did not say where %s's files go." % name)
+        notes.made(site, answer)
+    source = site.get("docroot")
+    if not source:
+        raise MoveFailed("I don't know where the files of %s are on this server." % name)
+    settings = None
+    if database:
+        settings = settings_of(os.path.join(source, "wp-config.php"))
+        if not settings or not (settings.get("DB_NAME") and settings.get("DB_USER")):
+            raise MoveFailed("I can't read the database settings of %s from its wp-config.php, so nothing was "
+                             "copied." % name)
+    if again:
+        if database:
+            question = ("The database %s on the new server, for the site %s, will be emptied and replaced by the "
+                        "one on this server. Go on?" % (database, name))
+            reply = ask(question) if ask is not None else None
+            if not isinstance(reply, str) or reply.strip().lower() != "yes":
+                return {"ok": False, "skipped": True,
+                        "message": "Nothing was done for %s: the database was not to be replaced." % name}
+    steps = []
+    # The trailing slashes matter: with one on the source rsync copies what is IN the folder, so the files land
+    # in the web root itself and not in a folder inside it.
+    target = "%s@%s:%s/" % (connection.user, connection.host, shlex.quote(docroot.rstrip("/")))
+    shell = " ".join(shlex.quote(word) for word in ["ssh"] + connection.options())
+    try:
+        run("rsync", "-az", "--omit-dir-times", "--no-owner", "--no-group", "-e", shell,
+            "--rsync-path", "sudo -n rsync", source.rstrip("/") + "/", target)
+    except CommandFailed as problem:
+        raise MoveFailed("Copying the files of %s did not work: %s" % (name, problem.message))
+    steps.append("Copied the files of %s to %s." % (name, docroot))
+    if extra_notes is not None and NO_DELETE_NOTE not in extra_notes:
+        extra_notes.append(NO_DELETE_NOTE)
+    if database:
+        # The password goes in the environment: a command line is shown to everyone on the machine by ps.
+        env = {"MYSQL_PWD": settings.get("DB_PASSWORD") or ""}
+        try:
+            dump = run(*_dump_command(settings), env=env)
+        except CommandFailed as problem:
+            raise MoveFailed("The files of %s are across, but its database could not be dumped: %s"
+                             % (name, problem.message))
+        # --yes always: standard input is the dump, so a question could never be answered. --replace: the new
+        # server made this database already, when it made the site.
+        adopt = connection.command("domainctl", "wp", "adopt", site["user"], "--database", database,
+                                   "--dump", "-", "--replace", "--yes")
+        try:
+            run(*adopt, stdin=dump)
+        except CommandFailed as problem:
+            raise MoveFailed("The files of %s are across, but its database was not read in: %s"
+                             % (name, problem.message))
+        steps.append("Read the database %s in and pointed wp-config.php at it." % database)
+    answer = connection.ask({"request": "finish_site", "item": site})
+    if not answer.get("ok"):
+        raise MoveFailed(answer.get("error") or "The new server did not finish %s." % name)
+    steps.extend(s for s in answer.get("steps", []) if isinstance(s, str))
+    if again:
+        notes.moved(site)
+    return {"ok": True, "steps": steps}
+
+
+def mover(connection, notes, ask, extra_notes=None, again=False, **fakes):
+    """The 'move' that run() calls with a site after the new server made it."""
+    def move(item):
+        return move_site(connection, item, again=again, notes=notes, ask=ask, extra_notes=extra_notes, **fakes)
+    return move
+
+
+def do_again(connection, items, notes, ask, extra_notes=None, **fakes):
+    """Copies the files of sites already moved once and replaces their database, each only after the question
+    for it got a yes. Returns a Report: moved, skipped (said no) and failed."""
+    report = Report()
+    for item in items:
+        try:
+            result = move_site(connection, item, again=True, notes=notes, ask=ask, extra_notes=extra_notes, **fakes)
+        except Stopped as problem:
+            report.failed.append((item, problem.message))
+            report.stopped = problem.message
+            report.not_tried = list(items[items.index(item) + 1:])
+            break
+        except MoveFailed as problem:
+            report.failed.append((item, str(problem)))
+            continue
+        if result.get("skipped"):
+            report.skipped.append((item, result["message"]))
+        else:
+            report.moved.append((item, result))
     return report
