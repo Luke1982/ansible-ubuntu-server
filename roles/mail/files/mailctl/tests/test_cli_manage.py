@@ -962,6 +962,21 @@ def test_filters_import_with_no_filter_it_can_read_imports_nothing_and_says_so(
     assert "Left out the filter roundcube" in output and "None of the filters can be read" in output
 
 
+def test_filters_import_doesnt_say_none_can_be_read_when_another_account_has_some(
+        mailctl, example_domain, tmp_path, fake_command, database):
+    fake_command("sievec", 'case "$1" in *broken*) echo "line 1: syntax error" >&2; exit 1;; esac')
+    add_account(mailctl, "info@example.nl")
+    add_account(mailctl, "sales@example.nl")
+    path = server_file(tmp_path, [a_filter(name="broken"), a_filter("sales@example.nl")],
+                       accounts=("info@example.nl", "sales@example.nl"))
+
+    output = mailctl.ok("filters", "import", str(path), "--yes")
+
+    assert "Left out the filter broken of info@example.nl" in output
+    assert "None of the filters can be read" not in output
+    assert "1 filter of 1 account" in output
+
+
 def test_filters_import_leaves_out_an_account_this_server_doesnt_have(mailctl, example_domain, tmp_path):
     path = server_file(tmp_path, [a_filter("gone@example.nl")], accounts=("gone@example.nl",))
 

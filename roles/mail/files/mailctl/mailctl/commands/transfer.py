@@ -14,7 +14,7 @@ from ..session import Session, open_session
 from .dns import DryRun
 from .shared import (
     Yes, activate_imported, attempt, into_webmail, keep_readable_filters, tell_webmail_to_read_them,
-    would_be_in_webmail,
+    warn_no_filter_can_be_read, would_be_in_webmail,
 )
 
 ServerFile = Annotated[Optional[str], typer.Argument(
@@ -62,7 +62,10 @@ def import_server(file: ServerFile = None, dry_run: DryRun = False, keep_hashes:
             ui.success(f"Everything in {path} is already on this server.")
             return
         plan.report(verbose)
+        had_filters = bool(plan.filters)
         plan.filters = keep_readable_filters(plan.filters)
+        if had_filters and not plan.filters:
+            warn_no_filter_can_be_read()
         ui.line(f"To create from {path}: {plan.summary()}.")
         if dry_run:
             for address, scripts in plan.filters_per_account().items():

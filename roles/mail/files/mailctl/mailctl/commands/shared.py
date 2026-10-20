@@ -163,7 +163,10 @@ def keep_readable_filters(filters: list[transfer.Filter]) -> list[transfer.Filte
             continue
         reason = problems[0].removeprefix(f"{one.name}: ")
         ui.warn(f"Left out the filter {one.name} of {one.address}: {reason}")
-    if filters and not readable:
-        ui.warn("None of the filters can be read, so none are imported. Fix them in the file and import them "
-                "again with: mailctl filters import")
     return readable
+
+
+def warn_no_filter_can_be_read() -> None:
+    """Said once the whole file is known to have no readable filter, not per account: another account may have some."""
+    ui.warn("None of the filters can be read, so none are imported. Fix them in the file and import them "
+            "again with: mailctl filters import")

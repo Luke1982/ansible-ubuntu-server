@@ -13,7 +13,7 @@ from ..session import Session, open_session
 from .dns import DryRun
 from .shared import (
     Address, Yes, activate_imported, ask_address, attempt, group, into_webmail, keep_readable_filters,
-    tell_webmail_to_read_them, would_be_in_webmail,
+    tell_webmail_to_read_them, warn_no_filter_can_be_read, would_be_in_webmail,
 )
 
 app = group("Show the mail filters (Sieve scripts) of an account.")
@@ -57,6 +57,7 @@ def import_filters(file: ServerFile = None, address: OnlyAddress = None, replace
         per_account = {account: readable for account, scripts in per_account.items()
                        if (readable := keep_readable_filters(scripts))}
         if not per_account:
+            warn_no_filter_can_be_read()
             return
         count = sum(len(scripts) for scripts in per_account.values())
         ui.line(f"To import from {path}: {ui.plural(count, 'filter')} of "
