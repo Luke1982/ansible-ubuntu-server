@@ -15,6 +15,7 @@ import os
 import pwd
 import re
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -39,7 +40,9 @@ SPAM_RENAMED = {"whitelist_from": "welcomelist_from", "blacklist_from": "blockli
 DOVEADM_HEADER = "sieve script:\n"
 SITES_ENABLED = "/etc/apache2/sites-enabled"
 APACHE_ROOT = "/etc/apache2"
-PROTOCOL_VERSION = 1  # of the talk with migratectl on the new server; both halves must come from the same release
+# Of the talk with migratectl on the new server; both halves must come from the same release. It goes up whenever
+# the requests or the answers change, so a mismatch is found at the handshake and not in the middle of a site.
+PROTOCOL_VERSION = 2
 KEY_NAME = "migrate_key"
 KNOWN_HOSTS_NAME = "migrate_known_hosts"
 AUTHORIZED_KEYS = "/home/ansible/.ssh/authorized_keys"
@@ -1238,6 +1241,21 @@ def _apply_with_questions(connection, item, ask, report):
 
 MADE_NOT_FILLED = ("The site was made, but its files and database were not "
                    "brought over")
+NEEDS_PROGRAM = ("%s isn't installed on this server, and a site's files and "
+                 "database can't be brought over without it. Nothing was "
+                 "made for %s: install it (on Debian or Ubuntu: apt install "
+                 "%s) and run me again.")
+
+
+def _missing_programs(item, which=None):
+    """The programs this server needs to bring a site over that aren't here.
+    Looked for before the site is made on the new server: finding out
+    afterwards leaves a site made there with nothing in it."""
+    if item.get("kind") != "site":
+        return []
+    which = which or shutil.which
+    wanted = ["rsync"] + (["mysqldump"] if item.get("database") else [])
+    return [name for name in wanted if not which(name)]
 
 
 def _say(text, say=print):
@@ -1296,6 +1314,13 @@ def run(connection, items, ask, move=None, notes=None, status=None, php=None,
                 for text in changed:
                     if extra_notes is not None and text not in extra_notes:
                         extra_notes.append(text)
+            missing = _missing_programs(item)
+            if missing:
+                why = NEEDS_PROGRAM % (", ".join(missing), _title(item),
+                                       " ".join(missing))
+                report.skipped.append((item, why))
+                _say(why)
+                continue
             left = notes.entry(item) if notes is not None else {}
             said = (status or {}).get(item.get("id")) or {}
             if (left.get("status") == "made" and left.get("docroot")

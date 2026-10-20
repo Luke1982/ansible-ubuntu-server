@@ -79,12 +79,14 @@ def test_a_refused_connection_says_to_paste_the_key(fake_ssh, tmp_path):
 
 
 def test_the_handshake_refuses_a_new_server_that_speaks_another_version(fake_ssh, tmp_path):
-    fake_ssh.replies = [(0, json.dumps({"ok": True, "version": 2, "server": "x", "tools": {}}) + "\n", "")]
+    older = migrate.PROTOCOL_VERSION - 1
+    fake_ssh.replies = [(0, json.dumps({"ok": True, "version": older, "server": "x", "tools": {}}) + "\n", "")]
     with pytest.raises(migrate.Stopped) as stopped:
         migrate.check(_connection(tmp_path))
-    assert "reports 2, this file is 1" in stopped.value.message
+    assert "reports %d, this file is %d" % (older, migrate.PROTOCOL_VERSION) in stopped.value.message
     assert "same release" in stopped.value.message
-    fake_ssh.replies = [(0, json.dumps({"ok": True, "version": 1, "server": "x", "tools": {}}) + "\n", "")]
+    fake_ssh.replies = [(0, json.dumps({"ok": True, "version": migrate.PROTOCOL_VERSION, "server": "x",
+                                        "tools": {}}) + "\n", "")]
     assert migrate.check(_connection(tmp_path))["server"] == "x"
 
 

@@ -640,3 +640,17 @@ def test_a_database_name_the_new_server_would_refuse_never_reaches_a_command(tmp
         _move(tmp_path, fakes, site=site, answer={"ok": True, "docroot": ROOT})
     assert "Nothing was copied" in str(failed.value)
     assert fakes.rsync == [] and fakes.pipes == []
+
+
+def test_a_server_without_rsync_makes_no_site_at_all(tmp_path, monkeypatch):
+    """Finding this out after the site is made leaves an empty site on the new server."""
+    monkeypatch.setattr(migrate.shutil, "which", lambda name: None if name in ("rsync", "mysqldump") else "/bin/x")
+    connection = NewServer(tmp_path, {"apply": ANSWER})
+    report = migrate.run(connection, [_shop()], lambda text: None)
+    assert connection.requests == [] and report.moved == [] and report.files_to_copy == []
+    assert "rsync, mysqldump" in report.skipped[0][1] and "apt install rsync mysqldump" in report.skipped[0][1]
+    # A site without a database needs no mysqldump.
+    monkeypatch.setattr(migrate.shutil, "which", lambda name: None if name == "mysqldump" else "/bin/x")
+    assert migrate._missing_programs(_shop(database=None)) == []
+    assert migrate._missing_programs(_shop()) == ["mysqldump"]
+    assert migrate._missing_programs({"kind": "cron"}) == []

@@ -21,7 +21,7 @@ def fake_command(monkeypatch):
 
 def test_hello_says_which_tools_the_server_has(fake_command):
     answer = migratectl.answer({"request": "hello"})
-    assert answer["ok"] is True and answer["version"] == 1
+    assert answer["ok"] is True and answer["version"] == migratectl.PROTOCOL_VERSION
     assert answer["tools"] == {"mailctl": True, "domainctl": False}
     assert isinstance(answer["server"], str) and answer["server"]
 
@@ -44,6 +44,12 @@ def test_hello_says_php_is_none_when_this_server_has_none(monkeypatch):
     monkeypatch.setattr(migratectl.shutil, "which", lambda name: None)
     monkeypatch.setattr(migratectl, "OLS_PHP", "/nowhere/lsphp*/bin/lsphp")
     assert migratectl.answer({"request": "hello"})["php"] is None
+
+
+def test_the_two_halves_speak_the_same_version():
+    """A new migrate.py meeting an older migratectl is caught at the handshake, not halfway through a site."""
+    from migrate import migrate
+    assert migrate.PROTOCOL_VERSION == migratectl.PROTOCOL_VERSION
 
 
 def test_a_request_it_doesnt_know_is_an_error_not_a_crash():
@@ -580,7 +586,6 @@ def test_a_mail_domain_is_imported_and_the_file_is_deleted(server):
     assert not os.path.exists(server.import_file)
     assert server.imported == mail_item(OWN, WEAK)["data"]
     assert answer["mailctl"]["exit"] == 0 and "Imported" in answer["mailctl"]["stdout"]
-    assert answer["weak"] == ["weak@a.nl"]
 
 
 def test_the_file_is_never_readable_by_anybody_else(server):
@@ -611,20 +616,13 @@ def test_the_import_file_is_gone_after_a_failure_and_the_answer_carries_mailctls
     assert not os.path.exists(server.import_file)
 
 
-def test_a_password_typed_on_the_old_server_is_hashed_here(server):
+def test_a_password_is_only_ever_set_by_sending_the_domain_again(server):
+    """There is no request that sets a password by itself: a password comes back in the item it belongs to, and
+    mailctl hashes it in this server's own scheme. A request that could set one and nothing sends is a way in."""
     item = {"id": "p", "kind": "mail_passwords", "passwords": {"old@a.nl": "hunter22hunter"}}
     answer = migratectl.answer({"request": "apply", "item": item})
-    assert answer["ok"] is True and answer["done"] == ["old@a.nl"]
-    assert server.calls == [["mailctl", "address", "password", "old@a.nl", "--password-stdin"]]
-    assert "hunter22hunter" in server.kwargs[0]["input"]
-    assert not any("hunter22hunter" in part for call in server.calls for part in call)
-
-
-def test_an_address_that_does_not_exist_is_reported_and_the_rest_go_on(server):
-    item = {"id": "p", "kind": "mail_passwords", "passwords": {"gone@a.nl": "pw-one-1234", "old@a.nl": "pw-two-1234"}}
-    answer = migratectl.answer({"request": "apply", "item": item})
-    assert answer["ok"] is False and answer["done"] == ["old@a.nl"] and list(answer["failed"]) == ["gone@a.nl"]
-    assert "pw-one-1234" not in json.dumps(answer)
+    assert answer["ok"] is False and "mail_passwords" in answer["error"]
+    assert server.calls == []
 
 
 CRON = {"id": "cron:example:0", "kind": "cron", "user": "example", "line": "*/5 * * * * php /home/example/x.php",
@@ -649,7 +647,6 @@ def test_the_same_cron_item_applied_twice_adds_one_job_and_keeps_existing_lines(
 
 def test_no_mail_or_cron_child_reads_the_request_pipe(server):
     migratectl.answer({"request": "apply", "item": mail_item(WEAK)})
-    migratectl.answer({"request": "apply", "item": {"id": "p", "kind": "mail_passwords", "passwords": {"old@a.nl": "x"}}})
     migratectl.answer({"request": "apply", "item": CRON})
     assert server.kwargs
     assert all("input" in kw or kw.get("stdin") == migratectl.subprocess.DEVNULL for kw in server.kwargs)

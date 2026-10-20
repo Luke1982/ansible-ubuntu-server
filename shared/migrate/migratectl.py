@@ -18,7 +18,7 @@ import sys
 import tempfile
 import unicodedata
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2  # it goes up with every change to the requests or the answers; migrate.py refuses another
 TOOLS = ("mailctl", "domainctl")
 LIST_TIMEOUT = 60
 # OpenLiteSpeed's own PHP, where the web role installs it, for a server that has no php on the path at all.
@@ -298,9 +298,15 @@ def _files_in(docroot):
                   and not (n in ("index.html", "wp-config.php") and _is_ours(os.path.join(docroot, n))))
 
 
+def _quoted(value):
+    """A value between SQL quotes, the way domainctl's own wordpress module quotes one. The names here are
+    checked before they get this far, but the quoting is where that belongs."""
+    return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
+
+
 def _database_taken(name):
-    query = f"SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '{name}';\n" \
-            f"SELECT COUNT(*) FROM mysql.user WHERE User = '{name}';\n"
+    query = f"SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = {_quoted(name)};\n" \
+            f"SELECT COUNT(*) FROM mysql.user WHERE User = {_quoted(name)};\n"
     counts = _run(["mariadb", "--batch", "--skip-column-names"], "Looking in MariaDB", stdin=query).split()
     if len(counts) != 2:
         raise Failed("Looking in MariaDB didn't give an answer I could read.")
@@ -410,10 +416,9 @@ def _only_item(request):
 
 # The rules of mailctl's addresses module, written out again because migratectl never imports the tools.
 # A hash is "{SCHEME}hash", or a bare crypt hash "$id$..." whose scheme is named by its id. Dovecot here can read a
-# hash when its scheme is in the list `doveadm pw -l` prints. A readable scheme that is not strong (MD5-CRYPT, PLAIN)
-# is "weak": it imports fine. An unreadable one makes `mailctl import` without a terminal refuse everything.
+# hash when its scheme is in the list `doveadm pw -l` prints; one it can't read makes `mailctl import` without a
+# terminal refuse everything, so those accounts are named back and their password is asked for on the old server.
 OWN_SCHEME = "SHA512-CRYPT"
-STRONG_SCHEMES = {"SHA256-CRYPT", "SHA512-CRYPT", "BLF-CRYPT", "ARGON2I", "ARGON2ID", "PBKDF2", "SCRAM-SHA-256"}
 CRYPT_IDS = {"1": "MD5-CRYPT", "5": "SHA256-CRYPT", "6": "SHA512-CRYPT", "2a": "BLF-CRYPT", "2b": "BLF-CRYPT",
              "2y": "BLF-CRYPT"}
 
@@ -449,19 +454,17 @@ def _existing_accounts(name, data):
 
 
 def _sort_accounts(data, existing=None):
-    """(needs a password, weak) for the accounts of an import file that are not on this server yet: addresses,
-    never hashes. With existing=None every account is judged, which asks for too much rather than too little."""
+    """The accounts of an import file that this server can't read the password of and that aren't here yet:
+    addresses, never hashes. With existing=None every account is judged, which asks for too much rather than too
+    little."""
     accounts = [a for a in data.get("addresses", []) if isinstance(a, dict) and isinstance(a.get("address"), str)
                 and (existing is None or a["address"].lower() not in existing)]
     hashed = [a for a in accounts if not a.get("password") and isinstance(a.get("password_hash"), str)
               and a["password_hash"] and _scheme_of(a["password_hash"]) != OWN_SCHEME]
     if not hashed:
-        return [], []
+        return []
     readable = _readable_schemes()
-    needs = [a["address"] for a in hashed if _scheme_of(a["password_hash"]) not in readable]
-    weak = [a["address"] for a in hashed if _scheme_of(a["password_hash"]) in readable
-            and _scheme_of(a["password_hash"]) not in STRONG_SCHEMES]
-    return needs, weak
+    return [a["address"] for a in hashed if _scheme_of(a["password_hash"]) not in readable]
 
 
 def _said(done):
@@ -474,8 +477,8 @@ def _apply_mail_domain(item):
     if not isinstance(data, dict):
         raise ValueError("the item has no data (the JSON for mailctl import)")
     existing = _existing_accounts(name, data)
-    needs, weak = _sort_accounts(data, existing)
-    result = {"weak": weak}
+    needs = _sort_accounts(data, existing)
+    result = {}
     if existing is None:
         result["note"] = ("I couldn't read which accounts are already on this server, so I couldn't tell them apart "
                           "from new ones: every account was judged, and one that exists may be named here for "
@@ -524,29 +527,6 @@ def _apply_mail_domain(item):
     return {"ok": False, **reply, "error": f"mailctl import didn't work" + (f": {lines[-1]}" if lines else ".")}
 
 
-def _apply_mail_passwords(item):
-    passwords = item.get("passwords")
-    if not isinstance(passwords, dict) or not passwords:
-        raise ValueError("the item has no passwords, like {\"passwords\": {address: password}}")
-    done, failed = [], {}
-    for address, password in passwords.items():
-        if not isinstance(address, str) or not isinstance(password, str) or not password:
-            failed[str(address)] = "there is no password to set"
-            continue
-        try:
-            _run(["mailctl", "address", "password", address, "--password-stdin"], "Setting the password",
-                 stdin=password + "\n")
-            done.append(address)
-        except Failed as error:
-            # The password is only ever on stdin, but keep it out of the words whatever the tool echoes.
-            failed[address] = str(error).replace(password, "***")
-    if failed:
-        return {"ok": False, "done": done, "failed": failed,
-                "error": f"The password could not be set for {len(failed)} of {len(passwords)} account(s): "
-                         f"{', '.join(failed)}. The other accounts were done."}
-    return {"ok": True, "done": done, "steps": [f"Set the password of {a}." for a in done]}
-
-
 def _apply_cron(item):
     user, line, key = _text(item, "user").strip().lower(), _text(item, "line"), _text(item, "id")
     if not _USER_NAME.fullmatch(user):
@@ -578,9 +558,6 @@ def _apply_cron(item):
     return {"ok": True, "already": False, "steps": [f"Added the job to the crontab of {user}."]}
 
 
-APPLIERS = {"site": _apply_site, "mail_domain": _apply_mail_domain, "mail_passwords": _apply_mail_passwords}
-
-
 def apply(request):
     answers = request.get("answers", {})
     if not isinstance(answers, dict):
@@ -589,11 +566,11 @@ def apply(request):
         item = _only_item(request)
         kind = item.get("kind")
         if kind == "site":
-            return _apply_site(item, answers)
+            return _apply_site(item, answers)  # the only kind with a question to answer
         if kind == "cron":
             return _apply_cron(item)
-        if kind in ("mail_domain", "mail_passwords"):
-            return APPLIERS[kind](item)
+        if kind == "mail_domain":
+            return _apply_mail_domain(item)
         raise ValueError(f"I can't apply the kind {kind!r} yet")
     except ValueError as error:
         return {"ok": False, "error": f"I can't apply this item: {error}."}

@@ -259,6 +259,7 @@ Web servers get `domainctl`, a command-line tool for the sites on the server. Ru
 |---------|-------------|
 | `domainctl add DOMAIN` | Sets a site up: its Linux user, directories, permissions, virtual host and certificate |
 | `domainctl list` | The sites with their domain, user and certificate |
+| `domainctl state USER` | One word for a program to read: `served`, `made` (its user and directories are there, waiting for the domain to point here) or `absent` |
 | `domainctl check [USER]` | Whether a site's names, permissions and certificate are in order |
 | `domainctl delete SITE` | Removes a site, by its name or its domain; `--purge` takes the user and its files too. A site that stopped before it had a virtual host is only its user and files, so those go without `--purge` |
 | `domainctl hostname` | Gives the server's own name a Let's Encrypt certificate, through a site of its own that only answers Let's Encrypt (the virtual host `Server`). Postfix and Dovecot present it |
@@ -503,20 +504,20 @@ It moves:
 
 - Mail domains, with their accounts and passwords, forwards, filters, and the spam settings of the domain and of each account.
 - WordPress sites, with their files and database.
-- The cron jobs that belong to a site.
+- The cron jobs that belong to a site, with their paths and their PHP rewritten for the new server. A job that uses something outside the site is shown and skipped.
 
 It does not move:
 
 - Mail messages. The report prints an `imapsync` command for each account.
 - Sites that are not WordPress.
-- DNS. The report prints the records each mail domain needs.
+- DNS. The report prints the records each mail domain needs, and the addresses a site's A and AAAA records must point at.
 - The server's own spam settings. The new server keeps its own; the report lists the old server's.
 
 The report ends with what is still yours to do by hand: catch-all addresses and send-as permissions that could not move, sites that are not WordPress, databases and cron jobs that belong to no site, and anything the tool could not read.
 
-`--domain example.nl` looks at one mail domain and its sites only. `--again` is for a site that has already moved: it copies the files once more and replaces the new server's database, after asking. Run it again as often as you like; it offers only what has not moved yet.
+`--domain example.nl` looks at one mail domain and its sites only. `--user name`, with `--domain`, gives that site another Linux user on the new server: two domains of one company, like `example.nl` and `example.com`, would otherwise come down to the same user, and the second is shown and not offered. `--again` is for a site that has already moved: it copies the files once more and replaces the new server's database, after asking. Run it again as often as you like; it offers only what has not moved yet.
 
-Once the DNS of a site points at the new server, run `domainctl add <site>` on the new server to get its certificate. Until the DNS moves, both servers run the same cron jobs.
+Once the DNS of a site points at the new server, run `domainctl add <domain>` on the new server to get its certificate. Until the DNS moves, both servers run the same cron jobs.
 
 On the old server it writes four files: its key pair, `migrate_key` and `migrate_key.pub`, and `migrate_known_hosts`, all in `~/.ssh` of the user running it, and `/var/lib/migrate/state.json`.
 
