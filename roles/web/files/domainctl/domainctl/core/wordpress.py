@@ -15,6 +15,7 @@ import json
 import re
 import secrets
 from enum import Enum
+from pathlib import Path
 from typing import IO
 
 from serverctl import system
@@ -81,9 +82,7 @@ def _php_string(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
-def adopt_config(config: Config, user: str, database: str, db_user: str, password: str) -> None:
-    """Points the wp-config.php that came with the site at its database here. Only the four database lines change:
-    the salts, the table prefix and the site's own constants are what make it that site."""
+def _rewritten_config(config: Config, user: str, database: str, db_user: str, password: str) -> tuple[Path, str]:
     path = config.docroot_of(user) / "wp-config.php"
     try:
         text = path.read_text()
@@ -102,12 +101,24 @@ def adopt_config(config: Config, user: str, database: str, db_user: str, passwor
     if missing:
         raise CtlError(f"{path} has no line for {', '.join(missing)}.",
                        hint="Check that it is the site's own wp-config.php, with a define() for each database setting.")
+    return path, changed
+
+
+def check_config(config: Config, user: str) -> None:
+    """Fails the way adopt_config would, without changing anything: so it can be known before a database is touched."""
+    _rewritten_config(config, user, "", "", "")
+
+
+def adopt_config(config: Config, user: str, database: str, db_user: str, password: str) -> None:
+    """Points the wp-config.php that came with the site at its database here. Only the four database lines change:
+    the salts, the table prefix and the site's own constants are what make it that site."""
+    path, changed = _rewritten_config(config, user, database, db_user, password)
     path.write_text(changed)
 
 
-def import_dump(database: str, dump: IO[str]) -> None:
-    """Reads a dump into the database. All of it is read first: system.run takes its input as one piece."""
-    system.run("mariadb", database, stdin=dump.read())
+def import_dump(database: str, dump: IO[bytes]) -> None:
+    """Reads a dump into the database as bytes, so a big one isn't held in memory and nothing in it is re-encoded."""
+    system.run_fed("mariadb", database, source=dump)
 
 
 def is_installed(config: Config, user: str) -> bool:

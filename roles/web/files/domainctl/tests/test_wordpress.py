@@ -23,6 +23,7 @@ class _Server:
         self.calls: list[tuple[str, ...]] = []
         self.stdin: list[str | None] = []
         self.fail_on: str | None = None
+        self.fed: dict[tuple[str, ...], bytes] = {}  # what a program was given to read, by command
 
     def run(self, *args, stdin=None):
         self.calls.append(args)
@@ -57,6 +58,10 @@ class _Server:
                 self.plugins[user] = "active"
         return ""
 
+    def run_fed(self, *args, source):
+        self.calls.append(args)
+        self.fed[args] = source.read()
+
     def _sql(self, statements):
         if statements.startswith("SELECT"):
             name = statements.split("'")[1]
@@ -72,6 +77,7 @@ class _Server:
 def fake(server, monkeypatch):  # noqa: F811
     pretend = _Server(server)
     monkeypatch.setattr(system, "run", pretend.run)
+    monkeypatch.setattr(system, "run_fed", pretend.run_fed)
     monkeypatch.setattr(acl, "apply", lambda path, entries: True)
     return pretend
 
@@ -262,7 +268,7 @@ def test_adopt_makes_the_database_reads_the_dump_and_points_wp_config_at_it(serv
     assert result.exit_code == 0, result.output
     assert fake.databases == {"example"}
     assert ("mariadb", "example") in fake.calls
-    assert fake.stdin[fake.calls.index(("mariadb", "example"))] == "CREATE TABLE xyz_posts (id int);"
+    assert fake.fed[("mariadb", "example")] == b"CREATE TABLE xyz_posts (id int);"
     assert "define( 'DB_NAME', 'example' );" in path.read_text()
     assert "now points at it" in result.output
 
@@ -306,24 +312,21 @@ def test_adopt_reads_the_dump_from_standard_input(server, fake):  # noqa: F811
     """So the old server can pipe mysqldump straight into it over SSH."""
     with_config(server)
 
-    result = CliRunner().invoke(cli.app, ["wp", "adopt", "example", "--dump", "-"], input="INSERT INTO t VALUES (1);")
+    result = CliRunner().invoke(cli.app, ["wp", "adopt", "example", "--dump", "-"], input=b"INSERT INTO t VALUES (1);")
 
     assert result.exit_code == 0, result.output
-    assert fake.stdin[fake.calls.index(("mariadb", "example"))] == "INSERT INTO t VALUES (1);"
+    assert fake.fed[("mariadb", "example")] == b"INSERT INTO t VALUES (1);"
 
 
 def test_adopt_takes_the_database_away_again_when_the_dump_fails(server, fake, tmp_path, monkeypatch):  # noqa: F811
     path = with_config(server)
     dump = tmp_path / "example.sql"
     dump.write_text("broken")
-    real = fake.run
 
-    def failing(*args, stdin=None):
-        if args[:2] == ("mariadb", "example"):
-            raise system.CtlError("mariadb example failed: syntax error")
-        return real(*args, stdin=stdin)
+    def failing(*args, source):
+        raise system.CtlError("mariadb example failed: syntax error")
 
-    monkeypatch.setattr(system, "run", failing)
+    monkeypatch.setattr(system, "run_fed", failing)
     result = adopt("--dump", str(dump))
 
     assert result.exit_code == 1
@@ -337,3 +340,46 @@ def test_adopt_needs_the_sites_wp_config(server, fake):  # noqa: F811
 
     assert result.exit_code == 1 and "no wp-config.php" in result.output
     assert fake.databases == set()
+
+
+def test_adopt_hands_the_dump_over_byte_for_byte(server, fake, tmp_path):  # noqa: F811
+    """A latin1 dump must not turn into replacement characters, nor depend on the server's locale."""
+    with_config(server)
+    dump = tmp_path / "latin1.sql"
+    content = "INSERT INTO t VALUES ('caf\xe9');".encode("latin-1") + bytes([0xff, 0x00, 0xfe])
+    dump.write_bytes(content)
+
+    result = adopt("--dump", str(dump))
+
+    assert result.exit_code == 0, result.output
+    assert fake.fed[("mariadb", "example")] == content
+
+
+def test_adopt_checks_wp_config_before_it_touches_the_old_database(server, fake, tmp_path):  # noqa: F811
+    path = with_config(server, "<?php\ndefine( 'DB_NAME', 'x' );\n")
+    fake.databases.add("example")
+    dump = tmp_path / "example.sql"
+    dump.write_text("INSERT INTO t VALUES (1);")
+
+    result = adopt("--replace", "--yes", "--dump", str(dump))
+
+    assert result.exit_code == 1 and "no line for DB_USER, DB_PASSWORD" in result.output
+    assert fake.databases == {"example"} and not any(stdin and "DROP" in stdin for stdin in fake.stdin)
+    assert not fake.fed
+
+
+def test_adopt_says_the_old_database_is_gone_when_it_fails_after_replacing_it(server, fake, tmp_path,
+                                                                           monkeypatch):  # noqa: F811
+    with_config(server)
+    fake.databases.add("example")
+    dump = tmp_path / "example.sql"
+    dump.write_text("broken")
+
+    def failing(*args, source):
+        raise system.CtlError("mariadb example failed: syntax error")
+
+    monkeypatch.setattr(system, "run_fed", failing)
+    result = adopt("--replace", "--yes", "--dump", str(dump))
+
+    assert result.exit_code == 1
+    assert "old database example is gone" in result.output.replace("\n", " ")

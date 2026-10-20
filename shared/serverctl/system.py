@@ -11,6 +11,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from pathlib import Path
+from typing import BinaryIO
 
 from .errors import CtlError
 
@@ -37,6 +38,18 @@ def run_starter(*args: str) -> str:
 def run_binary(*args: str, stdin: bytes) -> bytes:
     """Like run(), for programs whose input or output isn't text, like signatures."""
     return _run(args, stdin)
+
+
+def run_fed(*args: str, source: BinaryIO) -> None:
+    """Like run(), for input too big to hold in memory or not text: the program reads the open file itself, byte for
+    byte. Its output isn't wanted."""
+    try:
+        result = subprocess.run(args, stdin=source, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=False)
+    except FileNotFoundError:
+        raise CtlError(f"{args[0]} isn't installed.") from None
+    if result.returncode != 0:
+        detail = _as_text(result.stderr).strip() or f"exit status {result.returncode}"
+        raise CtlError(f"{shlex.join(args)} failed: {detail}")
 
 
 def _run(args: tuple[str, ...], stdin, **text_options):

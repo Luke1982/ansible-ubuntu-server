@@ -124,6 +124,7 @@ def adopt(user: User = None, database: Database = None, dump: Dump = None, repla
                            hint="Copy the site's files there first, wp-config.php included, and run this again.")
         if dump not in (None, "-") and not Path(dump).is_file():
             raise CtlError(f"There is no dump at {dump}.")
+        wordpress.check_config(config, site.user)  # before the old database goes, not after the dump is in
         taken = wordpress.database_taken(name)
         if taken and not replace:
             raise CtlError(f"There is already {taken} in MariaDB.",
@@ -138,8 +139,11 @@ def adopt(user: User = None, database: Database = None, dump: Dump = None, repla
                 with ui.console.status("Reading the dump in…"):
                     _read_dump(name, dump)
             wordpress.adopt_config(config, site.user, name, name, password)
-        except CtlError:
+        except CtlError as problem:
             wordpress.drop_database(name)  # nothing knows its password
+            if taken:
+                raise CtlError(problem.message, hint=f"The old database {name} is gone. Fix this and run the same "
+                                                     f"command again: it reads the dump in again.") from None
             raise
         ui.success(f"{'Replaced' if taken else 'Made'} the database {name}, with a MariaDB user of the same name.")
         if dump is not None:
@@ -149,9 +153,9 @@ def adopt(user: User = None, database: Database = None, dump: Dump = None, repla
 
 def _read_dump(database: str, dump: str) -> None:
     if dump == "-":
-        wordpress.import_dump(database, sys.stdin)
+        wordpress.import_dump(database, sys.stdin.buffer)
         return
-    with open(dump, encoding="utf-8", errors="replace") as file:
+    with open(dump, "rb") as file:
         wordpress.import_dump(database, file)
 
 
