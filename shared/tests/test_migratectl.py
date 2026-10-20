@@ -256,3 +256,112 @@ def test_a_site_next_to_a_wrapped_row_is_still_read_and_a_free_domain_is_new(lis
 
 def test_a_cron_job_says_nothing_on_the_server_was_checked(lists):
     assert "Nothing on this server was checked" in status("cron:example:0", "cron", user="example")["detail"]
+
+
+class Machine:
+    """A new server that records every command it is asked to run and answers MariaDB from a set of names."""
+
+    def __init__(self, homes):
+        self.homes = homes
+        self.calls = []
+        self.databases = set()
+        self.fail = {}
+
+    def run(self, command, **kwargs):
+        self.calls.append(command)
+        failing = self.fail.get(" ".join(command[:2]))
+        if failing:
+            return types.SimpleNamespace(returncode=1, stdout="", stderr=failing)
+        if command[0] == "mariadb":
+            taken = any(f"'{name}'" in kwargs["input"] for name in self.databases)
+            return types.SimpleNamespace(returncode=0, stdout="1\n0\n" if taken else "0\n0\n", stderr="")
+        if command[:2] == ["domainctl", "add"]:
+            root = self.homes / command[command.index("--user") + 1] / "public_html" / "www"
+            root.mkdir(parents=True, exist_ok=True)
+            (root / "index.html").write_text("<p>This site is set up and waiting for its files.</p>")
+        if command[:3] == ["domainctl", "wp", "adopt"]:
+            config = self.homes / command[3] / "public_html" / "www" / "wp-config.php"
+            empty, filled = "define( 'DB_PASSWORD', '' );", "define( 'DB_PASSWORD', 'p\\'w' );"
+            config.write_text(config.read_text().replace(empty, filled))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    def ran(self, program):
+        return [call for call in self.calls if call[0] == program]
+
+
+@pytest.fixture
+def machine(monkeypatch, tmp_path):
+    new = Machine(tmp_path)
+    monkeypatch.setattr(migratectl, "HOMES", str(tmp_path))
+    monkeypatch.setattr(migratectl.subprocess, "run", new.run)
+    monkeypatch.setattr(migratectl.shutil, "chown", lambda *args, **kwargs: None)
+    return new
+
+
+APPLY_SITE = {"request": "apply", "item": {"id": "site:example.nl", "kind": "site", "name": "example.nl",
+                                           "user": "example", "database": "example"}}
+
+
+def web_root(machine):
+    return machine.homes / "example" / "public_html" / "www"
+
+
+def test_a_new_site_is_made_and_says_where_the_files_go(machine):
+    answer = migratectl.answer(APPLY_SITE)
+    assert answer["ok"] is True, answer
+    assert answer["docroot"] == str(web_root(machine))
+    assert answer["database"] == "example" and answer["db_user"] == "example" and answer["password"] == "p'w"
+    assert ["domainctl", "add", "example.nl", "--user", "example", "--no-dns", "--yes"] in machine.calls
+    assert ["domainctl", "wp", "adopt", "example", "--database", "example", "--replace", "--yes"] in machine.calls
+    assert answer["steps"]
+
+
+def test_a_web_root_with_files_asks_before_anything_is_touched(machine):
+    web_root(machine).mkdir(parents=True)
+    (web_root(machine) / "index.php").write_text("<?php")
+    answer = migratectl.answer(APPLY_SITE)
+    assert answer["ok"] is False and answer["ask"]["about"] == "files"
+    assert machine.ran("domainctl") == [] and machine.ran("rsync") == []
+
+
+def test_a_web_root_with_only_what_domainctl_left_there_is_not_asked_about(machine):
+    web_root(machine).mkdir(parents=True)
+    (web_root(machine) / "index.html").write_text("<p>This site is set up and waiting for its files.</p>")
+    (web_root(machine) / ".well-known").mkdir()
+    assert migratectl.answer(APPLY_SITE)["ok"] is True
+
+
+def test_a_database_that_is_already_there_asks_before_anything_is_made(machine):
+    machine.databases.add("example")
+    answer = migratectl.answer(APPLY_SITE)
+    assert answer["ok"] is False and answer["ask"]["about"] == "database"
+    assert machine.ran("domainctl") == []
+
+
+def test_answering_yes_goes_on_and_answering_no_leaves_both_sides_as_they_were(machine):
+    machine.databases.add("example")
+    declined = migratectl.answer({**APPLY_SITE, "answers": {"database": "no"}})
+    assert declined["ok"] is False and "ask" not in declined and "Nothing was changed" in declined["error"]
+    assert machine.ran("domainctl") == []
+    assert migratectl.answer({**APPLY_SITE, "answers": {"database": "yes"}})["ok"] is True
+
+
+def test_a_failing_command_is_a_refusal_that_says_what_was_already_made(machine):
+    machine.fail["domainctl wp"] = "There is already a database example."
+    answer = migratectl.answer(APPLY_SITE)
+    assert answer["ok"] is False and "already a database" in answer["error"] and "Made the site" in answer["error"]
+
+
+def test_an_item_that_is_not_a_site_is_an_error_not_a_crash(machine):
+    answer = migratectl.answer({"request": "apply", "item": {"kind": "cron", "user": "example"}})
+    assert answer["ok"] is False and machine.calls == []
+
+
+def test_finish_gives_the_files_to_the_site_user(machine):
+    migratectl.answer(APPLY_SITE)
+    (web_root(machine) / "index.php").write_text("<?php")
+    answer = migratectl.answer({"request": "finish_site", "item": APPLY_SITE["item"]})
+    assert answer["ok"] is True, answer
+    assert ["chown", "-R", "example:example", str(web_root(machine))] in machine.calls
+    assert machine.calls[-1] == ["domainctl", "sync"]
+    assert not (web_root(machine) / "index.html").exists()

@@ -166,7 +166,164 @@ def status(request):
     return {"ok": True, "items": answers}
 
 
-HANDLERS = {"hello": hello, "status": status}
+HOMES = "/home"
+WEB_ROOT = "public_html/www"  # where domainctl puts a site's web root, inside the user's home
+STUB_MARK = "// put here by migratectl; the site's own wp-config.php replaces it when its files arrive"
+# What domainctl itself leaves in a new web root: not the site's files, so not worth asking about.
+OWN_FILES = (".well-known",)
+PLACEHOLDER_SENTENCES = ("put here by domainctl", "This site is set up and waiting for its files.")
+OWN_INDEXES = ("index.php", "index.htm", "index.xhtml", "default.php")
+COMMAND_TIMEOUT = 600
+
+
+class Failed(Exception):
+    """A command did not do its job. The message says what, in words for a person."""
+
+
+def _run(command, what, stdin=None):
+    try:
+        done = subprocess.run(command, capture_output=True, text=True, input=stdin, timeout=COMMAND_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise Failed(f"{what} didn't work ({error}).") from error
+    if done.returncode != 0:
+        said = (done.stderr or done.stdout or "").strip().splitlines()
+        raise Failed(f"{what} didn't work" + (f": {said[-1]}" if said else "."))
+    return done.stdout
+
+
+def _docroot(user):
+    return os.path.join(HOMES, user, WEB_ROOT)
+
+
+def _is_ours(path):
+    """A file the tools put there themselves, which the site's own files are free to replace."""
+    try:
+        with open(path, errors="replace") as file:
+            text = file.read(4096)
+    except OSError:
+        return False
+    if os.path.basename(path) == "wp-config.php":
+        return STUB_MARK in text
+    return any(sentence in text for sentence in PLACEHOLDER_SENTENCES)
+
+
+def _files_in(docroot):
+    try:
+        names = os.listdir(docroot)
+    except FileNotFoundError:
+        return []
+    return sorted(n for n in names if n not in OWN_FILES
+                  and not (n in ("index.html", "wp-config.php") and _is_ours(os.path.join(docroot, n))))
+
+
+def _database_taken(name):
+    query = f"SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '{name}';\n" \
+            f"SELECT COUNT(*) FROM mysql.user WHERE User = '{name}';\n"
+    counts = _run(["mariadb", "--batch", "--skip-column-names"], "Looking in MariaDB", stdin=query).split()
+    if len(counts) != 2:
+        raise Failed("Looking in MariaDB didn't give an answer I could read.")
+    return any(count != "0" for count in counts)
+
+
+def _php_value(text, key):
+    found = re.search(rf"define\s*\(\s*['\"]{key}['\"]\s*,\s*'((?:[^'\\]|\\.)*)'", text)
+    return re.sub(r"\\(.)", r"\1", found[1]) if found else None
+
+
+def _site_fields(item):
+    if item.get("kind") != "site":
+        raise ValueError(f"I can't apply the kind {item.get('kind')!r} yet")
+    name, user = _text(item, "name"), _text(item, "user")
+    database = item.get("database") or None
+    if database is not None and not (isinstance(database, str) and re.fullmatch(r"[A-Za-z0-9_$-]{1,64}", database)):
+        raise ValueError("the database name may only hold letters, digits, - and _")
+    if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", user):
+        raise ValueError(f"{user!r} can't be a user name")
+    return name, user, database
+
+
+def _apply_site(item, answers):
+    name, user, database = _site_fields(item)
+    docroot = _docroot(user)
+    questions = []
+    files = _files_in(docroot)
+    if files:
+        questions.append(("files", f"The web root {docroot} already holds files ({', '.join(files[:5])}"
+                                   f"{', ...' if len(files) > 5 else ''}). Copying the site's files there will "
+                                   f"overwrite files with the same name. Go on?"))
+    if database and _database_taken(database):
+        questions.append(("database", f"The database {database} is already on this server. Going on empties it and "
+                                      f"puts the site's data in its place. Go on?"))
+    for about, question in questions:
+        reply = answers.get(about)
+        if reply == "no":
+            return {"ok": False, "skipped": True, "error": f"Left {name} alone, as you asked. Nothing was changed."}
+        if reply != "yes":
+            return {"ok": False, "ask": {"question": question, "about": about}}
+    steps = []
+    try:
+        _run(["domainctl", "add", name, "--user", user, "--no-dns", "--yes"], f"Making the site {name}")
+        steps.append(f"Made the site {name} and its user {user}.")
+        password = None
+        if database:
+            config = os.path.join(docroot, "wp-config.php")
+            if not os.path.exists(config):
+                # wp adopt only works on a site's own wp-config.php. The real one replaces this when the files arrive.
+                with open(config, "w") as file:
+                    file.write("<?php\n" + STUB_MARK + "\n" + "".join(
+                        f"define( '{key}', '' );\n" for key in ("DB_NAME", "DB_USER", "DB_PASSWORD", "DB_HOST")))
+                shutil.chown(config, user, user)
+            _run(["domainctl", "wp", "adopt", user, "--database", database, "--replace", "--yes"],
+                 f"Making the database {database}")
+            steps.append(f"Made the database {database} and a MariaDB user of the same name.")
+            with open(config, errors="replace") as file:
+                password = _php_value(file.read(), "DB_PASSWORD")
+    except (Failed, OSError, LookupError) as error:
+        done = " ".join(steps)
+        return {"ok": False, "error": f"{error} {done + ' ' if done else ''}Fix the cause and send the site again."}
+    return {"ok": True, "docroot": docroot, "database": database, "db_user": database, "password": password,
+            "steps": steps}
+
+
+def _only_item(request):
+    item = request.get("item")
+    if not isinstance(item, dict):
+        raise ValueError("the request needs an item, like {\"item\": {...}}")
+    return item
+
+
+def apply(request):
+    answers = request.get("answers", {})
+    if not isinstance(answers, dict):
+        return {"ok": False, "error": "The answers must be a JSON object."}
+    try:
+        return _apply_site(_only_item(request), answers)
+    except ValueError as error:
+        return {"ok": False, "error": f"I can't apply this item: {error}."}
+    except Failed as error:
+        return {"ok": False, "error": str(error)}
+
+
+def finish_site(request):
+    try:
+        _, user, _ = _site_fields(_only_item(request))
+        docroot = _docroot(user)
+        if not os.path.isdir(docroot):
+            return {"ok": False, "error": f"There is no web root at {docroot} yet. Make the site first."}
+        _run(["chown", "-R", f"{user}:{user}", docroot], "Giving the files to the site's user")
+        index = os.path.join(docroot, "index.html")
+        # index.html is served before index.php, so the placeholder would hide the site that just arrived.
+        if any(os.path.exists(os.path.join(docroot, own)) for own in OWN_INDEXES) and _is_ours(index):
+            os.unlink(index)
+        _run(["domainctl", "sync"], "Updating the web server")
+    except ValueError as error:
+        return {"ok": False, "error": f"I can't finish this item: {error}."}
+    except (Failed, OSError) as error:
+        return {"ok": False, "error": str(error)}
+    return {"ok": True, "steps": [f"Gave the files in {docroot} to {user}.", "Updated the web server."]}
+
+
+HANDLERS = {"hello": hello, "status": status, "apply": apply, "finish_site": finish_site}
 
 
 def answer(request):
