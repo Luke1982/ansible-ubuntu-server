@@ -87,7 +87,9 @@ An item only ever moves through `apply`, one at a time, so a run that is interru
 
 **A mail domain.** The old side writes the same JSON `mailctl import` reads, for that domain only. The new side
 imports it, which adds what is missing and leaves what is already there alone. Accounts keep their password
-hashes; an account whose hash the new server can't check is left out and reported, and its filters with it.
+hashes. For an account whose hash the new server can't check, the dashboard asks for the password while the move
+runs; it is hashed on arrival, the way the new server hashes its own. Filters that can't be read are named and the
+rest are imported.
 
 **A WordPress site.** The new side makes the site first (`domainctl add`, which makes the user, the web root and
 the logs even while the domain still points at the old server), then the database and its user. The old side
@@ -136,14 +138,14 @@ A reviewer read this document and asked what a builder couldn't settle alone. Th
 | Question | Decision |
 |---|---|
 | Root on the new side, with `PermitRootLogin no` in the role | Connect as `ansible`, run `sudo -n migratectl`. Nothing about sshd changes |
-| A password hash the new server can't check | That account is left out of the import and reported, with the command to create it by hand. No password is ever invented. `--ask-passwords` asks for one per account during the run instead |
+| A password hash the new server can't check | The dashboard asks for that account's password while the move runs. It goes over the SSH connection and is hashed on the new server in the scheme it uses itself; it is never written down on either side. Enter skips the account, which is then named in the report |
 | What "already there" means per item | Mail: `mailctl import` merges and only adds what is missing, so a domain that is partly there needs no question. A site asks when its web root holds files or its database exists. A database is never replaced without a yes meant for that database |
 | Who makes the WordPress database and writes `wp-config.php` | A new `domainctl wp adopt`: it makes the database and its user, imports the dump, and changes the four `define()` lines in the `wp-config.php` that came across, keeping its salts, table prefix and own constants. `domainctl` stays the only thing that touches sites and databases; after the rsync the files are given to the site's user and `domainctl sync` is run |
 | Cron jobs starting at once | Installed and running, as asked. Until the DNS is flipped both servers run them, which the run says once. The interpreter path is rewritten (`/opt/plesk/php/8.1/bin/php` and the like); a job whose paths can't be mapped is shown and skipped |
 | Catch-all addresses and aliases mailctl can't express | Left out of the file before it is imported, so one of them can't refuse the whole domain, and listed at the end as hand work |
-| One Sieve filter the new side refuses | Filters are their own step, after the accounts: a filter that fails costs filters, never the domain |
+| One mail filter the new side refuses | `mailctl import` and `mailctl filters import` take the filters they can read and name the ones they can't, instead of refusing the whole file over one of them. That is a change to mailctl, and part of this work |
 | Databases that belong to no WordPress site | Reported, like the sites that aren't WordPress. Never moved by itself |
-| A send-as permission that hangs on no forward | Reported. The file `mailctl import` reads carries send-as on a forward only, and that format isn't changed for this |
+| Being allowed to send under another address, where no forward goes with it | A mailbox can be allowed to put another address in the From line. The file carries that along with the forward it belongs to, so a permission without a forward has nowhere to go: it is printed at the end for you to set yourself |
 
 ## Left to the builder
 
