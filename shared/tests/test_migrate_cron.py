@@ -75,21 +75,21 @@ def test_comments_and_empty_lines_are_not_jobs(tmp_path):
 
 def test_a_missing_crontab_is_no_jobs_and_no_note(tmp_path):
     notes = []
-    assert _jobs(tmp_path, {}, notes=notes) == [] and notes == []
+    assert _jobs(tmp_path, {}, notes=notes) == [] and len(notes) == 1 and "/etc/crontab" in notes[0]
 
 
 def test_a_crontab_that_cannot_be_read_is_a_note_naming_the_user(tmp_path):
     notes = []
     failures = {"shopper": migrate.CommandFailed("crontab failed: must be privileged to use -u")}
     _jobs(tmp_path, {}, notes=notes, failures=failures)
-    assert len(notes) == 1 and "shopper" in notes[0]
+    assert len(notes) == 2 and "shopper" in notes[1]
 
 
 def test_a_server_without_the_crontab_command_says_so(tmp_path):
     notes = []
     failures = {name: migrate.CommandFailed("crontab isn't installed", missing=True) for name in ("shopper", "root")}
     assert _jobs(tmp_path, {}, notes=notes, failures=failures) == []
-    assert len(notes) == 1 and "shopper" in notes[0]
+    assert len(notes) == 2 and "shopper" in notes[1]
 
 
 def test_the_owner_of_a_sites_folder_is_checked_even_when_passwd_is_unreadable(tmp_path):
@@ -109,3 +109,42 @@ def test_the_owner_of_a_sites_folder_is_checked_even_when_passwd_is_unreadable(t
 def test_an_at_word_job_keeps_its_whole_command(tmp_path):
     jobs = _jobs(tmp_path, {}, {"p": "@reboot shopper /usr/bin/php8.1 /var/www/shop/boot.php --now\n"})
     assert jobs[0]["interpreter"] == "/usr/bin/php8.1" and jobs[0]["user"] == "shopper"
+
+
+def test_settings_above_a_job_travel_with_it(tmp_path):
+    text = 'MAILTO=""\nPATH=/opt/php/bin\n0 * * * * php /var/www/shop/a.php\n'
+    jobs = _jobs(tmp_path, {"shopper": text})
+    assert jobs[0]["settings"] == ['MAILTO=""', "PATH=/opt/php/bin"]
+
+
+def test_a_line_too_short_to_be_a_job_is_kept_with_a_problem(tmp_path):
+    jobs = _jobs(tmp_path, {"shopper": "@daily\n* * * * *\n"}, {"p": "* * * * * shopper\n"})
+    assert len(jobs) == 3 and all(job["problem"] and job["interpreter"] is None for job in jobs)
+
+
+def test_a_file_name_or_redirect_that_looks_like_php_is_not_the_interpreter(tmp_path):
+    text = "0 1 * * * mysqldump x > /backup/sh\n0 2 * * * tar czf /b/x.tgz /var/www/php\n"
+    jobs = _jobs(tmp_path, {"shopper": text})
+    assert [job["interpreter"] for job in jobs] == [None, None] and all(job["problem"] for job in jobs)
+
+
+def test_a_wrapper_is_looked_through_to_the_program(tmp_path):
+    text = ("* * * * * flock -n /tmp/x.lock /usr/bin/php8.1 /var/www/shop/a.php\n"
+            "* * * * * nice -n 10 PATH=/x /usr/bin/php7.4 b.php 2>&1\n"
+            "* * * * * cd /var/www/shop && timeout 30 php c.php | tee log\n")
+    jobs = _jobs(tmp_path, {"shopper": text})
+    assert [job["interpreter"] for job in jobs] == ["/usr/bin/php8.1", "/usr/bin/php7.4", "php"]
+
+
+def test_cron_d_files_that_cron_ignores_are_left_out_and_said_so(tmp_path):
+    notes = []
+    line = "* * * * * shopper php /var/www/shop/a.php\n"
+    jobs = _jobs(tmp_path, {}, {"good": line, "old.dpkg-old": line, "x.bak": line}, notes)
+    assert len(jobs) == 1
+    assert any("old.dpkg-old" in note and "x.bak" in note for note in notes)
+
+
+def test_a_note_says_etc_crontab_was_not_read(tmp_path):
+    notes = []
+    _jobs(tmp_path, {}, notes=notes)
+    assert any("/etc/crontab" in note for note in notes)

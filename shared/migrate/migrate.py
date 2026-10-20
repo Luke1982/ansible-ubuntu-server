@@ -572,6 +572,8 @@ _CRON_PATH = re.compile(r"""(?<![\w.:/-])/[^\s'"`<>;|&()=,]+""")
 _CRON_WORD = re.compile(r"""[^\s'"`<>;|&()]+""")
 # php, php7.4, php-cli, ea-php74, lsphp81 and the panel copies of them
 _PHP_NAME = re.compile(r"^(?:ea-|ls)?php(?:-?cli)?[0-9.]*(?:-cli)?$")
+_CRON_WRAPPERS = ("flock", "env", "nice", "ionice", "timeout", "nohup")
+_CRON_FILE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")  # cron skips any other name in /etc/cron.d
 _OTHER_PROGRAMS = {"wp": "wp-cli", "curl": "curl", "wget": "wget", "bash": "bash", "sh": "sh", "python3": "python3",
                    "python": "python"}
 
@@ -598,26 +600,60 @@ def _cron_users(sites, passwd, notes):
 
 
 def _cron_lines(text, with_user):
-    """(line, user, command) for each job; comments, blank lines and NAME=value settings are not jobs. A line starts
-    with five time fields or one @word, and in /etc/cron.d a user name follows."""
+    """(line, user, command, settings, problem) for each job. NAME=value lines are not jobs but change how the jobs
+    below them run (PATH, MAILTO, SHELL, CRON_TZ), so they are handed on with each job. A line that is too short to
+    be a job comes back with no command and a problem, so it is told about instead of vanishing. A line starts with
+    five time fields or one @word, and in /etc/cron.d a user name follows."""
+    settings = []
     for raw in text.split("\n"):
         line = raw.strip()
-        if not line or line.startswith("#") or _CRON_ENV.match(line):
+        if not line or line.startswith("#"):
+            continue
+        if _CRON_ENV.match(line):
+            settings.append(line)
             continue
         before = (1 if line.startswith("@") else 5) + (1 if with_user else 0)
         fields = line.split(None, before)
+        user = fields[before - 1] if with_user and len(fields) >= before else None
         if len(fields) <= before:
+            yield (line, user, None, list(settings),
+                   "This line is not a complete cron job (the time, %sor the command is missing), so it can't be "
+                   "moved." % ("the user, " if with_user else ""))
             continue
-        yield line, (fields[before - 1] if with_user else None), fields[before]
+        yield line, user, fields[before], list(settings), None
+
+
+def _program_in(words):
+    """The program a segment of a command starts, skipping settings like PATH=x and wrappers such as flock or nice."""
+    index = 0
+    while index < len(words):
+        word = words[index]
+        name = os.path.basename(word)
+        if _CRON_ENV.match(word):
+            index += 1
+        elif name in _CRON_WRAPPERS:
+            index += 1
+            while index < len(words) and (words[index].startswith("-") or _CRON_ENV.match(words[index])):
+                index += 1 + (name in ("nice", "ionice") and words[index] in ("-n", "-c") and index + 1 < len(words))
+            # flock takes a lock file, timeout a duration; neither is the program
+            if name in ("flock", "timeout") and index < len(words):
+                index += 1
+        else:
+            return word
+    return None
 
 
 def _interpreter(command):
-    """What the job runs, as written, or None when nothing in it is a program this can name. The first
-    recognisable word wins, so 'cd /x && /usr/bin/php7.4 cron.php' gives the php and not the cd."""
-    for word in _CRON_WORD.findall(command):
-        name = os.path.basename(word)
-        if _PHP_NAME.match(name) or name in _OTHER_PROGRAMS:
-            return word
+    """What the job runs, as written, or None when it isn't a program this can name. Only the first word of each
+    '&&', ';' or '|' part counts (after a wrapper like flock), so 'cd /x && php7.4 y.php' gives the php, while a
+    file called php that is only an argument or a redirect target is not taken for a program."""
+    command = re.sub(r"\d*[<>]+&?\s*\S*", " ", command)
+    for part in re.split(r"&&|\|\||[;|&]", command):
+        word = _program_in(_CRON_WORD.findall(part))
+        if word is not None:
+            name = os.path.basename(word)
+            if _PHP_NAME.match(name) or name in _OTHER_PROGRAMS:
+                return word
     return None
 
 
@@ -633,21 +669,23 @@ def _site_of(command, sites):
     return best[1] if best else None
 
 
-def _cron_job(line, user, command, sites):
-    interpreter = _interpreter(command)
-    problem = None
-    if interpreter is None:
+def _cron_job(found, sites):
+    line, user, command, settings, problem = found
+    interpreter = _interpreter(command) if command is not None else None
+    if problem is None and interpreter is None:
         problem = "I can't tell which program this job runs, so it can't be set up for the new server by itself."
-    return {"user": user, "line": line, "site": _site_of(command, sites), "interpreter": interpreter,
-            "problem": problem}
+    return {"user": user, "line": line, "site": _site_of(command or "", sites), "interpreter": interpreter,
+            "settings": settings, "problem": problem}
 
 
 def cron_jobs(run, sites, notes=None, passwd=PASSWD, cron_dir=CRON_DIR):
-    """One dict per cron job on the server: user, line (as written), site (the name of the site its paths point
+    """One dict per cron job on the server: user, line (as written), settings (the NAME=value lines above it),
+    site (the name of the site its paths point
     into, or None), interpreter (as the job writes it, or None) and problem (plain words, or None). Everything
     that couldn't be read goes into notes: a job nobody knows about stops running after the move."""
     notes = notes if notes is not None else []
     jobs = []
+    notes.append("/etc/crontab was not read; if it has jobs of its own, they are not in this list.")
     users = _cron_users(sites, passwd, notes)
     for index, user in enumerate(users):
         try:
@@ -660,8 +698,8 @@ def cron_jobs(run, sites, notes=None, passwd=PASSWD, cron_dir=CRON_DIR):
             if "no crontab for" not in failed.message:
                 notes.append("Couldn't read the cron jobs of %s: %s." % (user, failed.message))
             continue
-        for line, _, command in _cron_lines(output, False):
-            jobs.append(_cron_job(line, user, command, sites))
+        for found in _cron_lines(output, False):
+            jobs.append(_cron_job((found[0], user) + found[2:], sites))
     try:
         names = sorted(os.listdir(cron_dir))
     except FileNotFoundError:
@@ -669,9 +707,13 @@ def cron_jobs(run, sites, notes=None, passwd=PASSWD, cron_dir=CRON_DIR):
     except OSError as problem:
         notes.append("Couldn't read the cron jobs in %s: %s." % (cron_dir, problem.strerror or problem))
         names = []
+    ignored = []
     for name in names:
         path = os.path.join(cron_dir, name)
-        if name.startswith(".") or not os.path.isfile(path):
+        if not os.path.isfile(path) or name == ".placeholder":
+            continue
+        if not _CRON_FILE_NAME.match(name):
+            ignored.append(name)
             continue
         try:
             with open(path, errors="replace") as handle:
@@ -679,6 +721,9 @@ def cron_jobs(run, sites, notes=None, passwd=PASSWD, cron_dir=CRON_DIR):
         except OSError as problem:
             notes.append("Couldn't read the cron file %s: %s." % (path, problem.strerror or problem))
             continue
-        for line, user, command in _cron_lines(text, True):
-            jobs.append(_cron_job(line, user, command, sites))
+        for found in _cron_lines(text, True):
+            jobs.append(_cron_job(found, sites))
+    if ignored:
+        notes.append("Left out of %s because cron itself ignores a file with such a name: %s."
+                     % (cron_dir, ", ".join(ignored)))
     return jobs
