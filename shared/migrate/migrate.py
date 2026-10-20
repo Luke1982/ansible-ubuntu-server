@@ -1157,7 +1157,7 @@ def dashboard(inventory, status, remembered=None):
         out.append(title)
         for note in notes:
             out.extend(textwrap.wrap(note, _WIDTH, initial_indent="  ", subsequent_indent="    ",
-                                     break_long_words=True, break_on_hyphens=False))
+                                     break_long_words=True))
     return "\n".join(_fit_line(line) for line in out)
 
 
