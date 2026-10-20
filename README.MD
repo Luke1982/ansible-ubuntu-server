@@ -61,59 +61,7 @@ Create the required variable files for the roles you are deploying. Each role ha
 | `basic` | `roles/basic/vars/private/linuxusers.yml` |
 | `mail` | `roles/mail/vars/private/mailvars.yml` |
 
-#### Migrating learned spam to a new mail server
-
-The `mail` role keeps SpamAssassin's Bayes learning in the MySQL `bayes`
-database. A fresh provision starts with an empty Bayes filter. To carry over the
-learning from an existing server, dump it on the old host
-(`mysqldump bayes > bayes_dump.sql`) and drop the file at
-`roles/mail/files/private/bayes_dump.sql` before running the playbook — it will
-be imported automatically. See `roles/mail/files/private/README.md` for details.
-
-#### Search index for migrated mailboxes
-
-Dovecot indexes mail for IMAP search when it arrives. The playbook run that
-changes the Dovecot config also queues all existing mail for indexing. If you
-copy mailboxes onto the server afterwards, queue them yourself, so the first
-search in each folder doesn't have to index it:
-
-```bash
-doveadm index -A -q '*'
-```
-
-#### DKIM after the first run with mailctl
-
-The playbook used to rebuild OpenDKIM's signing table on every run, leaving out every domain but the server's own, and gave the server's own domain a new DKIM key each time. The first run with `mailctl` signs every domain that has a key again, and keys are never replaced any more. Check each domain, the server's own included, with `mailctl status DOMAIN`, and publish the record from `mailctl dkim show DOMAIN` where the DKIM check fails.
-
-#### From Roundcube to SOGo
-
-The mail role installs SOGo for webmail, calendars, address books and phone sync (ActiveSync), and removes Roundcube from servers that have it. Before running it:
-
-- Add `sogo_db_pass` to `mailvars.yml` (see `roles/mail/vars/private/README.md`).
-- OpenLiteSpeed needs listeners on ports 80 and 443. mailctl adds a virtual host per domain to its config, `webmail.DOMAIN`, with the note "Managed by mailctl"; leave those to mailctl. It doesn't touch your other sites, and WebAdmin stays editable.
-- A site you set up by hand in OpenLiteSpeed for Roundcube stops working: remove it.
-
-Webmail, calendar and contact sync, and ActiveSync are at `https://webmail.DOMAIN` for every mail domain whose `webmail.DOMAIN` A and AAAA records all point to the server. `mailctl webmail sync` does all of it:
-
-- A domain at TransIP without any `webmail.DOMAIN` record gets one, pointing to the server; a record that's there is left alone. It waits (up to 5 minutes) until TransIP's nameservers serve the new record. This needs the TransIP login (`mailctl dns credentials`); `--no-dns` skips it.
-- Each domain whose `webmail.DOMAIN` points to the server gets a site: a virtual host in OpenLiteSpeed, its settings in `conf/vhosts/webmail.DOMAIN/vhconf.conf`, with a Let's Encrypt certificate of its own that certbot gets through the site.
-- Sites whose record no longer points here, or whose domain is gone, are removed with their certificates.
-
-Run it yourself, on the server, after adding a domain or changing a `webmail.DOMAIN` record. A playbook run never does: it publishes DNS records, asks certbot for certificates, and takes sites away again, which is not something to discover afterwards. A run says so and names the command. `mail.DOMAIN` stays the name for IMAP and sending.
-
-`mailctl domain add`, `dns show` and `dns publish` include the `webmail.DOMAIN` records and the `_caldavs._tcp` and `_carddavs._tcp` SRV records, which point calendar and contact apps at `https://webmail.DOMAIN` by themselves. `mailctl doctor` shows how a domain's webmail is doing, and `mailctl domain delete` takes its site and certificate along.
-
-Webmail carries the colours and the logo of whoever runs the server. `mailctl webmail brand --colour '#09526D' --logo logo.png --bar-logo logo-white.png --icon icon.ico` puts them in place; without arguments it says what is set, and `--clear` puts SOGo's own back. The sites serve these files by the names SOGo's pages ask for, so an upgrade of SOGo doesn't undo them, and the colour is SOGo's own stylesheet with its palette recoloured: the colour given takes the place of SOGo's green-teal exactly, and every shade of it moves along, keeping how far it stood from white. Colours that say something -- the red of a warning, the green of the save button -- keep their own hue. The files the playbook installs are in [`roles/mail/files/webmail-branding`](roles/mail/files/webmail-branding); `mailctl webmail sync` makes the stylesheet again whenever SOGo's own is newer, which it is after an upgrade.
-
-Calendars, address books and SOGo's settings live in the MariaDB database `sogo`: back it up along with the mail.
-
-Roundcube's database stays, with the contacts people saved in it. Filters made in Roundcube keep working until someone saves filters or a vacation reply in SOGo; from then on SOGo's apply. `mailctl filters show ADDRESS` shows both.
-
-Filters from another server come over with the server itself: the export writes every account's filters into the JSON file, and `mailctl import` puts the rules that webmail's own filter editor can express in its list, so they show up there and are edited there (see [Mail filters](#mail-filters)).
-
-#### Ubuntu release upgrades
-
-The mail role supports Ubuntu 24.04 (Dovecot 2.3) and Ubuntu 26.04 (Dovecot 2.4), but not upgrading a mail server from one to the other in place: the package upgrade keeps the Dovecot config files the role changed, and Dovecot 2.4 doesn't accept them. Set up a new 26.04 server with the playbook and move the mail and databases to it instead.
+A mail server can start with the Bayes learning of an older one: put a dump of its `bayes` database at `roles/mail/files/private/bayes_dump.sql` and the first run restores it, as long as this server has learned nothing yet. See [`roles/mail/files/private/README.md`](roles/mail/files/private/README.md).
 
 ### 5. Create a playbook
 
@@ -140,23 +88,6 @@ skipping: no hosts matched
 
 That means there is no `private/web03.majorlabel.nl.yml` -- the playbook in the project root is not an inventory, it only names a host. See [Adding another server](#adding-another-server).
 
-### Adding another server
-
-Three files, every time:
-
-| What | Where | From |
-|------|-------|------|
-| The inventory: address, SSH user, key, `hostname`, `defaultdomain` | `private/<hostname>.yml` | `cp inventory-example.yml private/<hostname>.yml` |
-| The playbook: which roles that server gets | `<hostname>.yml` in the project root | copy another server's and change the name |
-| The role variables, for the roles in that playbook | `roles/*/vars/private/` | the README in each of those directories |
-
-Then check that Ansible knows it, before running anything:
-
-```bash
-ansible-inventory --list | grep <hostname>     # it is in the inventory
-ansible <hostname> -m ping                     # it answers, and the key works
-```
-
 ### 6. Run the playbook
 
 ```bash
@@ -182,6 +113,23 @@ Until `mailctl certificate sync` has run, a new mail server has only the empty
 certificate files the playbook puts there for Dovecot to start with.
 
 ---
+
+## Adding another server
+
+Three files, every time:
+
+| What | Where | From |
+|------|-------|------|
+| The inventory: address, SSH user, key, `hostname`, `defaultdomain` | `private/<hostname>.yml` | `cp inventory-example.yml private/<hostname>.yml` |
+| The playbook: which roles that server gets | `<hostname>.yml` in the project root | copy another server's and change the name |
+| The role variables, for the roles in that playbook | `roles/*/vars/private/` | the README in each of those directories |
+
+Then check that Ansible knows it, before running anything:
+
+```bash
+ansible-inventory --list | grep <hostname>     # it is in the inventory
+ansible <hostname> -m ping                     # it answers, and the key works
+```
 
 ## Project structure
 
@@ -245,12 +193,10 @@ Anyone who reaches the site can try passwords on your databases. If it doesn't
 need to be open to everyone, limit it to your own addresses under the site's
 Access Control in WebAdmin.
 
-On servers that already had phpMyAdmin, the first run moves it out of
-OpenLiteSpeed's Example site, where every name that site answers to could reach
-it, including the server's own address. It keeps the settings it had, and gives
-it the passphrase for cookie login that the sample settings don't have:
-phpMyAdmin used to log everybody out whenever it restarted, and say so on every
-page. The settings it replaces are kept as `config.inc.php.previous`.
+phpMyAdmin that was installed in OpenLiteSpeed's Example site is moved to this
+site, out of reach of every other name that site answers to. Its settings are
+kept, with a passphrase added for cookie login, so a restart doesn't sign
+everybody out; the file it replaces is kept as `config.inc.php.previous`.
 
 ## Blocking password guessing
 
@@ -446,6 +392,22 @@ SpamAssassin's Bayes half only helps when it is shown what spam and good mail lo
 
 A `mailctl-spam-learn.timer` runs it every night, so nothing has to be remembered. It only reads the messages that arrived or were moved since the last run, which keeps it short on a server with years of mail; `--all` reads everything again (`sa-learn` skips what it has already seen), and `--dry-run` says how much it would read. Mail nobody has opened yet is left out of the **inbox**, since it may be spam that hasn't been filed; a message filed in a folder counts whether it was read or not, because somebody put it there. That is also how a message marked as spam wrongly is put right: drag it out of `Junk` into the folder it belongs in, and the next run learns it as good mail, wherever it landed. `Trash` and `Drafts` teach nothing and are left out.
 
+### Webmail
+
+Webmail, calendar and contact sync, and ActiveSync are at `https://webmail.DOMAIN` for every mail domain whose `webmail.DOMAIN` A and AAAA records all point to the server. `mailctl webmail sync` does all of it:
+
+- A domain at TransIP without any `webmail.DOMAIN` record gets one, pointing to the server; a record that's there is left alone. It waits (up to 5 minutes) until TransIP's nameservers serve the new record. This needs the TransIP login (`mailctl dns credentials`); `--no-dns` skips it.
+- Each domain whose `webmail.DOMAIN` points to the server gets a site: a virtual host in OpenLiteSpeed, its settings in `conf/vhosts/webmail.DOMAIN/vhconf.conf`, with a Let's Encrypt certificate of its own that certbot gets through the site.
+- Sites whose record no longer points here, or whose domain is gone, are removed with their certificates.
+
+Run it yourself, on the server, after adding a domain or changing a `webmail.DOMAIN` record. A playbook run never does: it publishes DNS records, asks certbot for certificates, and takes sites away again, which is not something to discover afterwards. A run says so and names the command. `mail.DOMAIN` stays the name for IMAP and sending.
+
+`mailctl domain add`, `dns show` and `dns publish` include the `webmail.DOMAIN` records and the `_caldavs._tcp` and `_carddavs._tcp` SRV records, which point calendar and contact apps at `https://webmail.DOMAIN` by themselves. `mailctl doctor` shows how a domain's webmail is doing, and `mailctl domain delete` takes its site and certificate along.
+
+Webmail carries the colours and the logo of whoever runs the server. `mailctl webmail brand --colour '#09526D' --logo logo.png --bar-logo logo-white.png --icon icon.ico` puts them in place; without arguments it says what is set, and `--clear` puts SOGo's own back. The sites serve these files by the names SOGo's pages ask for, so an upgrade of SOGo doesn't undo them, and the colour is SOGo's own stylesheet with its palette recoloured: the colour given takes the place of SOGo's green-teal exactly, and every shade of it moves along, keeping how far it stood from white. Colours that say something -- the red of a warning, the green of the save button -- keep their own hue. The files the playbook installs are in [`roles/mail/files/webmail-branding`](roles/mail/files/webmail-branding); `mailctl webmail sync` makes the stylesheet again whenever SOGo's own is newer, which it is after an upgrade.
+
+Calendars, address books and SOGo's settings live in the MariaDB database `sogo`: back it up along with the mail.
+
 ### Mail filters
 
 An account's filters are Sieve scripts, and Dovecot runs **one** of them: the active one. Webmail (SOGo) is where filters are edited: it keeps them in its own database, renders them into the script named `sogo` and makes that one active, so a filter kept in any other script stops running the moment someone saves filters in webmail.
@@ -487,6 +449,10 @@ Moving a server brings tens of accounts whose passwords are already known. `mail
 The file is read and checked whole first, so a mistake in it is found before any account exists; an address that is already there is left as it is, and every domain has to be on this server already. `--dry-run` checks the file and creates nothing. Delete the file afterwards: it holds the passwords in plain text, and mailctl says so when others can read it.
 
 ### Moving a whole mail server
+
+Dovecot indexes mail for IMAP search as it arrives, and a playbook run queues everything already there. Mail copied onto the server after that is indexed on the first search in a folder, unless you queue it yourself: `doveadm index -A -q '*'`.
+
+The mail role runs on Ubuntu 24.04 (Dovecot 2.3) and 26.04 (Dovecot 2.4). A mail server can't be upgraded from one release to the other in place: the upgrade keeps the Dovecot configuration this role writes and Dovecot 2.4 refuses it. Set up a new server and move the mail across.
 
 `mailctl import mailserver.json` brings over a whole mail server at once: its domains, its accounts with their passwords, its forwards (and who may send as the forwarded address), its spam settings and every account's Sieve filters. Write the file on the old server with `mailctl export mailserver.json`, or, on a server without mailctl, with [`roles/mail/files/export-mailserver.sh`](roles/mail/files/export-mailserver.sh): copy it there and run `sudo ./export-mailserver.sh mailserver.json`. It reads the same tables this role sets up, needs `jq`, and changes nothing.
 
