@@ -442,16 +442,41 @@ class Server:
         self.import_exit = 0
         self.accounts = {"old@a.nl"}
         self.crontabs = {}
+        self.imported = None  # what the import file held when mailctl was run
+        self.domains = []  # mail domains already here
+        self.here = {}  # domain -> accounts already here; a missing domain list or account list can be broken
+        self.break_lists = False
+        self.doveadm = "SHA512-CRYPT SHA256-CRYPT MD5-CRYPT PLAIN\n"
+        self.refuse = False
+        self.crontab_error = None
 
     def run(self, command, **kwargs):
         self.calls.append(command)
         self.kwargs.append(kwargs)
         ok = lambda out="": types.SimpleNamespace(returncode=0, stdout=out, stderr="")  # noqa: E731
         if command[:2] == ["doveadm", "pw"]:
-            return ok("SHA512-CRYPT SHA256-CRYPT MD5-CRYPT PLAIN\n")
+            return ok(self.doveadm) if self.doveadm is not None else \
+                types.SimpleNamespace(returncode=1, stdout="", stderr="doveadm: broken")
+        if command[:3] == ["mailctl", "domain", "list"]:
+            if self.break_lists:
+                return types.SimpleNamespace(returncode=1, stdout="", stderr="broken")
+            if not self.domains:
+                return ok("There are no mail domains yet.\n")
+            return ok(f" Domain  Addresses  Forwards\n {BAR}\n" + "".join(f" {d}  1  0\n" for d in self.domains))
+        if command[:3] == ["mailctl", "address", "list"]:
+            found = self.here.get(command[3], [])
+            if not found:
+                return ok(f"{command[3]} has no accounts yet.\n")
+            return ok(f" Address  Disk usage\n {BAR}\n" + "".join(f" {a}  0 B\n" for a in found))
         if command[:2] == ["mailctl", "import"]:
             self.import_file = command[2]
             self.import_mode = os.stat(command[2]).st_mode & 0o777
+            with open(command[2]) as file:
+                self.imported = json.load(file)
+            if self.refuse:
+                return types.SimpleNamespace(
+                    returncode=1, stdout="", stderr="Error: New passwords are needed for 1 account, and mailctl "
+                                                    "can't ask for them without a terminal.\nHint: give them a password.")
             if self.import_exit:
                 return types.SimpleNamespace(returncode=self.import_exit, stdout="", stderr="Error: no good")
             return ok("Imported 2 accounts.\n")
@@ -460,8 +485,10 @@ class Server:
                 return types.SimpleNamespace(returncode=1, stdout="", stderr=f"Error: {command[3]} doesn't exist")
             return ok()
         if command[0] == "crontab" and command[3:] == ["-l"]:
+            if self.crontab_error:
+                return types.SimpleNamespace(returncode=1, stdout="", stderr=self.crontab_error)
             if command[2] not in self.crontabs:
-                return types.SimpleNamespace(returncode=1, stdout="", stderr="no crontab")
+                return types.SimpleNamespace(returncode=1, stdout="", stderr=f"no crontab for {command[2]}")
             return ok(self.crontabs[command[2]])
         if command[0] == "crontab" and command[3:] == ["-"]:
             self.crontabs[command[2]] = kwargs["input"]
@@ -492,6 +519,7 @@ def test_a_mail_domain_is_imported_and_the_file_is_deleted(server):
     call = next(c for c in server.calls if c[:2] == ["mailctl", "import"])
     assert call[3:] == ["--yes", "--verbose", "--keep-hashes"]
     assert not os.path.exists(server.import_file)
+    assert server.imported == mail_item(OWN, WEAK)["data"]
     assert answer["mailctl"]["exit"] == 0 and "Imported" in answer["mailctl"]["stdout"]
     assert answer["weak"] == ["weak@a.nl"]
 
@@ -571,3 +599,50 @@ def test_no_mail_or_cron_child_reads_the_request_pipe(server):
 def test_an_unknown_kind_is_still_refused(server):
     answer = migratectl.answer({"request": "apply", "item": {"id": "x", "kind": "dance"}})
     assert answer["ok"] is False and server.calls == []
+
+
+def test_an_existing_account_with_an_unreadable_hash_is_not_refused_over(server):
+    server.domains, server.here = ["a.nl"], {"a.nl": ["odd@a.nl"]}
+    answer = migratectl.answer({"request": "apply", "item": mail_item(OWN, UNREADABLE)})
+    assert answer["ok"] is True and "needs_password" not in answer and "note" not in answer
+    assert server.imported["addresses"] == [OWN, UNREADABLE]
+
+
+def test_when_the_accounts_here_cannot_be_read_every_account_is_judged_and_it_is_said(server):
+    server.domains, server.break_lists = ["a.nl"], True
+    answer = migratectl.answer({"request": "apply", "item": mail_item(UNREADABLE)})
+    assert answer["ok"] is False and answer["needs_password"] == ["odd@a.nl"]
+    assert "couldn't read which accounts" in answer["note"]
+
+
+def test_mailctl_refusing_on_its_own_is_answered_like_our_own_check(server):
+    server.refuse = True
+    answer = migratectl.answer({"request": "apply", "item": mail_item(OWN)})
+    assert answer["ok"] is False and answer["needs_password"] == []
+    assert "Nothing was created" in answer["error"] and "New passwords are needed" in answer["error"]
+    assert answer["mailctl"]["exit"] == 1 and not os.path.exists(server.import_file)
+
+
+@pytest.mark.parametrize("output", [None, "", "\n"])
+def test_dovecot_failing_or_listing_nothing_is_a_failure_not_a_list_of_unreadable_accounts(server, output):
+    server.doveadm = output
+    answer = migratectl.answer({"request": "apply", "item": mail_item(WEAK)})
+    assert answer["ok"] is False and "needs_password" not in answer
+    assert not [c for c in server.calls if c[:2] == ["mailctl", "import"]]
+
+
+def test_a_crontab_that_cannot_be_read_is_never_replaced(server):
+    server.crontabs["example"] = "0 1 * * * /bin/true\n"
+    server.crontab_error = "crontab: cannot open the spool"
+    answer = migratectl.answer({"request": "apply", "item": CRON})
+    assert answer["ok"] is False and "Nothing was changed" in answer["error"]
+    assert server.crontabs["example"] == "0 1 * * * /bin/true\n"
+    assert ["crontab", "-u", "example", "-"] not in server.calls
+
+
+def test_a_marker_that_is_a_prefix_of_another_items_id_does_not_count(server):
+    other = {**CRON, "id": "cron:example:01", "line": "0 3 * * * other"}
+    migratectl.answer({"request": "apply", "item": other})
+    answer = migratectl.answer({"request": "apply", "item": CRON})
+    assert answer["already"] is False
+    assert "php /home/example/x.php" in server.crontabs["example"] and "0 3 * * * other" in server.crontabs["example"]

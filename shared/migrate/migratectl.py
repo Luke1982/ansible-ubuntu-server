@@ -63,7 +63,7 @@ def _table_rows(command, what, by_column=False):
     lines = [line.rstrip() for line in done.stdout.splitlines() if line.strip()]
     rule = next((i for i, line in enumerate(lines) if i > 0 and _is_rule(line)), None)
     if rule is None:
-        if any(line.startswith("There are no") for line in lines):
+        if any(line.startswith("There are no") or " has no accounts yet" in line for line in lines):
             return []
         raise Unreadable(cannot)
     body = [line for line in lines[rule + 1:] if not _is_rule(line)]
@@ -350,12 +350,32 @@ def _scheme_of(password_hash):
 
 
 def _readable_schemes():
-    return {scheme.upper() for scheme in _run(["doveadm", "pw", "-l"], "Asking Dovecot which schemes it reads").split()}
+    schemes = {scheme.upper() for scheme in
+               _run(["doveadm", "pw", "-l"], "Asking Dovecot which schemes it reads").split()}
+    if not schemes:  # no list would name every hash as unreadable, so it is a failure, never an answer
+        raise Failed("Asking Dovecot which schemes it reads gave an empty list.")
+    return schemes
 
 
-def _sort_accounts(data):
-    """(needs a password, weak) for the accounts of an import file: addresses, never hashes."""
-    accounts = [a for a in data.get("addresses", []) if isinstance(a, dict) and isinstance(a.get("address"), str)]
+def _existing_accounts(name, data):
+    """(addresses already on this server, or None when that can't be read). mailctl import skips those, so their
+    hashes are not judged. A domain that isn't here yet has no accounts."""
+    try:
+        here = {row[0] for row in _mail_domains({})}
+        domains = {name, *[d for d in data.get("domains", []) if isinstance(d, str)]}
+        found = set()
+        for domain in sorted(domains & here):
+            found.update(row[0].lower() for row in _table_rows(["mailctl", "address", "list", domain], "accounts"))
+        return found
+    except Unreadable:
+        return None
+
+
+def _sort_accounts(data, existing=None):
+    """(needs a password, weak) for the accounts of an import file that are not on this server yet: addresses,
+    never hashes. With existing=None every account is judged, which asks for too much rather than too little."""
+    accounts = [a for a in data.get("addresses", []) if isinstance(a, dict) and isinstance(a.get("address"), str)
+                and (existing is None or a["address"].lower() not in existing)]
     hashed = [a for a in accounts if not a.get("password") and isinstance(a.get("password_hash"), str)
               and a["password_hash"] and _scheme_of(a["password_hash"]) != OWN_SCHEME]
     if not hashed:
@@ -376,14 +396,20 @@ def _apply_mail_domain(item):
     data = item.get("data")
     if not isinstance(data, dict):
         raise ValueError("the item has no data (the JSON for mailctl import)")
-    needs, weak = _sort_accounts(data)
+    existing = _existing_accounts(name, data)
+    needs, weak = _sort_accounts(data, existing)
     result = {"weak": weak}
+    if existing is None:
+        result["note"] = ("I couldn't read which accounts are already on this server, so I couldn't tell them apart "
+                          "from new ones: every account was judged, and one that exists may be named here for "
+                          "nothing.")
     if needs:
         # mailctl would refuse the whole file for these; saying so here keeps nothing half-made.
         return {"ok": False, **result, "needs_password": needs,
                 "error": f"{name} needs a password for {len(needs)} account(s) before it can be imported: their "
                          f"password hash is in a scheme this server can't read. Nothing was created. Send the same "
-                         f"item again with the plain password in the \"password\" field of those accounts."}
+                         f"item again with, for those accounts, the plain password in a \"password\" field "
+                         f"instead of the \"password_hash\"."}
     fd, path = tempfile.mkstemp(prefix="migratectl-", suffix=".json")  # created 0600, root's
     try:
         os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
@@ -405,6 +431,12 @@ def _apply_mail_domain(item):
     if done.returncode == 0:
         return {"ok": True, **reply, "steps": [f"Imported {name} with mailctl."]}
     lines = (done.stderr or done.stdout or "").strip().splitlines()
+    if "New passwords are needed" in (done.stderr or "") + (done.stdout or ""):
+        # mailctl refuses before it creates anything, so this is the same answer as our own check gives.
+        return {"ok": False, **reply, "needs_password": needs,
+                "error": f"mailctl refused {name} for want of passwords: {lines[0] if lines else ''} Nothing was "
+                         f"created. Send the same item again with, for those accounts, the plain password in a "
+                         f"\"password\" field instead of the \"password_hash\"."}
     return {"ok": False, **reply, "error": f"mailctl import didn't work" + (f": {lines[-1]}" if lines else ".")}
 
 
@@ -446,7 +478,14 @@ def _apply_cron(item):
                                 timeout=COMMAND_TIMEOUT, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError) as error:
         raise Failed(f"Reading the crontab of {user} didn't work ({error}).") from error
-    existing = listed.stdout if listed.returncode == 0 else ""  # no crontab yet is not an error
+    if listed.returncode == 0:
+        existing = listed.stdout
+    elif listed.returncode == 1 and "no crontab for" in listed.stderr:
+        existing = ""  # no crontab yet is not an error; any other failure is, or the next step would replace it
+    else:
+        lines = listed.stderr.strip().splitlines()
+        raise Failed(f"The crontab of {user} could not be read" + (f" ({lines[-1]})" if lines else "")
+                     + ". Nothing was changed.")
     if marker in existing.splitlines():
         return {"ok": True, "already": True, "steps": [f"The job was already in the crontab of {user}."]}
     text = existing + ("" if not existing or existing.endswith("\n") else "\n")
