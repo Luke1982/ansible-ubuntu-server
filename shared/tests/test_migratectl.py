@@ -1,9 +1,14 @@
 import io
 import json
+import types
 
 import pytest
 
 from migrate import migratectl
+
+
+def _stdin(data):
+    return types.SimpleNamespace(buffer=io.BytesIO(data))
 
 
 @pytest.fixture
@@ -41,9 +46,26 @@ def test_a_handler_that_blows_up_becomes_an_error(monkeypatch):
 
 def test_every_line_in_is_a_line_out(capsys, monkeypatch, fake_command):
     lines = ['{"request": "hello"}', "not json", "", '{"request": "dance"}']
-    monkeypatch.setattr(migratectl.sys, "stdin", io.StringIO("\n".join(lines) + "\n"))
+    monkeypatch.setattr(migratectl.sys, "stdin", _stdin(("\n".join(lines) + "\n").encode()))
     migratectl.main()
     captured = capsys.readouterr()
     answers = [json.loads(line) for line in captured.out.splitlines()]
     assert [a["ok"] for a in answers] == [True, False, False]
     assert captured.err == ""
+
+
+def test_a_line_that_is_not_utf8_gets_an_error_and_the_next_line_is_still_answered(capsys, monkeypatch, fake_command):
+    monkeypatch.setattr(migratectl.sys, "stdin", _stdin(b'\xff\xfe\n{"request": "hello"}\n'))
+    migratectl.main()
+    answers = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [a["ok"] for a in answers] == [False, True]
+
+
+def test_a_line_nested_too_deeply_gets_an_error_and_the_next_line_is_still_answered(
+    capsys, monkeypatch, fake_command
+):
+    deep = b"[" * 100000 + b"]" * 100000
+    monkeypatch.setattr(migratectl.sys, "stdin", _stdin(deep + b'\n{"request": "hello"}\n'))
+    migratectl.main()
+    answers = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [a["ok"] for a in answers] == [False, True]

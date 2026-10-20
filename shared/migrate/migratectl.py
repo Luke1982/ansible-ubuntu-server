@@ -42,12 +42,13 @@ def answer(request):
 
 
 def main():
-    for line in sys.stdin:
-        if not line.strip():
+    # Bytes, so a line that is not UTF-8 is answered with an error instead of ending the process.
+    for raw in sys.stdin.buffer:
+        if not raw.strip():
             continue
         try:
-            request = json.loads(line)
-        except ValueError:
+            request = json.loads(raw.decode("utf-8"))
+        except (ValueError, RecursionError):  # ValueError covers bad JSON and bad UTF-8; deep nesting recurses
             reply = {"ok": False, "error": "That line is not valid JSON. Send one JSON object per line."}
         else:
             reply = answer(request)
