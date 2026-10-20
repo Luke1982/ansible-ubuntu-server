@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import shutil
@@ -114,6 +115,16 @@ def test_an_old_ssh_gets_one_retry_and_one_note(fake_ssh, tmp_path, capsys):
     assert capsys.readouterr().out.count("too old") == 1
 
 
+def _with_terminal(monkeypatch):
+    """A terminal to type on: open("/dev/tty") succeeds, as it does for a person on the old server."""
+    real_open = open
+
+    def fake_open(path, *args, **kwargs):
+        if path == "/dev/tty":
+            return io.StringIO()
+        return real_open(path, *args, **kwargs)
+    monkeypatch.setattr("builtins.open", fake_open)
+
 def test_an_account_whose_password_is_needed_is_asked_for_and_enter_skips_it(fake_ssh, monkeypatch, tmp_path, capsys):
     item = {"kind": "mail_domain", "name": "a.nl", "data": {
         "addresses": [{"address": "x@a.nl", "password_hash": "{OLD}1"}, {"address": "y@a.nl", "password_hash": "{OLD}2"},
@@ -136,6 +147,7 @@ def test_an_account_whose_password_is_needed_is_asked_for_and_enter_skips_it(fak
 
     fake_ssh.replies = server
     asked = []
+    _with_terminal(monkeypatch)  # a person sitting at the old server, so the password really is asked for
     monkeypatch.setattr(migrate.getpass, "getpass", lambda prompt: asked.append(prompt) or (
         "s3cret" if "x@a.nl" in prompt else ""))
     answer, skipped = migrate.apply_item(_connection(tmp_path), item)
@@ -202,7 +214,7 @@ def test_ssh_runs_in_the_c_locale_and_a_stall_is_stopped(monkeypatch, tmp_path):
 
         def communicate(self, text=None, timeout=None):
             if timeout is not None:
-                seen["timeout"] = timeout
+                seen.setdefault("timeouts", []).append(timeout)
                 raise migrate.subprocess.TimeoutExpired("ssh", timeout)
             return b"", b""
 
@@ -217,11 +229,12 @@ def test_ssh_runs_in_the_c_locale_and_a_stall_is_stopped(monkeypatch, tmp_path):
     monkeypatch.setattr(migrate.subprocess, "Popen", popen)
     with pytest.raises(migrate.Stopped) as stopped:
         _connection(tmp_path).ask({"request": "apply", "item": {}})
-    assert seen["env"]["LC_ALL"] == "C" and seen["timeout"] == 1800 and process.killed
+    # 1800 to make something, then 10 to reap the killed ssh rather than wait on it for good.
+    assert seen["env"]["LC_ALL"] == "C" and seen["timeouts"] == [1800, 10] and process.killed
     assert "part of the work" in stopped.value.message and "status" in stopped.value.message
     with pytest.raises(migrate.Stopped):
         _connection(tmp_path).ask({"request": "status"})
-    assert seen["timeout"] == 120
+    assert seen["timeouts"] == [1800, 10, 120, 10]
 
 
 def test_the_public_key_is_rebuilt_when_only_it_is_missing(tmp_path):
@@ -249,3 +262,53 @@ def test_an_unwritable_folder_never_shows_an_error_number(tmp_path):
     with pytest.raises(migrate.Stopped) as stopped:
         migrate.own_key(str(blocker / "ssh"))
     assert "Errno" not in stopped.value.message
+
+
+def _no_terminal(monkeypatch):
+    """Everything opens as usual except /dev/tty, which a run with no terminal cannot open."""
+    real_open = open
+
+    def fake_open(path, *args, **kwargs):
+        if path == "/dev/tty":
+            raise IOError("no terminal")
+        return real_open(path, *args, **kwargs)
+    monkeypatch.setattr("builtins.open", fake_open)
+
+
+def test_with_no_terminal_a_password_is_never_printed_and_the_account_is_left_out(monkeypatch, capsys):
+    """Run as "ssh old python3 migrate.py", getpass would print what was typed. Then we don't ask."""
+    _no_terminal(monkeypatch)
+    monkeypatch.setattr(migrate.getpass, "getpass", lambda prompt="": "would be echoed")
+
+    assert migrate._typed_password("Password for info@example.nl: ") == ""
+    said = capsys.readouterr().out
+    assert "no terminal" in said and "left out" in said and "would be echoed" not in said
+
+
+def test_end_of_input_while_typing_leaves_the_account_out(monkeypatch):
+    def raise_eof(prompt=""):
+        raise EOFError()
+    monkeypatch.setattr(migrate.getpass, "getpass", raise_eof)
+    assert migrate._typed_password("Password for info@example.nl: ") == ""
+
+
+def test_a_killed_ssh_is_never_waited_for_twice_without_a_limit(monkeypatch):
+    """The reaping call after the kill has its own timeout: a helper that outlives ssh holds the pipes open."""
+    waits = []
+
+    class StuckProcess(object):
+        returncode = None
+
+        def communicate(self, text=None, timeout=None):
+            waits.append(timeout)
+            raise migrate.subprocess.TimeoutExpired("ssh", timeout)
+
+        def kill(self):
+            waits.append("killed")
+
+    monkeypatch.setattr(migrate.subprocess, "Popen", lambda *args, **kwargs: StuckProcess())
+    connection = migrate.Connection("new.example.nl", key="/tmp/key")
+    with pytest.raises(migrate.Stopped) as stopped:
+        connection.ask({"request": "hello"})
+    assert waits == [120, "killed", 10]
+    assert "status" in stopped.value.message

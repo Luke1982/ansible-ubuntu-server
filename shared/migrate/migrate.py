@@ -808,12 +808,17 @@ class Connection(object):
             raise Stopped("ssh isn't installed on this server, so I can't reach the new one. Install the OpenSSH "
                           "client (on Debian or Ubuntu: apt install openssh-client) and run me again.")
         except OSError as problem:
-            raise Stopped("I couldn't start ssh to reach the new server: %s." % problem)
+            raise Stopped("I couldn't start ssh to reach the new server: %s." % (problem.strerror or problem))
         try:
             out, err = process.communicate(line.encode("utf-8"), timeout=timeout)
         except subprocess.TimeoutExpired:
             process.kill()
-            process.communicate()
+            try:
+                # Reaps the killed ssh. With a timeout of its own: a helper from the person's ~/.ssh/config can
+                # outlive it and hold the pipes open, and waiting here forever is the thing we just stopped doing.
+                process.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                pass
             raise Stopped("The new server didn't finish %s within %d minutes, so I stopped waiting. It may have done "
                           "part of the work. Before trying the same thing again, ask for the status of the new "
                           "server, so nothing is made twice." % (what, timeout // 60))
@@ -904,12 +909,28 @@ def check(connection):
     return answer
 
 
+def _typed_password(prompt):
+    """A password typed without it showing. getpass asks on /dev/tty, so a redirected standard input is fine; with
+    no terminal at all it would print what was typed, so there we leave the account out instead."""
+    try:
+        terminal = open("/dev/tty")
+    except (IOError, OSError):
+        print("There is no terminal here to type a password on, so this account is left out. To type the passwords, "
+              "run me from a terminal on this server.")
+        return ""
+    terminal.close()
+    try:
+        return getpass.getpass(prompt)
+    except EOFError:
+        return ""
+
+
 def apply_item(connection, item, ask_password=None, say=print):
     """Sends one item to the new server to be made. Returns (answer, skipped). When the answer says some mail
     accounts need a password the new server can't get from the stored one, each is asked for here (nothing shows on
     screen), and the same item is sent again with it. Enter skips an account: it is left out and named in 'skipped'.
     A password goes nowhere but the one request: not into the state file, a command line or a message."""
-    ask_password = ask_password or getpass.getpass
+    ask_password = ask_password or _typed_password
     item = copy.deepcopy(item)
     skipped, asked = [], set()
     answer = connection.ask({"request": "apply", "item": item})
