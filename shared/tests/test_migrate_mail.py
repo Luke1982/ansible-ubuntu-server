@@ -198,3 +198,39 @@ def test_doveadm_failing_for_an_account_with_a_folder_is_said_in_the_inventory(t
     assert [script["name"] for script in inventory.file["sieve"]] == ["a"]
     assert any("read from" in note and "info@example.nl" in note for note in inventory.notes)
     assert any(".dovecot.sieve is not one of the scripts" in note for note in inventory.notes)
+
+
+def test_what_the_new_server_says_is_on_screen_before_a_password_is_asked_for():
+    """The ruling that keeps over-asking for passwords was priced on the person being told why."""
+    note = "I couldn't read which accounts are already on this server, so every account was judged."
+    item = {"id": "mail:a.nl", "kind": "mail_domain", "name": "a.nl",
+            "data": {"addresses": [{"address": "x@a.nl", "password_hash": "{SSHA}x"}]}}
+    replies = [{"ok": False, "needs_password": ["x@a.nl"], "note": note}, {"ok": True, "note": note}]
+    screen = []
+
+    class Connection(object):
+        def ask(self, request):
+            return replies.pop(0)
+
+    answer, skipped = migrate.apply_item(
+        Connection(), item, ask_password=lambda prompt: screen.append("asked: " + prompt) or "a password",
+        say=screen.append)
+
+    assert answer["ok"] is True and skipped == []
+    assert "couldn't read which accounts" in screen[0]
+    assert [line for line in screen if line.startswith("asked: ")]
+    assert screen.index([line for line in screen if line.startswith("asked: ")][0]) > 0
+    assert len([line for line in screen if "couldn't read" in line]) == 1  # said once, not after every reply
+
+
+def test_a_note_from_a_successful_apply_reaches_the_report():
+    item = {"id": "mail:a.nl", "kind": "mail_domain", "name": "a.nl", "data": {}}
+
+    class Connection(object):
+        def ask(self, request):
+            return {"ok": True, "note": "The database's password is in the site's own wp-config.php."}
+
+    extra = []
+    report = migrate.run(Connection(), [item], lambda text: None, extra_notes=extra)
+    assert len(report.moved) == 1 and extra == ["The database's password is in the site's own wp-config.php."]
+    assert "wp-config.php" in migrate.report(report, extra_notes=extra)

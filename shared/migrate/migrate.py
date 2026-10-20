@@ -956,6 +956,16 @@ def _typed_password(prompt):
         return ""
 
 
+def _tell_note(answer, say, told):
+    """Says what the new server said about an item, once. When it could not tell which accounts it already has,
+    this note is the only reason the person is given for being asked to type a password for an account that may
+    work there already."""
+    note = answer.get("note") if isinstance(answer, dict) else None
+    if isinstance(note, str) and note.strip() and note not in told:
+        told.add(note)
+        _say(note, say)
+
+
 def apply_item(connection, item, ask_password=None, say=print, answers=None):
     """Sends one item to the new server to be made. Returns (answer, skipped). When the answer says some mail
     accounts need a password the new server can't get from the stored one, each is asked for here (nothing shows on
@@ -965,11 +975,12 @@ def apply_item(connection, item, ask_password=None, say=print, answers=None):
     with every request."""
     ask_password = ask_password or _typed_password
     item = copy.deepcopy(item)
-    skipped, asked = [], set()
+    skipped, asked, told = [], set(), set()
     request = {"request": "apply", "item": item}
     if answers:
         request["answers"] = dict(answers)
     answer = connection.ask(request)
+    _tell_note(answer, say, told)
     while not answer.get("ok") and answer.get("needs_password"):
         wanted = [name for name in answer["needs_password"] if isinstance(name, str)]
         if not wanted or asked.intersection(wanted):
@@ -997,6 +1008,7 @@ def apply_item(connection, item, ask_password=None, say=print, answers=None):
                 data["spam"] = [entry for entry in data.get("spam", []) if not (
                     isinstance(entry, dict) and str(entry.get("target", "")).lower() == address.lower())]
         answer = connection.ask(request)
+        _tell_note(answer, say, told)
     return answer, skipped
 
 
@@ -1278,6 +1290,10 @@ def run(connection, items, ask, move=None, notes=None, status=None, php=None,
                                       "that got no answer: %s"
                                       % unanswered.get("question")))
             elif answer.get("ok"):
+                note = answer.get("note")
+                if (extra_notes is not None and isinstance(note, str)
+                        and note.strip() and note not in extra_notes):
+                    extra_notes.append(note)
                 made = item.get("kind") == "site"
                 if made and isinstance(answer.get("docroot"), str):
                     docroots[item.get("name")] = answer["docroot"]
