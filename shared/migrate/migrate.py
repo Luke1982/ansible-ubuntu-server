@@ -760,12 +760,20 @@ def own_key(directory=None, run=run):
             os.chmod(private, 0o600)
         if not os.path.exists(private + ".pub"):
             with open(private + ".pub", "w") as handle:
-                handle.write(run("ssh-keygen", "-y", "-f", private).strip() + " migrate\n")
+                handle.write(run("ssh-keygen", "-y", "-P", "", "-f", private).strip() + " migrate\n")
         with open(private + ".pub") as handle:
             return handle.read().strip()
-    except (OSError, CommandFailed) as problem:
-        raise Stopped("I couldn't make the key this server uses to reach the new one in %s: %s. Check that this "
-                      "account may write there and try again." % (directory, getattr(problem, "message", problem)))
+    except CommandFailed as problem:
+        if problem.missing:
+            raise Stopped("I can't make the key this server uses to reach the new one, because ssh-keygen isn't "
+                          "installed. Install the OpenSSH client (on Debian or Ubuntu: apt install openssh-client) "
+                          "and run me again.")
+        raise Stopped("I couldn't make the key this server uses to reach the new one. ssh-keygen said: %s. This "
+                      "server's OpenSSH may be too old for this kind of key, or %s may hold a damaged file called "
+                      "%s." % (problem.message, directory, KEY_NAME))
+    except OSError as problem:
+        raise Stopped("I couldn't write the key this server uses to reach the new one in %s: %s. Check that this "
+                      "account may write there and try again." % (directory, problem.strerror or "no reason given"))
 
 
 _UNREACHABLE = ("could not resolve", "no route to host", "connection refused", "timed out", "network is unreachable",
@@ -781,7 +789,7 @@ class Connection(object):
         self.user = user
         self.key = key or os.path.join(_ssh_directory(), KEY_NAME)
         self.known_hosts = os.path.join(os.path.dirname(self.key), KNOWN_HOSTS_NAME)
-        self.old_ssh_said = False
+        self.host_check = "accept-new"
 
     def _command(self, host_check):
         # BatchMode: ssh must never wait for a password, a passphrase or a yes/no that nobody would see.
@@ -790,31 +798,46 @@ class Connection(object):
                 "-o", "StrictHostKeyChecking=" + host_check, "%s@%s" % (self.user, self.host),
                 "sudo", "-n", "migratectl"]
 
-    def _once(self, host_check, line):
+    def _once(self, host_check, line, timeout, what):
+        # LC_ALL=C: the failures are told apart by ssh's and sudo's English words. Bytes are decoded here, since a
+        # banner or a translated message with an odd byte must not become a traceback.
         try:
             process = subprocess.Popen(self._command(host_check), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                       stderr=subprocess.PIPE, universal_newlines=True)
+                                       stderr=subprocess.PIPE, env=dict(os.environ, LC_ALL="C"))
         except FileNotFoundError:
             raise Stopped("ssh isn't installed on this server, so I can't reach the new one. Install the OpenSSH "
                           "client (on Debian or Ubuntu: apt install openssh-client) and run me again.")
         except OSError as problem:
             raise Stopped("I couldn't start ssh to reach the new server: %s." % problem)
-        out, err = process.communicate(line)
-        return process.returncode, out or "", " ".join((err or "").split())
+        try:
+            out, err = process.communicate(line.encode("utf-8"), timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            raise Stopped("The new server didn't finish %s within %d minutes, so I stopped waiting. It may have done "
+                          "part of the work. Before trying the same thing again, ask for the status of the new "
+                          "server, so nothing is made twice." % (what, timeout // 60))
+        return (process.returncode, (out or b"").decode("utf-8", "replace"),
+                " ".join((err or b"").decode("utf-8", "replace").split()))
 
-    def ask(self, request):
-        """The new server's answer to one request, as a dict. Raises Stopped, and nothing else, when it can't."""
+    def ask(self, request, timeout=None):
+        """The new server's answer to one request, as a dict. Raises Stopped, and nothing else, when it can't.
+        It waits 2 minutes for a quick request and 30 for one that makes something."""
+        kind = request.get("request") if isinstance(request, dict) else None
+        slow = kind in ("apply", "finish_site")
+        timeout = timeout or (1800 if slow else 120)
+        what = "making this" if slow else "answering the request '%s'" % kind
         try:
             line = json.dumps(request) + "\n"
         except (TypeError, ValueError):
             raise Stopped("I made a request that can't be sent. That's a mistake in this tool, not in your servers.")
-        code, out, err = self._once("accept-new", line)
-        if code != 0 and re.search(r"bad configuration option|unsupported option|accept-new", err, re.I):
-            if not self.old_ssh_said:
-                self.old_ssh_said = True
-                print("Note: the ssh on this server is too old to remember the new server's identity, so I accepted "
-                      "it without checking. Make sure %s really is your new server." % self.host)
-            code, out, err = self._once("no", line)
+        code, out, err = self._once(self.host_check, line, timeout, what)
+        if code != 0 and self.host_check == "accept-new" and re.search(r"accept-new", err, re.I):
+            self.host_check = "no"
+            print("Note: the ssh on this server is too old to remember the new server's identity, so I accepted it "
+                  "without checking. Make sure %s really is your new server: anything typed from now on, "
+                  "passwords included, goes to whatever answers there." % self.host)
+            code, out, err = self._once(self.host_check, line, timeout, what)
         return self._answer(code, out, err)
 
     def _answer(self, code, out, err):
@@ -837,16 +860,20 @@ class Connection(object):
                 raise Stopped("I reached the new server, but the %s account may not run migratectl without a "
                               "password. Build the new server with this repository's playbook, then run me "
                               "again.%s" % (self.user, said))
-            raise Stopped("The connection to %s stopped with an error (code %d).%s" % (self.host, code, said))
+            raise Stopped("The connection to %s failed (ssh stopped with code %d). Check the name, the network and "
+                          "that you can log in there with ssh by hand.%s" % (self.host, code, said))
         if not out.strip():
             raise Stopped("The new server answered with nothing. Is migratectl on it the right program?%s" % said)
+        answer = None
+        lines = [text for text in out.splitlines() if text.strip()]
         try:
-            answer = json.loads(out)
+            answer = json.loads(lines[-1])  # a login banner may come before the answer
         except (ValueError, RecursionError):
-            answer = None
+            pass
         if not isinstance(answer, dict):
             raise Stopped("The new server answered with something I can't read, so I stopped. Both servers should "
-                          "come from the same release of this repository.%s" % said)
+                          "come from the same release of this repository. If the ansible account on the new server "
+                          "prints text when it logs in, remove that.%s" % said)
         return answer
 
 
@@ -865,12 +892,15 @@ def check(connection):
         raise Stopped("%s Add this key, as one line, to %s on the new server (%s@%s), then run me again:\n\n%s\n"
                       % (problem.message.strip(), AUTHORIZED_KEYS, connection.user, connection.host, key))
     if not answer.get("ok"):
-        raise Stopped("The new server wouldn't say hello: %s" % (answer.get("error") or "no reason given"))
-    if answer.get("version") != PROTOCOL_VERSION:
-        raise Stopped("This file speaks version %s of the talk with the new server, but the new server speaks "
-                      "version %s. Both halves must come from the same release of this repository: copy this file "
-                      "again from the release the new server was built with."
-                      % (PROTOCOL_VERSION, answer.get("version")))
+        raise Stopped("The new server did not accept the first check: %s" % (answer.get("error") or "no reason given"))
+    version = answer.get("version")
+    if type(version) is not int:
+        raise Stopped("The new server did not say which release of this repository it was built from, so I can't "
+                      "tell if it fits this file. Update both servers to the same release and run me again.")
+    if version != PROTOCOL_VERSION:
+        raise Stopped("The new server was built from a different release of this repository than this file (it "
+                      "reports %d, this file is %d). Both halves must come from the same release: copy this file "
+                      "again from the release the new server was built with." % (version, PROTOCOL_VERSION))
     return answer
 
 
@@ -903,8 +933,11 @@ def apply_item(connection, item, ask_password=None, say=print):
                 skipped.append(address)
                 data["addresses"] = [account for account in accounts if not (
                     isinstance(account, dict) and str(account.get("address", "")).lower() == address.lower())]
+                # mailctl refuses a file with filters for an account that isn't in it, and would set spam values
+                # for the address; so both go with the account, as in mailctl's own skipping.
                 data["sieve"] = [entry for entry in data.get("sieve", []) if not (
                     isinstance(entry, dict) and str(entry.get("address", "")).lower() == address.lower())]
-            password = None
+                data["spam"] = [entry for entry in data.get("spam", []) if not (
+                    isinstance(entry, dict) and str(entry.get("target", "")).lower() == address.lower())]
         answer = connection.ask({"request": "apply", "item": item})
     return answer, skipped

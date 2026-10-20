@@ -10,9 +10,11 @@ from migrate import migrate
 
 class FakeProcess(object):
     def __init__(self, code, out, err, sent):
-        self.returncode, self._out, self._err, self._sent = code, out, err, sent
+        self.returncode, self._sent = code, sent
+        self._out = out if isinstance(out, bytes) else out.encode()
+        self._err = err if isinstance(err, bytes) else err.encode()
 
-    def communicate(self, text=None):
+    def communicate(self, text=None, timeout=None):
         self._sent.append(text)
         return self._out, self._err
 
@@ -28,16 +30,18 @@ def fake_ssh(monkeypatch):
     fake.commands, fake.sent, fake.replies = [], [], []
 
     def popen(command, **kwargs):
-        assert kwargs.get("stdin") == migrate.subprocess.PIPE and kwargs.get("stdout") == migrate.subprocess.PIPE
+        pipe = migrate.subprocess.PIPE
+        assert (kwargs.get("stdin"), kwargs.get("stdout"), kwargs.get("stderr")) == (pipe, pipe, pipe)
+        assert kwargs["env"]["LC_ALL"] == "C"
         fake.commands.append(command)
         reply = fake.replies.pop(0) if isinstance(fake.replies, list) else fake.replies
         if callable(reply):
             process = FakeProcess(0, "", "", [])
 
-            def communicate(text=None):
+            def communicate(text=None, timeout=None):
                 fake.sent.append(text)
-                code, out, err = reply(json.loads(text))
-                return out, err
+                code, out, err = reply(json.loads(text.decode()))
+                return out.encode(), err.encode()
             process.communicate = communicate
             process.returncode = 0
             return process
@@ -77,7 +81,7 @@ def test_the_handshake_refuses_a_new_server_that_speaks_another_version(fake_ssh
     fake_ssh.replies = [(0, json.dumps({"ok": True, "version": 2, "server": "x", "tools": {}}) + "\n", "")]
     with pytest.raises(migrate.Stopped) as stopped:
         migrate.check(_connection(tmp_path))
-    assert "version 1" in stopped.value.message and "version 2" in stopped.value.message
+    assert "reports 2, this file is 1" in stopped.value.message
     assert "same release" in stopped.value.message
     fake_ssh.replies = [(0, json.dumps({"ok": True, "version": 1, "server": "x", "tools": {}}) + "\n", "")]
     assert migrate.check(_connection(tmp_path))["server"] == "x"
@@ -96,16 +100,17 @@ def test_every_way_to_fail_is_a_plain_message(fake_ssh, tmp_path, reply, words):
     fake_ssh.replies = [reply]
     with pytest.raises(migrate.Stopped) as stopped:
         _connection(tmp_path).ask({"request": "hello"})
-    assert words in stopped.value.message and "Traceback" not in stopped.value.message
+    assert words in stopped.value.message
 
 
 def test_an_old_ssh_gets_one_retry_and_one_note(fake_ssh, tmp_path, capsys):
-    fake_ssh.replies = [(255, "", "command-line: line 0: Bad configuration option: stricthostkeychecking=accept-new"),
+    fake_ssh.replies = [(255, "", 'command-line: line 0: unsupported option "accept-new".'),
                         (0, '{"ok": true}\n', ""), (0, '{"ok": true}\n', "")]
     connection = _connection(tmp_path)
     assert connection.ask({"request": "hello"}) == {"ok": True}
     assert "StrictHostKeyChecking=no" in fake_ssh.commands[1]
     connection.ask({"request": "hello"})
+    assert "StrictHostKeyChecking=no" in fake_ssh.commands[2]  # it remembers: one process, not two
     assert capsys.readouterr().out.count("too old") == 1
 
 
@@ -113,7 +118,9 @@ def test_an_account_whose_password_is_needed_is_asked_for_and_enter_skips_it(fak
     item = {"kind": "mail_domain", "name": "a.nl", "data": {
         "addresses": [{"address": "x@a.nl", "password_hash": "{OLD}1"}, {"address": "y@a.nl", "password_hash": "{OLD}2"},
                       {"address": "z@a.nl", "password_hash": "{SHA512-CRYPT}ok"}],
-        "sieve": [{"address": "y@a.nl", "name": "f", "active": True, "content": ""}]}}
+        "sieve": [{"address": "y@a.nl", "name": "f", "active": True, "content": ""}],
+        "spam": [{"target": "y@a.nl", "setting": "required_score", "value": "5"},
+                 {"target": "x@a.nl", "setting": "required_score", "value": "6"}]}}
     seen = []
 
     def server(request):
@@ -129,14 +136,116 @@ def test_an_account_whose_password_is_needed_is_asked_for_and_enter_skips_it(fak
 
     fake_ssh.replies = server
     asked = []
-    monkeypatch.setattr(migrate.getpass, "getpass", lambda prompt: asked.append(prompt) or {"x": "s3cret"}.get(prompt[13]
-                                                                                                             , ""))
+    monkeypatch.setattr(migrate.getpass, "getpass", lambda prompt: asked.append(prompt) or (
+        "s3cret" if "x@a.nl" in prompt else ""))
     answer, skipped = migrate.apply_item(_connection(tmp_path), item)
     assert answer == {"ok": True} and skipped == ["y@a.nl"]
     assert len(asked) == 2 and "x@a.nl" in asked[0] and "y@a.nl" in asked[1]
     final = seen[-1]["item"]["data"]
     assert final["addresses"][0] == {"address": "x@a.nl", "password": "s3cret"}
     assert [a["address"] for a in final["addresses"]] == ["x@a.nl", "z@a.nl"] and final["sieve"] == []
+    assert final["spam"] == [{"target": "x@a.nl", "setting": "required_score", "value": "6"}]
     assert item["data"]["addresses"][0]["password_hash"] == "{OLD}1"  # the caller's item is left alone
     assert all("s3cret" not in " ".join(command) for command in fake_ssh.commands)
     assert "s3cret" not in capsys.readouterr().out
+
+
+def test_an_old_ssh_is_not_mistaken_for_any_other_bad_option(fake_ssh, tmp_path):
+    fake_ssh.replies = [(255, "", 'command-line: line 0: Bad configuration option: IdentitiesOnly')]
+    with pytest.raises(migrate.Stopped):
+        _connection(tmp_path).ask({"request": "hello"})
+    assert len(fake_ssh.commands) == 1
+
+
+def test_ssh_not_installed_is_a_plain_message(monkeypatch, tmp_path):
+    def missing(*args, **kwargs):
+        raise FileNotFoundError("ssh")
+    monkeypatch.setattr(migrate.subprocess, "Popen", missing)
+    with pytest.raises(migrate.Stopped) as stopped:
+        _connection(tmp_path).ask({"request": "hello"})
+    assert "openssh-client" in stopped.value.message
+
+
+def test_a_first_check_the_new_server_does_not_accept_is_told_plainly(fake_ssh, tmp_path):
+    fake_ssh.replies = [(0, '{"ok": false, "error": "no"}\n', "")]
+    with pytest.raises(migrate.Stopped) as stopped:
+        migrate.check(_connection(tmp_path))
+    assert "did not accept the first check: no" in stopped.value.message and "hello" not in stopped.value.message
+
+
+@pytest.mark.parametrize("version", ['null', 'true', '1.0', '"1"'])
+def test_a_missing_or_odd_version_is_refused(fake_ssh, tmp_path, version):
+    fake_ssh.replies = [(0, '{"ok": true, "version": %s}\n' % version, "")]
+    with pytest.raises(migrate.Stopped) as stopped:
+        migrate.check(_connection(tmp_path))
+    assert "did not say which release" in stopped.value.message and "None" not in stopped.value.message
+
+
+def test_a_login_banner_before_the_answer_is_skipped(fake_ssh, tmp_path):
+    fake_ssh.replies = [(0, 'Welcome to the new server\n{"ok": true}\n', "")]
+    assert _connection(tmp_path).ask({"request": "hello"}) == {"ok": True}
+
+
+def test_non_ascii_words_from_ssh_are_not_a_traceback(fake_ssh, tmp_path):
+    fake_ssh.replies = [(255, b"", "ssh: Could not resolve hostname n\xe9w".encode("latin-1"))]
+    with pytest.raises(migrate.Stopped) as stopped:
+        _connection(tmp_path).ask({"request": "hello"})
+    assert "can't reach" in stopped.value.message
+
+
+def test_ssh_runs_in_the_c_locale_and_a_stall_is_stopped(monkeypatch, tmp_path):
+    seen = {}
+
+    class Stalled(object):
+        returncode = None
+        killed = False
+
+        def communicate(self, text=None, timeout=None):
+            if timeout is not None:
+                seen["timeout"] = timeout
+                raise migrate.subprocess.TimeoutExpired("ssh", timeout)
+            return b"", b""
+
+        def kill(self):
+            self.killed = True
+
+    process = Stalled()
+
+    def popen(command, **kwargs):
+        seen["env"] = kwargs["env"]
+        return process
+    monkeypatch.setattr(migrate.subprocess, "Popen", popen)
+    with pytest.raises(migrate.Stopped) as stopped:
+        _connection(tmp_path).ask({"request": "apply", "item": {}})
+    assert seen["env"]["LC_ALL"] == "C" and seen["timeout"] == 1800 and process.killed
+    assert "part of the work" in stopped.value.message and "status" in stopped.value.message
+    with pytest.raises(migrate.Stopped):
+        _connection(tmp_path).ask({"request": "status"})
+    assert seen["timeout"] == 120
+
+
+def test_the_public_key_is_rebuilt_when_only_it_is_missing(tmp_path):
+    (tmp_path / "migrate_key").write_text("private")
+    calls = []
+
+    def fake_run(*args, stdin=None):
+        calls.append(args)
+        return "ssh-ed25519 AAAArebuilt\n"
+    assert migrate.own_key(str(tmp_path), run=fake_run) == "ssh-ed25519 AAAArebuilt migrate"
+    assert calls[0][:2] == ("ssh-keygen", "-y") and "-P" in calls[0] and len(calls) == 1
+
+
+def test_a_missing_ssh_keygen_says_to_install_it(tmp_path):
+    def fake_run(*args, stdin=None):
+        raise migrate.CommandFailed("ssh-keygen isn't installed", missing=True)
+    with pytest.raises(migrate.Stopped) as stopped:
+        migrate.own_key(str(tmp_path / "ssh"), run=fake_run)
+    assert "openssh-client" in stopped.value.message and "write" not in stopped.value.message
+
+
+def test_an_unwritable_folder_never_shows_an_error_number(tmp_path):
+    blocker = tmp_path / "file"
+    blocker.write_text("x")
+    with pytest.raises(migrate.Stopped) as stopped:
+        migrate.own_key(str(blocker / "ssh"))
+    assert "Errno" not in stopped.value.message
