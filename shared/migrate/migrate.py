@@ -1046,14 +1046,17 @@ def cost(item):
 
 def _verdict(item, status, notes=None):
     """(what the new server said in short, can it move, the longer reason or None). 'notes' is the State: a site
-    it remembers as made but not filled is offered again, for its files and database only."""
+    it remembers as made but not filled is offered again, for its files and database only, and anything it
+    remembers as moved is not offered again at all (a site that moved is caught up with --again)."""
     said = status.get(item.get("id")) if isinstance(status, dict) else None
     state = said.get("state") if isinstance(said, dict) else None
     detail = said.get("detail") if isinstance(said, dict) else None
+    if notes is not None and notes.entry(item).get("status") == "moved":
+        return "already moved from here", False, None
     if state == "exists" and notes is not None and notes.outstanding(item):
         return "made, files still to come", True, None
     if state == "exists":
-        return "already on the new server", False, None
+        return "already on the new server", False, detail
     if state == "refused":
         return "can't be moved", False, detail
     if state != "new":
@@ -2011,6 +2014,16 @@ def _choose(lines, prompt):
     return pick(lines, typed)
 
 
+def _to_do_again(items, state, status):
+    """The sites a catch-up can be done for: this tool moved them, it knows where their files went on the new
+    server, and the new server still has them. Before the DNS is flipped the new server reports a site it made
+    itself as 'exists', which is what lets this be the catch-up before the flip that the design asks for."""
+    return [item for item in items if item.get("kind") == "site"
+            and state.entry(item).get("status") == "moved"
+            and state.entry(item).get("docroot")
+            and (status.get(item["id"]) or {}).get("state") == "exists"]
+
+
 def _work(args, connection, state, notes, doing=None):
     """Does the whole run after the connection works and returns its Report.
     'doing' is a list whose one place always holds what is being done."""
@@ -2023,10 +2036,7 @@ def _work(args, connection, state, notes, doing=None):
     extra = []
     moved_domains = []
     if args.again:
-        chosen = [i for i in items if i["kind"] == "site"
-                  and state.entry(i).get("status") == "moved"
-                  and state.entry(i).get("docroot")
-                  and (status.get(i["id"]) or {}).get("state") == "exists"]
+        chosen = _to_do_again(items, state, status)
         if not chosen:
             print("No site has moved yet, so there is nothing to do again.")
         else:

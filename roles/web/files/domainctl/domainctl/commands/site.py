@@ -13,7 +13,8 @@ from ..core.sites import Site
 from ..session import Session, open_session
 from . import dns
 from .shared import (
-    Domain, ExistingUser, NoDns, Purge, SiteName, UserFilter, UserOption, Yes, ask_domain, ask_site, no_site, www,
+    Domain, ExistingUser, NoDns, Purge, SiteName, User, UserFilter, UserOption, Yes, ask_domain, ask_site, ask_user,
+    no_site, www,
 )
 
 
@@ -100,6 +101,33 @@ def list_sites(user: UserFilter = None) -> None:
         for site in found:
             ui.add_row(table, site.user, site.domain, ", ".join(site.aliases) or "–", _certificate(config, site, now))
         ui.console.print(table)
+
+
+def state(user: User = None) -> None:
+    """Say in one word how far a site is on this server: served, made or absent.
+
+    For a program to read, not for a person: it prints one word and nothing else.
+
+    served: the site has a virtual host and is being served.
+    made: its Linux user and its directories are here, waiting for the domain to point at this server. That is
+    where "domainctl add" stops while the DNS is still elsewhere, so a site whose files are already uploaded
+    reads as made until the DNS moves.
+    absent: there is nothing of this site here.
+
+    It takes the site's name, which is its Linux user, and not its domain: a site waiting for its DNS has no
+    domain on this server yet.
+
+    [dim]Example:[/] domainctl state example
+    """
+    with open_session() as session:
+        config = session.config
+        name = ask_user(user)
+        if sites.find(config, name):
+            ui.line("served")
+        elif users.exists(name) and layout.made_by_domainctl(config, name):
+            ui.line("made")
+        else:
+            ui.line("absent")
 
 
 def delete(name: SiteName = None, purge: Purge = False, yes: Yes = False) -> None:

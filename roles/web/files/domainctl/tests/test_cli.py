@@ -167,6 +167,40 @@ def test_list_says_a_site_has_no_certificate_yet(server):
     assert "none" in run("list").output
 
 
+def test_state_says_absent_when_nothing_of_the_site_is_here(server):
+    result = run("state", "example")
+    assert result.exit_code == 0, result.output
+    assert result.output.split() == ["absent"]
+
+
+def test_state_says_made_for_a_site_that_is_still_waiting_for_its_dns(server, monkeypatch):
+    """What a migration needs to know: the site is here, although no virtual host is saved for it yet."""
+    monkeypatch.setattr(_Resolver, "answers", {"example.nl": {ip_address("45.87.2.9")}})
+    run("add", "example.nl", "--no-dns")
+    monkeypatch.setattr(users, "exists", lambda name: name == "example")
+
+    assert sites.list_sites(server) == [], "the virtual host waits for the domain"
+    assert run("state", "example").output.split() == ["made"]
+
+
+def test_state_says_served_once_the_site_has_a_virtual_host(server, monkeypatch):
+    sites.save(server, Site("example", "example.nl"))
+    monkeypatch.setattr(users, "exists", lambda name: name == "example")
+    assert run("state", "example").output.split() == ["served"]
+
+
+def test_state_says_absent_for_a_user_that_is_not_a_site_of_this_server(server, monkeypatch):
+    """A Linux user that domainctl did not make a site for is not a site: its home has none of the directories."""
+    monkeypatch.setattr(users, "exists", lambda name: name == "example")
+    server.home("example").mkdir()
+    assert run("state", "example").output.split() == ["absent"]
+
+
+def test_state_refuses_a_name_that_is_not_a_user_name(server):
+    result = run("state", "Not A User")
+    assert result.exit_code == 1 and "made" not in result.output
+
+
 def test_check_reports_a_site_without_a_certificate(server):
     sites.save(server, Site("example", "example.nl"))
     result = run("check")

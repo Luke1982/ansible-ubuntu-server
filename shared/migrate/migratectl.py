@@ -112,6 +112,35 @@ def _mail_domain_state(item, cache):
     return "new", f"{domain} is not on this server yet."
 
 
+SITE_STATES = ("served", "made", "absent")
+
+
+def _site_here(user, cache):
+    """What `domainctl state` says about one site user: "served", "made" or "absent".
+
+    `domainctl list` lists virtual hosts, and domainctl saves none until the domain points at this server. A site
+    whose user, directories and files are all here therefore isn't in that list, which is the state every site is
+    in while a migration runs. `domainctl state` is the one thing that can tell such a site from one that was
+    never made, so an unreadable answer is an error and never "absent".
+    """
+    states = cache.setdefault("site_states", {})
+    if user not in states:
+        cannot = f"couldn't ask domainctl how far the site {user} is on this server"
+        try:
+            done = subprocess.run(["domainctl", "state", user], capture_output=True, text=True,
+                                  timeout=LIST_TIMEOUT, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise Unreadable(f"{cannot} ({error})") from error
+        if done.returncode != 0:
+            said = (done.stderr or done.stdout or "").strip().splitlines()
+            raise Unreadable(f"{cannot}: {said[-1] if said else 'domainctl stopped with an error'}")
+        words = done.stdout.split()
+        if len(words) != 1 or words[0] not in SITE_STATES:
+            raise Unreadable(f"{cannot}: it answered with something else than one word I know")
+        states[user] = words[0]
+    return states[user]
+
+
 def _site_state(item, cache):
     domain, user = _text(item, "name"), _text(item, "user")
     for row in _sites(cache):
@@ -122,6 +151,13 @@ def _site_state(item, cache):
             return "refused", f"The user {user} already serves another site here. Use another user name."
         if domain in served:
             return "refused", f"{domain} is already served here by the user {row[0]}."
+    here = _site_here(user, cache)
+    if here == "made":
+        return "exists", (f"The user {user} and its directories are already here, waiting for the DNS: the virtual "
+                          f"host is saved once {domain} points at this server.")
+    if here == "served":
+        # Not in the list, so which domain it serves can't be read here; it is somebody else's site either way.
+        return "refused", f"The user {user} already has a site on this server. Use another user name."
     return "new", f"{domain} is not on this server yet."
 
 

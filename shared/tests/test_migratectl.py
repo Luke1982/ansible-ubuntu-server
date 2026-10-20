@@ -90,21 +90,27 @@ NO_SITES = "There are no sites on this server yet.\n"
 
 @pytest.fixture
 def lists(monkeypatch):
-    """Both tools installed; what they print is set per test in the returned dict, keyed by command name."""
+    """Both tools installed; what they print is set per test in the returned dict, keyed by command name.
+
+    "domainctl state" has a key of its own: it is the one command that can tell a site waiting for its DNS from
+    one that was never made, and its answer is one word, not a table.
+    """
     installed = {"mailctl": "/usr/local/bin/mailctl", "domainctl": "/usr/local/bin/domainctl"}
     monkeypatch.setattr(migratectl.shutil, "which", installed.get)
-    output = {"mailctl": MAIL_TABLE, "domainctl": SITES_TABLE}
-    seen = []
+    output = {"mailctl": MAIL_TABLE, "domainctl": SITES_TABLE, "domainctl state": "absent\n"}
+    seen, commands = [], []
 
     def run(command, **kwargs):
         seen.append(kwargs)
-        out = output[command[0]]
+        commands.append(list(command))
+        out = output[" ".join(command[:2])] if " ".join(command[:2]) in output else output[command[0]]
         if isinstance(out, int):
             return types.SimpleNamespace(returncode=out, stdout="", stderr="boom")
         return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
 
     monkeypatch.setattr(migratectl.subprocess, "run", run)
     output["seen"] = seen
+    output["commands"] = commands
     return output
 
 
@@ -158,6 +164,39 @@ def test_a_site_with_a_free_user_and_domain_is_new(lists):
 def test_a_server_with_no_sites_says_new_for_a_site(lists):
     lists["domainctl"] = NO_SITES
     assert site("example.nl", "example")["state"] == "new"
+
+
+def test_a_site_that_was_made_here_and_waits_for_its_dns_is_exists(lists):
+    """The only window a migration runs in: domainctl saves no virtual host until the domain points here, so the
+    list is empty for a site that has completely moved."""
+    lists["domainctl"], lists["domainctl state"] = NO_SITES, "made\n"
+    answer = site("example.nl", "example")
+    assert answer["state"] == "exists"
+    assert "waiting for the DNS" in answer["detail"] and "example.nl" in answer["detail"]
+
+
+def test_a_site_nothing_is_known_about_is_new_and_domainctl_is_asked_about_its_user(lists):
+    lists["domainctl"] = NO_SITES
+    assert site("example.nl", "example")["state"] == "new"
+    assert lists["commands"][-1] == ["domainctl", "state", "example"]
+
+
+def test_a_site_state_that_cannot_be_read_is_refused_never_new(lists):
+    lists["domainctl"], lists["domainctl state"] = NO_SITES, "I don't know that command\n"
+    answer = site("example.nl", "example")
+    assert answer["state"] == "refused" and "example" in answer["detail"]
+
+
+def test_a_site_state_command_that_fails_is_refused_never_new(lists):
+    lists["domainctl"], lists["domainctl state"] = NO_SITES, 1
+    assert site("example.nl", "example")["state"] == "refused"
+
+
+def test_a_user_that_already_has_a_site_here_is_refused(lists):
+    """The list didn't name it, so this says nothing about which domain it serves: it is another site either way."""
+    lists["domainctl"], lists["domainctl state"] = NO_SITES, "served\n"
+    answer = site("example.nl", "example")
+    assert answer["state"] == "refused" and "another user name" in answer["detail"].lower()
 
 
 def test_a_cron_job_is_new_because_the_crontab_cannot_be_compared(lists):

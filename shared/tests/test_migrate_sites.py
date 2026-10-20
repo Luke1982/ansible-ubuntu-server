@@ -342,6 +342,21 @@ def test_a_second_run_offers_a_site_whose_files_did_not_arrive(tmp_path):
     assert state["items"][site["id"]]["status"] == "moved"
 
 
+def test_a_site_that_already_moved_is_not_offered_again_and_says_so(tmp_path):
+    """Before the DNS moves the new server says "exists" for a site it made, so only the notes know it is
+    finished. Offering it again would run "wp adopt --replace" over a live database."""
+    site = _shop()
+    notes = _notes(tmp_path)
+    notes.made(site, ANSWER)
+    notes.moved(site)
+    exists = {site["id"]: {"state": "exists", "detail": "waiting for the DNS"}}
+
+    assert migrate.offered([site], exists, notes) == []
+    assert "already moved from here" in migrate.dashboard([site], exists, notes)
+    # --again is the only way back to it, and it finds it before the DNS is flipped.
+    assert [i["id"] for i in migrate._to_do_again([site], notes, exists)] == [site["id"]]
+
+
 def test_a_site_made_in_the_notes_but_new_on_the_server_is_remade(tmp_path):
     site = _shop()
     notes = _notes(tmp_path)
