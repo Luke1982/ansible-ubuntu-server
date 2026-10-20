@@ -1,5 +1,7 @@
 """domainctl wp: WordPress on a site, installed with wp-cli, and the WP fail2ban plugin on every WordPress site."""
 
+import sys
+from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
@@ -12,7 +14,7 @@ from serverctl.errors import CtlError
 from ..core import certificates, layout, sites, wordpress
 from ..core.wordpress import Plugin
 from ..session import open_session
-from .shared import User, UserFilter, ask_user, find_site, group
+from .shared import User, UserFilter, Yes, ask_user, find_site, group
 
 app = group("WordPress on the sites: install it, and keep the WP fail2ban plugin on every one.")
 
@@ -25,6 +27,15 @@ AdminEmail = Annotated[Optional[str], typer.Option(
 Locale = Annotated[str, typer.Option("--locale", help="WordPress's language, like nl_NL.")]
 Fix = Annotated[bool, typer.Option(
     "--fix", help="Install and activate WP fail2ban on the WordPress sites that don't have it active.")]
+
+Database = Annotated[Optional[str], typer.Option(
+    "--database", help="The database's name, which the MariaDB user shares. The site's name when left out.",
+    show_default=False)]
+Dump = Annotated[Optional[str], typer.Option(
+    "--dump", help="The database dump to read in. Use - for standard input. Nothing is read in when left out.",
+    show_default=False)]
+Replace = Annotated[bool, typer.Option(
+    "--replace", help="Empty and use a database that is already there, instead of stopping.")]
 
 _STATUS = {Plugin.ACTIVE: (Status.OK, "active"), Plugin.INACTIVE: (Status.FAIL, "installed, not active"),
            Plugin.MISSING: (Status.FAIL, "not installed")}
@@ -88,6 +99,60 @@ def install(user: User = None, title: Title = None, admin_user: AdminUser = None
             ui.line(f"User:     {admin}", indent=1)
             ui.line(f"Password: {password}", indent=1)
             ui.note("The password isn't stored anywhere else. Change it after logging in, if you like.")
+
+
+@app.command()
+def adopt(user: User = None, database: Database = None, dump: Dump = None, replace: Replace = False,
+          yes: Yes = False) -> None:
+    """Give a WordPress site that came from another server its database here.
+
+    The site's files must already be in its web root, wp-config.php included. This makes the database and a MariaDB
+    user of the same name with a new password, reads the dump into it, and changes the database lines in the site's
+    wp-config.php to match. Nothing else in wp-config.php changes. To start a new WordPress instead, use wp install.
+
+    A database that is already there stops it, unless you pass --replace: that empties it first, after asking.
+
+    [dim]Example:[/] domainctl wp adopt example --dump example.sql
+    [dim]From the old server:[/] ssh old mysqldump example | domainctl wp adopt example --dump -
+    """
+    with open_session() as session:
+        config = session.config
+        site = find_site(config, ask_user(user))
+        name = names.user_name(database or site.user)
+        if not wordpress.is_configured(config, site.user):
+            raise CtlError(f"There is no wp-config.php in {config.docroot_of(site.user)}.",
+                           hint="Copy the site's files there first, wp-config.php included, and run this again.")
+        if dump not in (None, "-") and not Path(dump).is_file():
+            raise CtlError(f"There is no dump at {dump}.")
+        taken = wordpress.database_taken(name)
+        if taken and not replace:
+            raise CtlError(f"There is already {taken} in MariaDB.",
+                           hint="Pick another name with --database, or empty it and use it with --replace.")
+        if taken:
+            ui.confirm(f"{taken[0].upper()}{taken[1:]} will be emptied and removed, with everything in it. Go on?", yes)
+            wordpress.drop_database(name)
+        password = wordpress.new_password()
+        wordpress.create_database(name, password)
+        try:
+            if dump is not None:
+                with ui.console.status("Reading the dump in…"):
+                    _read_dump(name, dump)
+            wordpress.adopt_config(config, site.user, name, name, password)
+        except CtlError:
+            wordpress.drop_database(name)  # nothing knows its password
+            raise
+        ui.success(f"{'Replaced' if taken else 'Made'} the database {name}, with a MariaDB user of the same name.")
+        if dump is not None:
+            ui.success("Read the dump into it.")
+        ui.success(f"{config.docroot_of(site.user) / 'wp-config.php'} now points at it.")
+
+
+def _read_dump(database: str, dump: str) -> None:
+    if dump == "-":
+        wordpress.import_dump(database, sys.stdin)
+        return
+    with open(dump, encoding="utf-8", errors="replace") as file:
+        wordpress.import_dump(database, file)
 
 
 @app.command()

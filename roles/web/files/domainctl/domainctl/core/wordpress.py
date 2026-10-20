@@ -12,8 +12,10 @@ WP fail2ban sends failed logins to syslog with the site's name in the tag, so th
 """
 
 import json
+import re
 import secrets
 from enum import Enum
+from typing import IO
 
 from serverctl import system
 from serverctl.errors import CtlError
@@ -68,6 +70,44 @@ def configure(config: Config, user: str, database: str, password: str) -> None:
     # No check: wp-cli checks with the mysql client, which reads DB_HOST differently from PHP.
     wp(config, user, "config", "create", f"--dbname={database}", f"--dbuser={database}", f"--dbhost={DB_HOST}",
        "--dbcharset=utf8mb4", "--skip-check", "--prompt=dbpass", stdin=f"{password}\n")
+
+
+# A define() on a line of its own, in either quote style and with any spacing, like move-wordpress.sh finds them.
+_DEFINE = re.compile(r"""^[ \t]*define[ \t]*\([ \t]*(['"])(DB_NAME|DB_USER|DB_PASSWORD|DB_HOST)\1[ \t]*,.*?(\r?)$""",
+                     re.MULTILINE)
+
+
+def _php_string(value: str) -> str:
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def adopt_config(config: Config, user: str, database: str, db_user: str, password: str) -> None:
+    """Points the wp-config.php that came with the site at its database here. Only the four database lines change:
+    the salts, the table prefix and the site's own constants are what make it that site."""
+    path = config.docroot_of(user) / "wp-config.php"
+    try:
+        text = path.read_text()
+    except OSError as problem:
+        raise CtlError(f"Can't read {path}: {problem.strerror or problem}.") from None
+    values = {"DB_NAME": database, "DB_USER": db_user, "DB_PASSWORD": password, "DB_HOST": DB_HOST}
+    found: set[str] = set()
+
+    def replace(match: re.Match) -> str:
+        found.add(match[2])
+        return f"define( '{match[2]}', {_php_string(values[match[2]])} );{match[3]}"
+
+    changed = _DEFINE.sub(replace, text)
+    # DB_HOST may be left out: WordPress then uses localhost, which is this server.
+    missing = [key for key in ("DB_NAME", "DB_USER", "DB_PASSWORD") if key not in found]
+    if missing:
+        raise CtlError(f"{path} has no line for {', '.join(missing)}.",
+                       hint="Check that it is the site's own wp-config.php, with a define() for each database setting.")
+    path.write_text(changed)
+
+
+def import_dump(database: str, dump: IO[str]) -> None:
+    """Reads a dump into the database. All of it is read first: system.run takes its input as one piece."""
+    system.run("mariadb", database, stdin=dump.read())
 
 
 def is_installed(config: Config, user: str) -> bool:

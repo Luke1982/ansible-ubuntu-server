@@ -3,7 +3,9 @@
 import json
 
 import pytest
+from typer.testing import CliRunner
 
+from domainctl import cli
 from domainctl.core import acl, sites, wordpress
 from domainctl.core.sites import Site
 from serverctl import system
@@ -204,3 +206,134 @@ def test_check_fix_puts_wp_fail2ban_on_every_wordpress_site(server, fake):  # no
     assert fake.plugins == {"blog": "active", "news": "active"}
     activated = [call[9:11] for call in fake.calls if call[0] == "runuser" and call[9:10] == ("plugin",)]
     assert ("plugin", "activate") in activated and ("plugin", "install") in activated
+
+
+WP_CONFIG = """<?php
+define( 'DB_NAME', 'old_name' );
+define("DB_USER","old_user");
+  define(   'DB_PASSWORD'  ,  'old\\'pass'  );   // from the old server
+define( 'DB_HOST', 'db.old.example' );
+define( 'AUTH_KEY', 'put your unique phrase here' );
+define( 'WP_HOME', 'https://example.nl' );
+$table_prefix = 'xyz_';
+"""
+
+
+def with_config(config, text=WP_CONFIG):
+    docroot = site(config)
+    (docroot / "wp-config.php").write_text(text)
+    return docroot / "wp-config.php"
+
+
+def adopt(*extra):
+    return run("wp", "adopt", "example", *extra)
+
+
+def test_adopt_keeps_everything_in_wp_config_but_the_database_lines(server):  # noqa: F811
+    """Salts, table prefix and a site's own constants are what makes it that site."""
+    path = with_config(server)
+
+    wordpress.adopt_config(server, "example", "example_db", "example_db", "se'cret")
+
+    text = path.read_text()
+    assert "define( 'DB_NAME', 'example_db' );" in text
+    assert "define( 'DB_USER', 'example_db' );" in text
+    assert "define( 'DB_PASSWORD', 'se\\'cret' );" in text
+    assert f"define( 'DB_HOST', '{wordpress.DB_HOST}' );" in text
+    assert "old" not in text.replace("put your unique", "")
+    assert "$table_prefix = 'xyz_';" in text and "WP_HOME" in text and "AUTH_KEY" in text
+
+
+def test_adopt_names_the_wp_config_that_has_no_database_lines(server):  # noqa: F811
+    path = with_config(server, "<?php\n$table_prefix = 'wp_';\n")
+
+    with pytest.raises(system.CtlError, match=f"{path} has no line for DB_NAME"):
+        wordpress.adopt_config(server, "example", "x", "x", "y")
+    assert path.read_text() == "<?php\n$table_prefix = 'wp_';\n"
+
+
+def test_adopt_makes_the_database_reads_the_dump_and_points_wp_config_at_it(server, fake, tmp_path):  # noqa: F811
+    path = with_config(server)
+    dump = tmp_path / "example.sql"
+    dump.write_text("CREATE TABLE xyz_posts (id int);")
+
+    result = adopt("--dump", str(dump))
+
+    assert result.exit_code == 0, result.output
+    assert fake.databases == {"example"}
+    assert ("mariadb", "example") in fake.calls
+    assert fake.stdin[fake.calls.index(("mariadb", "example"))] == "CREATE TABLE xyz_posts (id int);"
+    assert "define( 'DB_NAME', 'example' );" in path.read_text()
+    assert "now points at it" in result.output
+
+
+def test_adopt_refuses_a_database_that_is_already_there(server, fake):  # noqa: F811
+    path = with_config(server)
+    fake.databases.add("example")
+
+    result = adopt()
+
+    assert result.exit_code == 1
+    assert "already" in result.output
+    assert path.read_text() == WP_CONFIG and not any(stdin and "DROP" in stdin for stdin in fake.stdin)
+
+
+def test_adopt_replaces_a_database_when_told_to(server, fake, tmp_path):  # noqa: F811
+    with_config(server)
+    fake.databases.add("example")
+    dump = tmp_path / "example.sql"
+    dump.write_text("INSERT INTO t VALUES (1);")
+
+    result = adopt("--replace", "--yes", "--dump", str(dump))
+
+    assert result.exit_code == 0, result.output
+    assert "Replaced" in result.output
+    assert any(stdin and stdin.startswith("DROP DATABASE") for stdin in fake.stdin)
+    assert fake.databases == {"example"}
+
+
+def test_adopt_does_not_empty_a_database_without_asking(server, fake):  # noqa: F811
+    with_config(server)
+    fake.databases.add("example")
+
+    result = adopt("--replace")
+
+    assert result.exit_code == 1
+    assert not any(stdin and "DROP" in stdin for stdin in fake.stdin)
+
+
+def test_adopt_reads_the_dump_from_standard_input(server, fake):  # noqa: F811
+    """So the old server can pipe mysqldump straight into it over SSH."""
+    with_config(server)
+
+    result = CliRunner().invoke(cli.app, ["wp", "adopt", "example", "--dump", "-"], input="INSERT INTO t VALUES (1);")
+
+    assert result.exit_code == 0, result.output
+    assert fake.stdin[fake.calls.index(("mariadb", "example"))] == "INSERT INTO t VALUES (1);"
+
+
+def test_adopt_takes_the_database_away_again_when_the_dump_fails(server, fake, tmp_path, monkeypatch):  # noqa: F811
+    path = with_config(server)
+    dump = tmp_path / "example.sql"
+    dump.write_text("broken")
+    real = fake.run
+
+    def failing(*args, stdin=None):
+        if args[:2] == ("mariadb", "example"):
+            raise system.CtlError("mariadb example failed: syntax error")
+        return real(*args, stdin=stdin)
+
+    monkeypatch.setattr(system, "run", failing)
+    result = adopt("--dump", str(dump))
+
+    assert result.exit_code == 1
+    assert fake.databases == set() and path.read_text() == WP_CONFIG
+
+
+def test_adopt_needs_the_sites_wp_config(server, fake):  # noqa: F811
+    site(server)
+
+    result = adopt()
+
+    assert result.exit_code == 1 and "no wp-config.php" in result.output
+    assert fake.databases == set()
