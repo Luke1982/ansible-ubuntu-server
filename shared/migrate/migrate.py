@@ -1519,6 +1519,12 @@ NO_NEW_WP = ("The new server didn't say where its wp-cli is, so %s can't be "
 # and the scratch folders where a job makes its own lock file.
 _KEEP_PATHS = ("/dev/null", "/dev/zero", "/dev/stdout", "/dev/stderr")
 _KEEP_FOLDERS = ("/tmp/", "/var/tmp/")
+# The directories every Linux has, so a PATH that names them says nothing about the old server.
+_ORDINARY_PLACES = ("/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/local/bin", "/usr/local/sbin")
+PATH_FROM_OLD = ("This job's PATH is kept as it is, and it names %s, which "
+                 "may not be there on the new server. A program this job "
+                 "runs by its bare name has to be in one of the directories "
+                 "its PATH names, so look at that job once it has run.")
 
 
 def _is_php(word):
@@ -1529,6 +1535,15 @@ def _is_php(word):
 def _is_wp(word):
     """Whether a program is wp-cli, which most of a WordPress site's own jobs run."""
     return bool(word) and os.path.basename(word) == "wp"
+
+
+def _program_place(interpreter, instead):
+    """The directory the program a job runs came out of on the old server,
+    when the new server has a place of its own for it; None when there is
+    nothing to put in its place."""
+    if not (instead and interpreter.startswith("/")):
+        return None
+    return os.path.dirname(interpreter)
 
 
 def _new_program(interpreter, php, wp):
@@ -1586,11 +1601,13 @@ def _rewrite_paths(text, old_root, new_root, interpreter, instead):
 
 def _rewrite_settings(settings, old_root, new_root, interpreter, instead):
     """(the NAME=value lines as they must be on the new server, what changed
-    in plain words). A PATH is the old server's own: the part of it that
-    named the directory of the program the job runs becomes the new one's,
-    paths inside the site are moved with the site, and a PATH with nothing
-    left is dropped."""
-    old_place = os.path.dirname(interpreter) if interpreter.startswith("/") and instead else None
+    in plain words). A PATH is the old server's own: the directory of the
+    program the job runs becomes the new one's and a directory inside the
+    site moves with the site. Nothing is ever dropped from a PATH — a job
+    that needed it would fail in a way nobody could explain — so an entry
+    that can't be mapped is kept and named, unless it is a place every
+    Linux has."""
+    old_place = _program_place(interpreter, instead)
     new_place = os.path.dirname(instead) if instead else None
     kept, said = [], []
     for line in settings:
@@ -1599,30 +1616,26 @@ def _rewrite_settings(settings, old_root, new_root, interpreter, instead):
             kept.append(line)
             continue
         if name.strip().upper() == "PATH":
-            places, changed = [], False
+            places, changed, from_old = [], False, []
             for place in value.split(":"):
                 place = place.strip()
                 if not place:
                     continue
-                if old_place and place.rstrip("/") == old_place:
-                    changed = True
-                    if not new_place:
-                        continue  # nothing to put in its place: it would only name a directory that isn't there
-                    place = new_place
-                else:
-                    moved = _mapped_path(place, old_root, new_root, None, None)
-                    if moved is not None and moved != place:
-                        place, changed = moved, True
+                moved = (new_place if old_place and place.rstrip("/") == old_place
+                         else _mapped_path(place, old_root, new_root, None, None))
+                if moved is not None and moved != place:
+                    place, changed = moved, True
+                elif (place.startswith("/") and place.rstrip("/") not in _ORDINARY_PLACES
+                        and _mapped_path(place, old_root, new_root, None, None) is None):
+                    from_old.append(place)
                 if place not in places:
                     places.append(place)
-            if not places:
-                said.append("The PATH this job ran with was left out: "
-                            "nothing in it is on the new server.")
-                continue
-            if changed:
+            if places and changed:
                 said.append("The PATH this job runs with on the new server "
                             "is %s." % ":".join(places))
-            kept.append("PATH=" + ":".join(places))
+            if from_old:
+                said.append(PATH_FROM_OLD % ", ".join(from_old))
+            kept.append("PATH=" + ":".join(places) if places else line)
             continue
         moved = _rewrite_paths(value, old_root, new_root, None, None)[0]
         if moved != value:
@@ -1658,6 +1671,7 @@ def cron_for_new_server(item, docroot, php, wp=None):
     if loose:
         raise MoveFailed(OUTSIDE_SITE % ", ".join(sorted(set(loose))),
                          told=False)
+    command = _written_out(command, interpreter, instead)
     line = before + command
     settings, said = _rewrite_settings(item.get("settings") or [], old_root,
                                        docroot, interpreter, instead)
@@ -1665,6 +1679,19 @@ def cron_for_new_server(item, docroot, php, wp=None):
         said.insert(0, "The job of %s runs this on the new server: %s"
                     % (name, line))
     return dict(item, line=line, settings=settings), said
+
+
+def _written_out(command, interpreter, instead):
+    """The command with a program the job runs by its bare name written out
+    as the path the new server named. A job that runs 'php' leans on the old
+    server's PATH, and the new server's own PHP may not be called php at all
+    (OpenLiteSpeed's is lsphp), so the word is replaced rather than hoped
+    for. Only the first of them, which is the program; the same word inside
+    a path is left alone by the edges of the pattern."""
+    if not instead or interpreter.startswith("/") or not interpreter:
+        return command
+    pattern = r"(?<![\w./-])%s(?![\w./-])" % re.escape(interpreter)
+    return re.sub(pattern, lambda found: instead, command, count=1)
 
 
 def _cron_problem(item):

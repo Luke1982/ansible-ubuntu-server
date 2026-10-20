@@ -333,3 +333,57 @@ def test_the_run_sends_a_wp_job_rewritten_with_what_the_new_server_said(tmp_path
                          wp="/usr/local/bin/wp", status={item["id"]: {"state": "new"}})
     assert [i["id"] for i, _ in report.moved] == [item["id"]]
     assert NEW_ROOT in sent[0]["item"]["line"] and "/usr/local/bin/wp" in sent[0]["item"]["line"]
+
+
+BARE = "*/15 * * * * php -q /var/www/shop/wp-cron.php\n"
+
+
+def test_a_job_that_runs_php_by_name_gets_the_new_servers_php_written_out(tmp_path):
+    """On a server whose only PHP is OpenLiteSpeed's lsphp, a job that runs "php" never runs at all."""
+    item = _item(tmp_path, BARE)
+    sent, said = migrate.cron_for_new_server(item, NEW_ROOT, "/usr/local/lsws/lsphp83/bin/lsphp")
+    assert sent["line"] == "*/15 * * * * /usr/local/lsws/lsphp83/bin/lsphp -q %s/wp-cron.php" % NEW_ROOT
+    assert any("lsphp" in line for line in said)
+
+
+def test_the_same_word_inside_a_path_is_not_taken_for_the_program(tmp_path):
+    item = _item(tmp_path, "0 4 * * * cd /var/www/shop/php && php x.php\n")
+    sent, _ = migrate.cron_for_new_server(item, NEW_ROOT, "/usr/bin/php")
+    assert sent["line"] == "0 4 * * * cd %s/php && /usr/bin/php x.php" % NEW_ROOT
+
+
+@pytest.mark.parametrize("word, out", [("php7.4", "/usr/bin/php"), ("lsphp81", "/usr/bin/php"),
+                                       ("ea-php74", "/usr/bin/php"), ("wp", "/usr/local/bin/wp")])
+def test_a_bare_php_version_or_a_bare_wp_is_written_out_too(tmp_path, word, out):
+    item = _item(tmp_path, "*/5 * * * * %s /var/www/shop/x.php\n" % word)
+    sent, _ = migrate.cron_for_new_server(item, NEW_ROOT, "/usr/bin/php", "/usr/local/bin/wp")
+    assert sent["line"].split()[5] == out
+
+
+def test_a_path_from_the_old_server_is_kept_and_named(tmp_path):
+    """Dropping an entry would break a job that needed it in a way nobody could explain."""
+    item = _item(tmp_path, "*/15 * * * * /usr/bin/php /var/www/shop/x.php\n")
+    item["settings"] = ["PATH=/opt/plesk/bin:/usr/bin:/var/www/shop/bin"]
+
+    sent, said = migrate.cron_for_new_server(item, NEW_ROOT, "/usr/bin/php")
+
+    assert sent["settings"] == ["PATH=/opt/plesk/bin:/usr/bin:%s/bin" % NEW_ROOT]
+    named = [line for line in said if "kept as it is" in line]
+    assert len(named) == 1 and "/opt/plesk/bin" in named[0]
+    assert "/usr/bin" not in named[0].replace("/usr/bin:", "")  # a place every Linux has is not named
+    assert "may not be there on the new server" in named[0]
+
+
+def test_a_path_that_only_names_ordinary_places_is_said_nothing_about(tmp_path):
+    item = _item(tmp_path, "*/15 * * * * /usr/bin/php /var/www/shop/x.php\n")
+    item["settings"] = ["PATH=/usr/local/bin:/usr/bin:/bin", "MAILTO=me@example.nl", "SHELL=/bin/bash"]
+    sent, said = migrate.cron_for_new_server(item, NEW_ROOT, "/usr/bin/php")
+    assert sent["settings"] == item["settings"]
+    assert not [line for line in said if "PATH" in line]
+
+
+def test_an_empty_path_is_kept_as_it_is(tmp_path):
+    item = _item(tmp_path, "*/15 * * * * /usr/bin/php /var/www/shop/x.php\n")
+    item["settings"] = ["PATH="]
+    sent, said = migrate.cron_for_new_server(item, NEW_ROOT, "/usr/bin/php")
+    assert sent["settings"] == ["PATH="] and not [line for line in said if "PATH" in line]
