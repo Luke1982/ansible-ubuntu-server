@@ -249,6 +249,9 @@ OWN_FILES = (".well-known",)
 PLACEHOLDER_SENTENCES = ("put here by domainctl", "This site is set up and waiting for its files.")
 OWN_INDEXES = ("index.php", "index.htm", "index.xhtml", "default.php")
 COMMAND_TIMEOUT = 600
+# A mail import makes every account, filter and spam setting one at a time, so a big domain legitimately takes
+# long: it gets the half hour the old server gives an apply, less a little, so this answer still reaches it.
+IMPORT_TIMEOUT = 1500
 
 
 class Failed(Exception):
@@ -491,8 +494,15 @@ def _apply_mail_domain(item):
             json.dump(data, file)
         try:
             done = subprocess.run(["mailctl", "import", path, "--yes", "--verbose", "--keep-hashes"],
-                                  capture_output=True, text=True, timeout=COMMAND_TIMEOUT,
+                                  capture_output=True, text=True, timeout=IMPORT_TIMEOUT,
                                   stdin=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired:
+            # Killed in the middle: the domain, some of its accounts and their files may be there already.
+            return {"ok": False, **result,
+                    "error": f"Importing {name} was stopped after {IMPORT_TIMEOUT // 60} minutes, so part of the "
+                             f"domain may have been created: the accounts are made one at a time. Ask for the "
+                             f"status again, and on this server look at what is there with: mailctl address list "
+                             f"{name}. Sending it again adds only what is missing."}
         except (OSError, subprocess.SubprocessError) as error:
             return {"ok": False, **result, "error": f"Importing {name} didn't work ({error}). Nothing is known to "
                                                     f"have been created."}

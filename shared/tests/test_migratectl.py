@@ -705,3 +705,23 @@ def test_a_marker_that_is_a_prefix_of_another_items_id_does_not_count(server):
     answer = migratectl.answer({"request": "apply", "item": CRON})
     assert answer["already"] is False
     assert "php /home/example/x.php" in server.crontabs["example"] and "0 3 * * * other" in server.crontabs["example"]
+
+
+def test_an_import_that_was_stopped_halfway_says_the_domain_may_be_half_there(server, monkeypatch):
+    """A big domain's import can legitimately outlast the limit, and mailctl is then killed mid-import."""
+    def slow(command, **kwargs):
+        if command[:2] == ["mailctl", "import"]:
+            raise migratectl.subprocess.TimeoutExpired(command, migratectl.IMPORT_TIMEOUT)
+        return server.run(command, **kwargs)
+
+    monkeypatch.setattr(migratectl.subprocess, "run", slow)
+    answer = migratectl.answer({"request": "apply", "item": mail_item(OWN)})
+    assert answer["ok"] is False
+    assert "part of the domain may have been created" in answer["error"]
+    assert "mailctl address list a.nl" in answer["error"]
+    assert "Nothing is known" not in answer["error"]
+
+
+def test_the_import_gets_longer_than_a_list_or_an_add(server):
+    assert migratectl.IMPORT_TIMEOUT > migratectl.COMMAND_TIMEOUT
+    assert migratectl.IMPORT_TIMEOUT < 1800  # the old server stops waiting for an apply at half an hour
