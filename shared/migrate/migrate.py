@@ -1765,7 +1765,9 @@ def report(result, connection=None, old_server=None, found_sites=None,
         out.extend([""] + textwrap.wrap(
             "Mail messages are not moved by this tool. Run one of these for "
             "each account, with the password filled in (it is the same on "
-            "both servers):", 79))
+            "both servers). Run them from any machine that can reach both "
+            "servers; imapsync is on neither of them, so install it where "
+            "you run it (on Debian or Ubuntu: apt install imapsync):", 79))
         for address in accounts:
             out.append("")
             out.extend(_imapsync(old_name, new_name, address))
@@ -1836,4 +1838,8 @@ def report(result, connection=None, old_server=None, found_sites=None,
         out.extend(hand[1:] if hand[0] == "" else hand)
     if not out:
         return "Nothing was moved.\n"
+    if not (result.moved or result.files_to_copy):
+        # A page of nothing but hand work would otherwise leave the one thing
+        # the person wants to know first unsaid.
+        out = ["", "Nothing was moved."] + out
     return "\n".join(["Report", "======"] + out) + "\n"

@@ -34,7 +34,7 @@ def test_an_imapsync_line_is_printed_for_every_account_that_moved():
     result = _result()
     result.left_out = ["bob@example.nl"]
     text = migrate.report(result, Connection(), old_server="old.example.nl")
-    assert text.count("imapsync") == 1
+    assert text.count("imapsync \\") == 1  # one command, not one mention of the word
     assert "--user1 ann@example.nl" in text and "bob@example.nl" not in text.split("imapsync")[1]
     assert "--host1 old.example.nl" in text and "--host2 new.example.nl" in text
     assert "--ssl1" in text and "--ssl2" in text and "TYPE-THE-PASSWORD-HERE" in text
