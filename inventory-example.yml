@@ -43,3 +43,5 @@ all:
       # Primary mail domain, used to create the DKIM key and by SpamAssassin.
       # Leave it out for servers without mail.
       defaultdomain: example.com
+      # What the browser tab says above webmail. "Webmail" when left out.
+      sogo_page_title: "Example Webmail"

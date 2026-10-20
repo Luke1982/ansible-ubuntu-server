@@ -131,7 +131,31 @@ Create `<hostname>.yml` in the project root. Set `hosts:` to the server's name f
     - roles/basic/vars/private/linuxusers.yml
 ```
 
-A playbook only runs on the host it names. If that name is not in any file in `private/`, Ansible warns that no hosts matched and does nothing.
+A playbook only runs on the host it names, and that name has to be in the inventory. Without it:
+
+```
+[WARNING]: Could not match supplied host pattern, ignoring: web03.majorlabel.nl
+skipping: no hosts matched
+```
+
+That means there is no `private/web03.majorlabel.nl.yml` -- the playbook in the project root is not an inventory, it only names a host. See [Adding another server](#adding-another-server).
+
+### Adding another server
+
+Three files, every time:
+
+| What | Where | From |
+|------|-------|------|
+| The inventory: address, SSH user, key, `hostname`, `defaultdomain` | `private/<hostname>.yml` | `cp inventory-example.yml private/<hostname>.yml` |
+| The playbook: which roles that server gets | `<hostname>.yml` in the project root | copy another server's and change the name |
+| The role variables, for the roles in that playbook | `roles/*/vars/private/` | the README in each of those directories |
+
+Then check that Ansible knows it, before running anything:
+
+```bash
+ansible-inventory --list | grep <hostname>     # it is in the inventory
+ansible <hostname> -m ping                     # it answers, and the key works
+```
 
 ### 6. Run the playbook
 
