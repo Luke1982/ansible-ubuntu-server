@@ -387,3 +387,16 @@ def test_an_empty_path_is_kept_as_it_is(tmp_path):
     item["settings"] = ["PATH="]
     sent, said = migrate.cron_for_new_server(item, NEW_ROOT, "/usr/bin/php")
     assert sent["settings"] == ["PATH="] and not [line for line in said if "PATH" in line]
+
+
+def test_what_is_being_moved_is_said_within_eighty_columns(capsys, tmp_path):
+    item = _item(tmp_path, PLESK)
+    assert len(migrate._title(item)) > 79  # a cron job's own line is longer than a terminal
+
+    class Connection(object):
+        def ask(self, request):
+            return {"ok": True}
+
+    migrate.run(Connection(), [item], lambda text: None, php="/usr/bin/php")
+    out = capsys.readouterr().out
+    assert "Moving 1 of 1" in out and all(len(line) <= 79 for line in out.splitlines())

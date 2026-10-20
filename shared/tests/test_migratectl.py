@@ -50,6 +50,8 @@ def test_the_two_halves_speak_the_same_version():
     """A new migrate.py meeting an older migratectl is caught at the handshake, not halfway through a site."""
     from migrate import migrate
     assert migrate.PROTOCOL_VERSION == migratectl.PROTOCOL_VERSION
+    # It went up when finish_site, dns, php, wp and the addresses were added; it never goes back.
+    assert migratectl.PROTOCOL_VERSION >= 2
 
 
 def test_a_request_it_doesnt_know_is_an_error_not_a_crash():
@@ -451,6 +453,14 @@ def test_a_failing_command_is_a_refusal_that_says_what_was_already_made(machine)
     assert answer["ok"] is False and "already a database" in answer["error"]
     assert "user example" in answer["error"] and "stand-in wp-config.php" in answer["error"]
     assert "the database example" not in answer["error"].split("Now there is")[1]
+
+
+def test_the_database_name_in_the_query_is_quoted_like_domainctl_does(machine):
+    """It is checked before it gets here, but the quoting belongs where the value meets the SQL."""
+    assert migratectl._quoted("o'b") == "'o''b'" and migratectl._quoted("a\\b") == "'a\\\\b'"
+    migratectl._database_taken("o'b")
+    query = next(kw["input"] for call, kw in zip(machine.calls, machine.kwargs) if call[0] == "mariadb")
+    assert "SCHEMA_NAME = 'o''b'" in query and "User = 'o''b'" in query
 
 
 def test_an_item_that_is_not_a_site_is_an_error_not_a_crash(machine):

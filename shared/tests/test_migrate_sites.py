@@ -733,3 +733,19 @@ def test_a_resumed_site_asks_before_its_database_is_replaced_and_no_stops_it(tmp
     migrate.run(connection, [plain], lambda text: "no", notes=notes,
                 status={plain["id"]: {"state": "exists"}}, move=lambda item, answer: moved.append(item))
     assert moved == [plain]
+
+
+def test_every_command_that_looks_something_up_runs_with_the_time_limit(monkeypatch):
+    """The limit counts where it is wired in, not only as a number: this goes red if the default is taken away."""
+    seen = []
+
+    class Fake(object):
+        returncode = 0
+
+        def communicate(self, data=None, timeout=None):
+            seen.append(timeout)
+            return b"", b""
+
+    monkeypatch.setattr(migrate.subprocess, "Popen", lambda *args, **kwargs: Fake())
+    migrate.run_command("mariadb", "--batch", "-e", "SELECT 1")
+    assert seen == [migrate.LOOK_TIMEOUT] and migrate.LOOK_TIMEOUT == 120
