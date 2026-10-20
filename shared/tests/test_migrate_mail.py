@@ -234,3 +234,13 @@ def test_a_note_from_a_successful_apply_reaches_the_report():
     report = migrate.run(Connection(), [item], lambda text: None, extra_notes=extra)
     assert len(report.moved) == 1 and extra == ["The database's password is in the site's own wp-config.php."]
     assert "wp-config.php" in migrate.report(report, extra_notes=extra)
+
+
+def test_a_mail_domain_deleted_on_the_new_server_is_offered_again(tmp_path):
+    item = {"id": "mail:a.nl", "kind": "mail_domain", "name": "a.nl", "data": {"addresses": [], "forwards": []}}
+    notes = migrate.State(path=str(tmp_path / "state.json"), say=lambda text: None)
+    notes.items[item["id"]] = {"status": "moved"}
+    gone = {item["id"]: {"state": "new", "detail": "a.nl is not on this server yet."}}
+
+    assert migrate.offered([item], gone, notes) == [item]
+    assert migrate.GONE_THERE in " ".join(migrate.dashboard([item], gone, notes).split())

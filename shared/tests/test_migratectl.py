@@ -121,9 +121,10 @@ def lists(monkeypatch):
     "domainctl state" has a key of its own: it is the one command that can tell a site waiting for its DNS from
     one that was never made, and its answer is one word, not a table.
     """
-    installed = {"mailctl": "/usr/local/bin/mailctl", "domainctl": "/usr/local/bin/domainctl"}
+    installed = {"mailctl": "/usr/local/bin/mailctl", "domainctl": "/usr/local/bin/domainctl",
+                 "crontab": "/usr/bin/crontab"}
     monkeypatch.setattr(migratectl.shutil, "which", installed.get)
-    output = {"mailctl": MAIL_TABLE, "domainctl": SITES_TABLE, "domainctl state": "absent\n"}
+    output = {"mailctl": MAIL_TABLE, "domainctl": SITES_TABLE, "domainctl state": "absent\n", "crontab": ""}
     seen, commands = [], []
 
     def run(command, **kwargs):
@@ -225,8 +226,37 @@ def test_a_user_that_already_has_a_site_here_is_refused(lists):
     assert answer["state"] == "refused" and "another user name" in answer["detail"].lower()
 
 
-def test_a_cron_job_is_new_because_the_crontab_cannot_be_compared(lists):
+def test_a_cron_job_the_crontab_does_not_have_yet_is_new(lists):
     assert status("cron:example:0", "cron", user="example")["state"] == "new"
+    assert lists["commands"][-1] == ["crontab", "-u", "example", "-l"]
+
+
+def test_a_cron_job_the_crontab_already_has_is_exists(lists):
+    """Its marker carries the item's own id, so this is the same job and not another one of that user's."""
+    lists["crontab"] = "# mine\n0 1 * * * /bin/true\n# migratectl: cron:example:0\n*/5 * * * * php x.php\n"
+    answer = status("cron:example:0", "cron", user="example")
+    assert answer["state"] == "exists" and "already in the crontab of example" in answer["detail"]
+    assert status("cron:example:1", "cron", user="example")["state"] == "new"
+
+
+def test_a_crontab_that_cannot_be_read_is_refused_never_new(lists):
+    lists["crontab"] = 1
+    assert status("cron:example:0", "cron", user="example")["state"] == "refused"
+
+
+def test_a_user_without_a_crontab_is_new_and_not_an_error(lists, monkeypatch):
+    def run(command, **kwargs):
+        if command[0] == "crontab":
+            return types.SimpleNamespace(returncode=1, stdout="", stderr="no crontab for example")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(migratectl.subprocess, "run", run)
+    assert status("cron:example:0", "cron", user="example")["state"] == "new"
+
+
+def test_a_server_without_the_crontab_command_refuses_a_cron_job(fake_command):
+    answer = status("cron:example:0", "cron", user="example")
+    assert answer["state"] == "refused" and "crontab" in answer["detail"]
 
 
 def test_a_server_without_mailctl_refuses_mail_items(fake_command):
@@ -320,8 +350,8 @@ def test_a_site_next_to_a_wrapped_row_is_still_read_and_a_free_domain_is_new(lis
     assert site("free.nl", "free")["state"] == "new"
 
 
-def test_a_cron_job_says_nothing_on_the_server_was_checked(lists):
-    assert "Nothing on this server was checked" in status("cron:example:0", "cron", user="example")["detail"]
+def test_a_cron_job_says_what_was_looked_at(lists):
+    assert "crontab of example doesn't have this job" in status("cron:example:0", "cron", user="example")["detail"]
 
 
 class Machine:

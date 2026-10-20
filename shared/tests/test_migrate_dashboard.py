@@ -388,6 +388,6 @@ def test_a_mail_domain_that_is_half_there_can_be_sent_again_with_the_counts_in_s
     assert migrate.offered([mail, site], status) == [mail]
     assert "50 accounts and 3 forwards" in " ".join(text.split())
     assert "adds the accounts" in " ".join(text.split())
-    assert "What the new server has already:" in text
+    assert "Worth knowing before you pick:" in text
     # The site is a different matter: sending it again would empty its database, so it is not offered.
     assert "The site example.nl is already here." in " ".join(text.split("Why some can't be moved:")[1].split())

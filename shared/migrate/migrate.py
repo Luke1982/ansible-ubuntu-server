@@ -1083,16 +1083,21 @@ def cost(item):
 MAIL_MERGES = ("Sending it again adds the accounts, forwards, filters and "
                "spam settings that are missing, and leaves what is already "
                "there alone.")
+GONE_THERE = ("This moved from here before, but the new server doesn't have "
+              "it any more. Moving it again puts it back.")
 
 
 def _verdict(item, status, notes=None):
     """(what the new server said in short, can it move, the longer reason or None). 'notes' is the State: a site
     it remembers as made but not filled is offered again, for its files and database only, and anything it
-    remembers as moved is not offered again at all (a site that moved is caught up with --again)."""
+    remembers as moved is kept off the list for as long as the new server still has it (a site that moved and is
+    still there is caught up with --again). What the notes remember never outranks what the new server says: an
+    item that was deleted there is offered again, and said to be."""
     said = status.get(item.get("id")) if isinstance(status, dict) else None
     state = said.get("state") if isinstance(said, dict) else None
     detail = said.get("detail") if isinstance(said, dict) else None
-    if notes is not None and notes.entry(item).get("status") == "moved":
+    moved_before = notes is not None and notes.entry(item).get("status") == "moved"
+    if moved_before and state in ("exists", "refused"):
         return "already moved from here", False, None
     if state == "exists" and notes is not None and notes.outstanding(item):
         return "made, files still to come", True, None
@@ -1110,6 +1115,8 @@ def _verdict(item, status, notes=None):
         return "the new server didn't say", False, "The new server gave no answer about this."
     if item.get("problem"):
         return "needs a look first", False, item["problem"]
+    if moved_before:
+        return cost(item), True, GONE_THERE
     return cost(item), True, None
 
 
@@ -1150,7 +1157,7 @@ def dashboard(inventory, status, remembered=None):
     out = ["No.  What     Name                         What it takes"]
     out.extend(row.rstrip() for row in rows)
     for title, notes in (("Why some can't be moved:", why_not),
-                         ("What the new server has already:", already)):
+                         ("Worth knowing before you pick:", already)):
         if not notes:
             continue
         out.append("")
@@ -2488,7 +2495,9 @@ def _work(args, connection, state, notes, doing=None, hello=None):
     if args.again:
         chosen = _to_do_again(items, state, status)
         if not chosen:
-            print("No site has moved yet, so there is nothing to do again.")
+            _say("No site that moved is still on the new server, so there is "
+                 "nothing to copy again. A site the new server no longer has "
+                 "is offered on the ordinary list instead.")
         else:
             print("Sites that already moved:")
             for number, item in enumerate(chosen, 1):

@@ -207,15 +207,36 @@ def _site_state(item, cache):
 
 
 def _cron_state(item, cache):
-    # A crontab can't be read through either tool, so a cron job is only ever added, never compared.
-    return "new", (f"Nothing on this server was checked for this job; it will be added to the crontab of "
-                   f"{_text(item, 'user')}.")
+    """Whether this job is in the user's crontab already, by the marker the apply writes, which carries the
+    item's own id. Neither tool can say, so the crontab itself is read, with the same command the apply uses; a
+    crontab that can't be read is an error and never "not there", or the job would be added twice."""
+    user, key = _text(item, "user").strip().lower(), _text(item, "id")
+    if not _USER_NAME.fullmatch(user):
+        raise ValueError(f"{user!r} isn't a valid user name")
+    crontabs = cache.setdefault("crontabs", {})
+    if user not in crontabs:
+        cannot = f"couldn't read the crontab of {user} on this server"
+        try:
+            done = subprocess.run(["crontab", "-u", user, "-l"], capture_output=True, text=True,
+                                  timeout=LIST_TIMEOUT, stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError) as error:
+            raise Unreadable(f"{cannot} ({error})") from error
+        if done.returncode == 0:
+            crontabs[user] = done.stdout
+        elif done.returncode == 1 and "no crontab for" in done.stderr:
+            crontabs[user] = ""  # no crontab yet is not a failure; anything else is
+        else:
+            said = done.stderr.strip().splitlines()
+            raise Unreadable(f"{cannot}" + (f" ({said[-1]})" if said else ""))
+    if f"# migratectl: {key}" in crontabs[user].splitlines():
+        return "exists", f"This job is already in the crontab of {user}."
+    return "new", f"The crontab of {user} doesn't have this job yet."
 
 
 KINDS = {  # kind -> (tool it needs, how to judge an item)
     "mail_domain": ("mailctl", _mail_domain_state),
     "site": ("domainctl", _site_state),
-    "cron": ("domainctl", _cron_state),
+    "cron": ("crontab", _cron_state),  # the command that reads it is the one that writes it
 }
 
 

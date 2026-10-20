@@ -680,3 +680,28 @@ def test_a_site_that_is_not_moved_does_not_hold_a_user_name_another_site_needs()
               "database": None, "problem": None}] + _found("example.nl")
     items = migrate.site_items(found, owner_of=lambda path: None)
     assert items[1]["user"] == "example" and items[1]["problem"] is None
+
+
+def test_a_site_deleted_on_the_new_server_is_offered_again_and_says_so(tmp_path):
+    """The notes must not outlive the new server: a site that is gone there has not moved, whatever they say."""
+    site = _shop()
+    notes = _notes(tmp_path)
+    notes.made(site, ANSWER)
+    notes.moved(site)
+    gone = {site["id"]: {"state": "new", "detail": "shop.example.nl is not on this server yet."}}
+
+    assert migrate.offered([site], gone, notes) == [site]
+    text = " ".join(migrate.dashboard([site], gone, notes).split())
+    assert migrate.GONE_THERE in text and "already moved from here" not in text
+    # --again stays for a site the new server still has, and says so when there is none.
+    assert migrate._to_do_again([site], notes, gone) == []
+
+
+def test_a_site_the_new_server_refuses_is_still_said_to_have_moved(tmp_path):
+    site = _shop()
+    notes = _notes(tmp_path)
+    notes.made(site, ANSWER)
+    notes.moved(site)
+    refused = {site["id"]: {"state": "refused", "detail": "The user shop already serves another site here."}}
+    assert migrate.offered([site], refused, notes) == []
+    assert "already moved from here" in migrate.dashboard([site], refused, notes)

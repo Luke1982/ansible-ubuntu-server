@@ -253,11 +253,22 @@ def test_a_job_the_state_says_moved_is_not_offered_a_second_time(tmp_path):
     item = _item(tmp_path, PLESK)
     notes = migrate.State(path=str(tmp_path / "state.json"), say=lambda text: None)
     notes.items[item["id"]] = {"status": "moved"}
-    # The new server can't read a crontab through either tool, so it always says new for a job.
-    status = {item["id"]: {"state": "new", "detail": "Nothing on this server was checked for this job."}}
+    status = {item["id"]: {"state": "exists", "detail": "This job is already in the crontab of shopexample."}}
 
     assert migrate.offered([item], status, notes) == []
     assert "already moved from here" in migrate.dashboard([item], status, notes)
+
+
+def test_a_job_whose_crontab_was_cleared_is_offered_again_and_says_so(tmp_path):
+    """The notes may not outlive the new server: a job that is no longer there is work that is not done."""
+    item = _item(tmp_path, PLESK)
+    notes = migrate.State(path=str(tmp_path / "state.json"), say=lambda text: None)
+    notes.items[item["id"]] = {"status": "moved"}
+    status = {item["id"]: {"state": "new", "detail": "The crontab of shopexample doesn't have this job yet."}}
+
+    assert migrate.offered([item], status, notes) == [item]
+    text = " ".join(migrate.dashboard([item], status, notes).split())
+    assert migrate.GONE_THERE in text and "already moved from here" not in text
 
 
 def test_a_job_the_new_server_already_had_is_not_reported_as_moved(tmp_path):
