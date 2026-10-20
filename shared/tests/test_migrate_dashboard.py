@@ -177,3 +177,47 @@ def test_a_site_without_a_move_is_files_to_copy_and_not_moved():
     site = _site("a.nl")
     report = migrate.run(Connection([{"ok": True}]), [site], lambda text: None)
     assert report.files_to_copy == [site] and report.moved == []
+
+
+def test_help_says_how_to_get_the_file_onto_the_old_server_and_what_it_needs(capsys):
+    with pytest.raises(SystemExit) as stopped:
+        migrate.main(["--help"])
+    assert stopped.value.code == 0
+    text = capsys.readouterr().out
+    assert "scp migrate.py" in text and "as root" in text
+    assert "/home/ansible/.ssh/authorized_keys" in text
+    assert "rsync" in text and "Python 3.6" in text
+    assert "--host" in text and "--domain" in text and "--again" in text
+    assert all(len(line) <= 80 for line in text.splitlines())
+
+
+def test_not_being_root_is_one_line_and_a_stop(capsys):
+    assert migrate.main(["--host", "new"], geteuid=lambda: 1000) == 1
+    assert len(capsys.readouterr().out.strip().splitlines()) == 1
+
+
+def test_a_stop_anywhere_prints_its_message_and_exits_nonzero(capsys, monkeypatch):
+    def broken():
+        raise migrate.Stopped("No key today.")
+
+    monkeypatch.setattr(migrate, "own_key", broken)
+    assert migrate.main(["--host", "new"], geteuid=lambda: 0) == 1
+    assert capsys.readouterr().out.strip() == "No key today."
+
+
+def test_only_what_names_a_domain_that_moved_is_left_in_the_report():
+    mail = migrate.Mail({}, ["The forward from @a.nl: a catch-all.", "The forward from info@b.nl to x: no.",
+                             "The domain xa.nl: bad."], [])
+    assert migrate._left_out_of(mail, ["a.nl"]).left_out == ["The forward from @a.nl: a catch-all."]
+    assert migrate._left_out_of(mail, []).left_out == []
+
+
+def test_each_mail_domain_gets_only_its_own_part_of_the_file():
+    file = {"version": 1, "domains": ["a.nl", "b.nl"],
+            "addresses": [{"address": "x@a.nl"}, {"address": "y@b.nl"}],
+            "forwards": [{"source": "x@a.nl", "destination": "y@b.nl"}],
+            "spam": [{"target": "server"}, {"target": "b.nl"}], "sieve": [{"address": "y@b.nl"}]}
+    first, second = migrate._domain_items(migrate.Mail(file, [], []))
+    assert first["data"]["addresses"] == [{"address": "x@a.nl"}] and len(first["data"]["forwards"]) == 1
+    assert first["data"]["spam"] == [] and second["data"]["spam"] == [{"target": "b.nl"}]
+    assert second["data"]["sieve"] == [{"address": "y@b.nl"}] and second["data"]["forwards"] == []

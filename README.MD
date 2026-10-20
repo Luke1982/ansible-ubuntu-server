@@ -489,6 +489,34 @@ MAILCTL_REQUIRE_DB=1 /tmp/mailctl-24.04/bin/pytest tests
 
 Do the same with `tests/requirements-26.04.txt` (ideally on Python 3.14) for Ubuntu 26.04. The tests use the database server installed on your machine. To use another one, like MariaDB from Ubuntu's `mariadb-server-core` and `mariadb-client-core` packages (download both with `apt download` and unpack them into one folder with `dpkg -x`), point `MAILCTL_TEST_DB_PREFIX` at that folder. Without `MAILCTL_REQUIRE_DB=1` the database tests are skipped when there's no server; with it they fail. Database servers refuse to run as root, so run the tests as a normal user.
 
+## Moving a server over
+
+For moving a hand-built server onto one built with this repository. Run it from the old server, as root; the new server only has to be built.
+
+1. Copy [`shared/migrate/migrate.py`](shared/migrate/migrate.py) to the old server.
+2. On the old server, as root: `python3 migrate.py --host <new-server>`
+3. It makes a key for itself and prints it. Paste that line into `/home/ansible/.ssh/authorized_keys` on the new server, then run it again.
+4. It shows what it found, and what the new server already has. Type the numbers to move, like `1 3`, a range like `2-5`, or `all`.
+5. When it is done it prints a report of what moved and what you still have to do by hand.
+
+It moves:
+
+- Mail domains, with their accounts and passwords, forwards, spam settings and filters.
+- WordPress sites, with their files and database.
+- The cron jobs that belong to a site.
+
+It does not move:
+
+- Mail messages. The report prints an `imapsync` command for each account.
+- Sites that are not WordPress.
+- DNS. The report prints the records each mail domain needs.
+
+`--domain example.nl` looks at one mail domain and its sites only. `--again` is for a site that has already moved: it copies the files once more and replaces the new server's database, after asking. Run it again as often as you like; it offers only what has not moved yet.
+
+Once the DNS of a site points at the new server, run `domainctl add <site>` on the new server to get its certificate. Until the DNS moves, both servers run the same cron jobs.
+
+On the old server it writes three files: `migrate_key` and `migrate_known_hosts` in root's `~/.ssh`, and `/var/lib/migrate/state.json`.
+
 ## Creating password hashes
 
 Never store plaintext passwords. Generate a hash with:

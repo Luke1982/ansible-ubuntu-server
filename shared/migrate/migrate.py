@@ -5,6 +5,7 @@ It only reads: it changes nothing on this server. Standard library only and noth
 old server has an old Python and none of our other files.
 """
 
+import argparse
 import copy
 import getpass
 import glob
@@ -16,6 +17,7 @@ import re
 import shlex
 import socket
 import subprocess
+import sys
 import textwrap
 
 MAIL_TABLES = ("virtual_domains", "virtual_users", "virtual_aliases", "virtual_sender_aliases")
@@ -1843,3 +1845,200 @@ def report(result, connection=None, old_server=None, found_sites=None,
         # the person wants to know first unsaid.
         out = ["", "Nothing was moved."] + out
     return "\n".join(["Report", "======"] + out) + "\n"
+
+
+# ---- Running it ---------------------------------------------------------------
+
+HELP_DESCRIPTION = """Moves the mail, WordPress sites and cron jobs of this server to a new one.
+
+How to use it:
+  1. Copy this one file to the OLD server, for example from your own machine:
+       scp migrate.py root@OLD-SERVER:
+  2. On the old server, run it as root:
+       python3 migrate.py --host NEW-SERVER
+  3. It prints a key. Paste that line into /home/ansible/.ssh/authorized_keys
+     on the new server (once), then run it again.
+  4. It shows a list of what it found. Type the numbers to move.
+
+What it needs on the old server: Python 3.6 or newer, the ssh and ssh-keygen
+programs and rsync. To find things it also uses the mysql or mariadb client,
+mysqldump, doveadm, apache2ctl and crontab, when they are there; what it can't
+look at it says so. The new server must be built with this repository.
+
+It writes only three things on the old server: its own key (migrate_key) and
+the known-hosts file beside it (migrate_known_hosts), both in root's .ssh
+folder, and its notes in /var/lib/migrate/state.json."""
+
+
+def _arguments(argv):
+    parser = argparse.ArgumentParser(
+        prog="migrate.py", description=HELP_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--host", metavar="NEW",
+                        help="the name or address of the new server")
+    parser.add_argument("--domain", metavar="example.nl",
+                        help="move only this mail domain and its sites")
+    parser.add_argument("--again", action="store_true",
+                        help="catch up a site that already moved: copy its "
+                        "files again and replace its database")
+    return parser.parse_args(argv)
+
+
+def _domain_items(mail):
+    """One mail_domain item for each domain of a Mail, with its part of the
+    file mailctl reads."""
+    file = mail.file
+    items = []
+    for domain in file["domains"]:
+        suffix = "@" + domain
+
+        def ends(value):
+            return str(value).lower().endswith(suffix)
+
+        data = {
+            "version": file["version"], "domains": [domain],
+            "addresses": [a for a in file["addresses"]
+                          if ends(a.get("address", ""))],
+            "forwards": [f for f in file["forwards"]
+                         if ends(f.get("source", ""))],
+            "spam": [x for x in file["spam"]
+                     if x.get("target") == domain or ends(x.get("target", ""))],
+            "sieve": [x for x in file["sieve"] if ends(x.get("address", ""))]}
+        items.append({"id": "mail:" + domain, "kind": "mail_domain",
+                      "name": domain, "data": data})
+    return items
+
+
+def _in_domain(name, domain):
+    name = (name or "").lower()
+    return name == domain or name.endswith("." + domain)
+
+
+def _left_out_of(mail, domains):
+    """The Mail with only the left-out lines that name one of these domains."""
+    if mail is None:
+        return None
+    patterns = [re.compile(r"(?<![a-z0-9.-])%s(?![a-z0-9-])" % re.escape(d))
+                for d in domains]
+    kept = [text for text in mail.left_out
+            if any(p.search(text.lower()) for p in patterns)]
+    return Mail(mail.file, kept, mail.notes)
+
+
+def _typed(prompt):
+    try:
+        return input(prompt)
+    except EOFError:
+        return ""
+
+
+def _question(text):
+    return _typed("%s Type yes or no: " % text)
+
+
+def _look_around(args, notes, run=run_command):
+    """(mail, mail_database, sites, databases, items) of this server."""
+    domain = args.domain.lower() if args.domain else None
+    database = mail_database(run, notes)
+    mail = mail_inventory(run, database, domain) if database else None
+    found = sites(run, notes)
+    sizes = database_sizes(run, notes)
+    jobs = cron_jobs(run, found, notes)
+    if domain:
+        found = [s for s in found if _in_domain(s["name"], domain)
+                 or any(_in_domain(a, domain) for a in s.get("aliases") or [])]
+        names = set(s["name"] for s in found)
+        jobs = [j for j in jobs if j.get("site") in names]
+    items = _domain_items(mail) if mail else []
+    items += site_items(found) + cron_items(jobs)
+    return mail, database, found, (None if domain else sizes), items
+
+
+def _status_of(connection, items):
+    answer = connection.ask({"request": "status", "items": items})
+    if not answer.get("ok") or not isinstance(answer.get("items"), dict):
+        raise Stopped("The new server could not say what it already has: %s"
+                      % (answer.get("error") or "no reason given"))
+    return answer["items"]
+
+
+def _choose(lines, prompt):
+    typed = _typed(prompt)
+    return pick(lines, typed)
+
+
+def _work(args, connection, state, notes):
+    mail, database, found, sizes, items = _look_around(args, notes)
+    status = _status_of(connection, items)
+    extra = []
+    moved_domains = []
+    if args.again:
+        chosen = [i for i in items if i["kind"] == "site"
+                  and state.entry(i).get("status") == "moved"
+                  and state.entry(i).get("docroot")
+                  and (status.get(i["id"]) or {}).get("state") == "exists"]
+        if not chosen:
+            print("No site has moved yet, so there is nothing to do again.")
+        else:
+            print("Sites that already moved:")
+            for number, item in enumerate(chosen, 1):
+                print("%3d  %s" % (number, _title(item)))
+            chosen = _choose(chosen, "Type the numbers to copy again (like "
+                             "1 3, a range like 2-5, or all), or press Enter "
+                             "for none: ")
+        ask = _question
+        result = do_again(connection, chosen, state, ask, extra)
+    else:
+        print(dashboard(items, status, state))
+        lines = offered(items, status, state)
+        chosen = []
+        if lines:
+            chosen = _choose(lines, "Type the numbers to move (like 1 3, a "
+                             "range like 2-5, or all), or press Enter to "
+                             "move nothing: ")
+        move = mover(connection, state, _question, extra)
+        result = run(connection, chosen, _question, move=move, notes=state,
+                     status=status)
+        moved_domains = [i["name"] for i, _ in result.moved
+                         if i.get("kind") == "mail_domain"]
+        mail = _left_out_of(mail, moved_domains)
+    if args.again:
+        mail = None
+    print()
+    print(report(result, connection=connection, old_server=socket.gethostname(),
+                 found_sites=found, mail=mail, databases=sizes, items=items,
+                 notes=notes, extra_notes=extra, mail_database=database))
+
+
+def main(argv=None, geteuid=os.geteuid):
+    args = _arguments(argv)
+    if geteuid() != 0:
+        print("Run me as root: I read other users' cron jobs and mailboxes. "
+              "Try: sudo python3 migrate.py ...")
+        return 1
+    try:
+        if args.domain and not _DOMAIN_ARGUMENT.fullmatch(args.domain):
+            raise Stopped("'%s' isn't a domain name." % args.domain)
+        host = args.host or _typed("Name or address of the new server: ").strip()
+        if not host:
+            raise Stopped("I need the name or address of the new server: run "
+                          "me again with --host NEW-SERVER.")
+        key = own_key()
+        print("This server reaches the new one with this key. If the new "
+              "server does not have it yet, paste this line into\n%s on the "
+              "new server:\n\n%s\n" % (AUTHORIZED_KEYS, key))
+        connection = Connection(host)
+        check(connection)
+        _work(args, connection, State(), [])
+    except Stopped as problem:
+        print(problem.message)
+        return 1
+    except KeyboardInterrupt:
+        print("\nStopped by you. What was already moved stays moved; run me "
+              "again to carry on.")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
