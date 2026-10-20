@@ -454,7 +454,9 @@ Dovecot indexes mail for IMAP search as it arrives, and a playbook run queues ev
 
 The mail role runs on Ubuntu 24.04 (Dovecot 2.3) and 26.04 (Dovecot 2.4). A mail server can't be upgraded from one release to the other in place: the upgrade keeps the Dovecot configuration this role writes and Dovecot 2.4 refuses it. Set up a new server and move the mail across.
 
-`mailctl import mailserver.json` brings over a whole mail server at once: its domains, its accounts with their passwords, its forwards (and who may send as the forwarded address), its spam settings and every account's Sieve filters. Write the file on the old server with `mailctl export mailserver.json`, or, on a server without mailctl, with [`roles/mail/files/export-mailserver.sh`](roles/mail/files/export-mailserver.sh): copy it there and run `sudo ./export-mailserver.sh mailserver.json`. It reads the same tables this role sets up, needs `jq`, and changes nothing.
+`mailctl import mailserver.json` brings over a whole mail server at once: its domains, its accounts with their passwords, its forwards (and who may send as the forwarded address), its spam settings and every account's Sieve filters. Write the file on the old server with `mailctl export mailserver.json`, or, on a server without mailctl, with [`roles/mail/files/export-mailserver.sh`](roles/mail/files/export-mailserver.sh): copy it there and run `sudo ./export-mailserver.sh mailserver.json`. It reads the same tables this role sets up, needs `jq`, and changes nothing. `--domain example.nl` writes one domain instead of the whole server: its accounts, its forwards, the spam settings of the domain and its accounts, and their filters, without the settings of the server itself.
+
+Importing the same file again creates nothing twice: a domain, account or forward that is already here is named and skipped, a spam setting for the whole server is only added where this server has none, and filters are only put in for the accounts the import creates. So a run that stopped halfway can simply be run again, and the file can be imported on a server that already holds part of it.
 
 ```json
 {

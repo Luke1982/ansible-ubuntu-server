@@ -6,6 +6,7 @@
 # spamassassin.userpref) as root over MariaDB's socket, and the filters with doveadm. It changes nothing.
 #
 #   sudo ./export-mailserver.sh mailserver.json
+#   sudo ./export-mailserver.sh --domain example.nl example.nl.json
 #
 # Needs jq and the mysql or mariadb client. The file holds the password hashes, so only root can read it.
 
@@ -19,6 +20,9 @@ Writes this server's mail domains, accounts, forwards, spam settings and Sieve f
 (mailserver.json when left out), for 'mailctl import' on the new server.
 
 Options:
+  --domain NAME    Only this domain: its accounts, its forwards, the spam settings of the domain and its
+                   accounts, and their filters. The settings of the whole server are left out, since they
+                   belong to the server, not to the domain.
   --mail-db NAME   The mail database (default: mailserver)
   --spam-db NAME   SpamAssassin's database (default: spamassassin)
   --no-sieve       Leave out the Sieve filters
@@ -30,11 +34,13 @@ say() { printf '%s\n' "$*" >&2; }
 fail() { say "✗ $*"; exit 1; }
 
 output=mailserver.json
+domain=
 mail_db=mailserver
 spam_db=spamassassin
 with_sieve=1
 while (($#)); do
   case $1 in
+    --domain) domain=${2:?--domain needs a name}; shift 2 ;;
     --mail-db) mail_db=${2:?--mail-db needs a name}; shift 2 ;;
     --spam-db) spam_db=${2:?--spam-db needs a name}; shift 2 ;;
     --no-sieve) with_sieve=0; shift ;;
@@ -53,6 +59,22 @@ fi
 for name in "$mail_db" "$spam_db"; do
   [[ $name =~ ^[A-Za-z0-9_]+$ ]] || fail "'$name' isn't a database name."
 done
+# It goes into the queries below, so it is a domain name and nothing else.
+if [[ -n $domain ]]; then
+  [[ $domain =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || fail "'$domain' isn't a domain name."
+fi
+
+# One domain or all of them. A forward belongs to the domain its address is in, wherever it points.
+domains_where=""
+users_where=""
+aliases_and=""
+senders_where=""
+if [[ -n $domain ]]; then
+  domains_where="WHERE LOWER(name) = LOWER('$domain')"
+  users_where="WHERE LOWER(SUBSTRING_INDEX(email, '@', -1)) = LOWER('$domain')"
+  aliases_and="AND LOWER(SUBSTRING_INDEX(source, '@', -1)) = LOWER('$domain')"
+  senders_where="WHERE LOWER(SUBSTRING_INDEX(alias, '@', -1)) = LOWER('$domain')"
+fi
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -66,15 +88,18 @@ rows() {
     split("\n") | map(select(length > 0) | split("\t") | map(unescape))'
 }
 
-rows "SELECT DISTINCT name FROM $mail_db.virtual_domains ORDER BY name" | jq 'map(.[0])' >"$work/domains"
-rows "SELECT email, password FROM $mail_db.virtual_users ORDER BY email" \
+rows "SELECT DISTINCT name FROM $mail_db.virtual_domains $domains_where ORDER BY name" \
+  | jq 'map(.[0])' >"$work/domains"
+[[ -z $domain || $(jq 'length' "$work/domains") -gt 0 ]] ||
+  fail "There's no domain $domain on this server."
+rows "SELECT email, password FROM $mail_db.virtual_users $users_where ORDER BY email" \
   | jq 'map({address: .[0], password_hash: .[1]})' >"$work/addresses"
 
 # A forward to itself keeps a copy in the mailbox; mailctl makes those itself. send_as says whether the destination
 # may send as the source, which virtual_sender_aliases holds as a list of logins per address.
 rows "SELECT source, destination FROM $mail_db.virtual_aliases
-      WHERE LOWER(source) <> LOWER(destination) ORDER BY source, destination" >"$work/aliases"
-rows "SELECT alias, users FROM $mail_db.virtual_sender_aliases" >"$work/senders"
+      WHERE LOWER(source) <> LOWER(destination) $aliases_and ORDER BY source, destination" >"$work/aliases"
+rows "SELECT alias, users FROM $mail_db.virtual_sender_aliases $senders_where" >"$work/senders"
 jq -n --slurpfile aliases "$work/aliases" --slurpfile senders "$work/senders" '
   ($senders[0] | map({key: (.[0] | ascii_downcase), value: [.[1] | ascii_downcase | splits("[\\s,]+")]})
    | from_entries) as $allowed
@@ -97,6 +122,15 @@ if [[ -n $("$client" --batch --skip-column-names -e "SHOW DATABASES LIKE '$spam_
 else
   say "There's no database $spam_db, so there are no spam settings to export."
   echo '[]' >"$work/spam"
+fi
+
+# For one domain: what is set for the domain itself and for its accounts. What is set for the whole server stays
+# with the server it was set on.
+if [[ -n $domain ]]; then
+  jq --arg domain "$domain" 'map(select((.target | ascii_downcase) == ($domain | ascii_downcase)
+       or ((.target | ascii_downcase) | endswith("@" + ($domain | ascii_downcase)))))' \
+    "$work/spam" >"$work/spam_domain"
+  mv "$work/spam_domain" "$work/spam"
 fi
 
 : >"$work/sieve.jsonl"
