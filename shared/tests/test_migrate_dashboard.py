@@ -376,3 +376,18 @@ def test_an_interrupted_run_prints_its_report_and_exits_non_zero(monkeypatch, ca
     monkeypatch.setattr(migrate, "_work", lambda *a: result)
     assert migrate.main(["--host", "new"], geteuid=lambda: 0) == 1
     assert "You stopped the run" in capsys.readouterr().out
+
+
+def test_a_mail_domain_that_is_half_there_can_be_sent_again_with_the_counts_in_sight():
+    """mailctl import only adds what is missing, so this is the only way a half-imported domain is finished."""
+    mail, site = _mail("example.nl"), _site("example.nl")
+    status = {"mail:example.nl": {"state": "exists",
+                                  "detail": "example.nl is already here, with 50 accounts and 3 forwards."},
+              "site:example.nl": {"state": "exists", "detail": "The site example.nl is already here."}}
+    text = migrate.dashboard([mail, site], status)
+    assert migrate.offered([mail, site], status) == [mail]
+    assert "50 accounts and 3 forwards" in " ".join(text.split())
+    assert "adds the accounts" in " ".join(text.split())
+    assert "What the new server has already:" in text
+    # The site is a different matter: sending it again would empty its database, so it is not offered.
+    assert "The site example.nl is already here." in " ".join(text.split("Why some can't be moved:")[1].split())

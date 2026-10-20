@@ -1046,6 +1046,11 @@ def cost(item):
     return ""
 
 
+MAIL_MERGES = ("Sending it again adds the accounts, forwards, filters and "
+               "spam settings that are missing, and leaves what is already "
+               "there alone.")
+
+
 def _verdict(item, status, notes=None):
     """(what the new server said in short, can it move, the longer reason or None). 'notes' is the State: a site
     it remembers as made but not filled is offered again, for its files and database only, and anything it
@@ -1057,6 +1062,12 @@ def _verdict(item, status, notes=None):
         return "already moved from here", False, None
     if state == "exists" and notes is not None and notes.outstanding(item):
         return "made, files still to come", True, None
+    if state == "exists" and item.get("kind") == "mail_domain":
+        # Importing a mail domain only adds what is missing, which is how a
+        # domain that is half there is finished. That is why the design asks
+        # no question for it, so it must stay on the list.
+        return ("already there, can be sent again", True,
+                ("%s %s" % (detail or "", MAIL_MERGES)).strip())
     if state == "exists":
         return "already on the new server", False, detail
     if state == "refused":
@@ -1086,8 +1097,10 @@ def _fit(text, width, middle=False):
 
 def dashboard(inventory, status, remembered=None):
     """The list as it is printed. 'status' is what the new server said, by item id: {id: {"state", "detail"}}.
-    Only an item that can be moved gets a number (the same order as offered()); the others show why not."""
-    rows, notes, number = [], [], 0
+    Only an item that can be moved gets a number (the same order as offered()); the others show why not. What
+    the new server said about an item that can still be moved is shown too, under a heading of its own: it is
+    not a reason against it."""
+    rows, why_not, already, number = [], [], [], 0
     for item in inventory:
         info, movable, reason = _verdict(item, status, remembered)
         label = ""
@@ -1097,17 +1110,20 @@ def dashboard(inventory, status, remembered=None):
         rows.append("%3s  %-8s %-28s %s" % (label, KIND_NAMES.get(item.get("kind"), "Other"),
                                            _fit(_title(item), 28, True), _fit(info, 36)))
         if reason:
-            notes.append("%s: %s" % (_title(item), reason))
+            (already if movable else why_not).append("%s: %s" % (_title(item), reason))
     if not rows:
         return "Nothing was found on this server to move."
     out = ["No.  What     Name                         What it takes"]
     out.extend(row.rstrip() for row in rows)
-    if notes:
+    for title, notes in (("Why some can't be moved:", why_not),
+                         ("What the new server has already:", already)):
+        if not notes:
+            continue
         out.append("")
-        out.append("Why some can't be moved:")
+        out.append(title)
         for note in notes:
             out.extend(textwrap.wrap(note, _WIDTH, initial_indent="  ", subsequent_indent="    ",
-                                     break_long_words=True))
+                                     break_long_words=True, break_on_hyphens=False))
     return "\n".join(_fit_line(line) for line in out)
 
 
