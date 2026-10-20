@@ -257,7 +257,7 @@ def _forwards(rows, senders, left_out, last=None):
     last = left_out if last is None else last
     for source in sorted(allowed):
         for login in sorted(allowed[source]):
-            if (source, login) not in seen:
+            if login != source and (source, login) not in seen:
                 last.append("%s may send as %s, and no forward goes with it" % (login, source))
     return forwards
 
@@ -1675,14 +1675,21 @@ def _bullets(texts):
     return lines
 
 
+def _what(item):
+    """The item's name with what kind of thing it is, like 'Website shop.nl'."""
+    return "%s %s" % (KIND_NAMES.get(item.get("kind"), "Item"), _title(item))
+
+
 def _ask_dns(connection, domain):
-    """The new server's table of records for a domain, or None."""
+    """(the new server's table of records for a domain or None, why not)."""
     try:
         answer = connection.ask({"request": "dns", "domain": domain})
-    except Exception:  # a missing DNS section never stops the report
-        return None
+    except Exception as problem:  # a missing DNS section never stops the report
+        return None, str(getattr(problem, "message", None) or problem)
     text = answer.get("text") if answer.get("ok") else None
-    return text.rstrip() if isinstance(text, str) and text.strip() else None
+    if isinstance(text, str) and text.strip():
+        return text.rstrip(), None
+    return None, str(answer.get("error") or "the new server gave no records")
 
 
 def _imapsync(old, new, address):
@@ -1711,17 +1718,10 @@ def report(result, connection=None, old_server=None, found_sites=None,
     moved = list(result.moved)
     undone = [item for item in result.files_to_copy
               if not any(_same_item(item, f[0]) for f in result.failed)]
-    if not moved and not result.files_to_copy:
-        line = "Nothing was moved."
-        if result.failed or result.skipped or result.stopped:
-            line = "Nothing was moved (%d failed, %d left alone)." % (
-                len(result.failed), len(result.skipped))
-        return "\n".join(_wrap(line, "")) + "\n"
-
-    out = ["Report", "======"]
+    out = []
     done = []
     for item, answer in moved:
-        title = _title(item)
+        title = _what(item)
         if item.get("kind") == "site":
             where = answer.get("docroot") if isinstance(answer, dict) else None
             title += (": the Linux user on the new server is %s%s"
@@ -1731,7 +1731,7 @@ def report(result, connection=None, old_server=None, found_sites=None,
     _section(out, "Moved:", _bullets(done))
     _section(out, "Made on the new server, but its files and database are "
              "not there yet:", _bullets(
-                 "%s (Linux user %s)" % (_title(i), i.get("user") or
+                 "%s (Linux user %s)" % (_what(i), i.get("user") or
                                          site_user(i["name"])) for i in undone))
 
     def cron_by_hand(item):
@@ -1739,13 +1739,13 @@ def report(result, connection=None, old_server=None, found_sites=None,
 
     failed = [(i, why) for i, why in result.failed if not cron_by_hand(i)]
     _section(out, "Did not work:", _bullets(
-        "%s: %s" % (_title(i), why) for i, why in failed))
+        "%s: %s" % (_what(i), why) for i, why in failed))
     _section(out, "Left alone:", _bullets(
-        "%s: %s" % (_title(i), why) for i, why in result.skipped
+        "%s: %s" % (_what(i), why) for i, why in result.skipped
         if not cron_by_hand(i)))
     if result.stopped:
         _section(out, "The run stopped early:", _bullets([result.stopped]))
-    _section(out, "Not tried:", _bullets(_title(i) for i in result.not_tried))
+    _section(out, "Not tried:", _bullets(_what(i) for i in result.not_tried))
     _section(out, "Mail accounts left out, because they got no password:",
              _bullets(result.left_out))
     _section(out, "Good to know:", _bullets(extra_notes or []))
@@ -1769,13 +1769,20 @@ def report(result, connection=None, old_server=None, found_sites=None,
         for address in accounts:
             out.append("")
             out.extend(_imapsync(old_name, new_name, address))
+    dns_said = False
     for domain in domains:
-        text = _ask_dns(connection, domain) if connection else None
+        text, why = _ask_dns(connection, domain) if connection else (None, None)
         out.extend(["", "DNS records for %s:" % domain])
         if text:
+            if not dns_said:
+                dns_said = True
+                out.extend(_wrap("These are printed whole on purpose, so "
+                                 "they can be copied as they are."))
             out.extend(text.splitlines())
         else:
             out.extend(_wrap(DNS_BY_HAND % domain))
+            if why:
+                out.extend(_wrap("Why not: %s" % why))
 
     sites_done = [i for i, _ in moved if i.get("kind") == "site"]
     if sites_done:
@@ -1827,4 +1834,6 @@ def report(result, connection=None, old_server=None, found_sites=None,
     if hand:
         out.extend(["", "Still to do by hand", "-------------------"])
         out.extend(hand[1:] if hand[0] == "" else hand)
-    return "\n".join(out) + "\n"
+    if not out:
+        return "Nothing was moved.\n"
+    return "\n".join(["Report", "======"] + out) + "\n"

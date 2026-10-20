@@ -74,17 +74,40 @@ def test_cron_is_said_once_when_a_job_moved():
 
 
 def test_a_run_that_moved_nothing_says_so_and_prints_no_lines():
+    text = migrate.report(migrate.Report(), Connection())
+    assert text == "Nothing was moved.\n"
+
+
+def test_a_run_where_everything_was_left_alone_still_gives_each_reason():
     result = migrate.Report()
-    result.failed = [(SITE, "no")]
-    text = migrate.report(result, Connection(), items=[JOB])
-    assert text.strip().startswith("Nothing was moved") and len(text.strip().splitlines()) == 1
-    assert "imapsync" not in text and ":\n" not in text
+    result.skipped = [(SITE, "Already on the new server.")]
+    result.failed = [(MAIL, "refused")]
+    text = " ".join(migrate.report(result).split())
+    assert "Website shop.nl: Already on the new server." in text
+    assert "Mail example.nl: refused" in text
+
+
+def test_a_run_that_stopped_says_why_and_what_was_not_tried():
+    result = migrate.Report()
+    result.stopped = "The connection was lost."
+    result.not_tried = [SITE]
+    text = migrate.report(result)
+    assert "The connection was lost." in text and "Website shop.nl" in text
+
+
+def test_a_dns_failure_gives_its_reason_and_records_are_said_to_be_whole():
+    text = " ".join(migrate.report(_result(), Connection(answer={"ok": False, "error": "no mailctl"})).split())
+    assert "mailctl dns show example.nl" in text and "Why not: no mailctl" in text
+    assert "printed whole on purpose" in " ".join(migrate.report(_result(), Connection()).split())
 
 
 def test_a_send_as_permission_without_a_forward_is_found():
     left_out = []
     migrate._forwards([["a@x.nl", "b@x.nl"]], [["c@x.nl", "d@x.nl"], ["a@x.nl", "b@x.nl"]], left_out)
     assert left_out == ["d@x.nl may send as c@x.nl, and no forward goes with it"]
+    left_out = []
+    migrate._forwards([], [["info@x.nl", "info@x.nl"]], left_out)
+    assert left_out == []
 
 
 def test_migratectl_gives_the_dns_text_as_it_comes(monkeypatch):
