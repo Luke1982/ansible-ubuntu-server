@@ -32,6 +32,7 @@ _LOCAL_PART = re.compile(r"[a-z0-9_+-]+(?:\.[a-z0-9_+-]+)*")
 _PASSWORD_HASH = re.compile(r"(\{[A-Za-z0-9.-]+\}\S+|\$[0-9a-z]+\$\S+)")
 _FILTER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}")
 _DOMAIN_ARGUMENT = re.compile(r"[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?")
+_USER_ARGUMENT = re.compile(r"[a-z0-9][a-z0-9_-]*")  # domainctl's own rule for a site's Linux user
 MAX_DOMAIN, MAX_ADDRESS, MAX_LOCAL_PART, MAX_HASH, MAX_VALUE, MAX_SCRIPT = 50, 100, 64, 150, 100, 1 << 20
 SPAM_RENAMED = {"whitelist_from": "welcomelist_from", "blacklist_from": "blocklist_from"}  # SpamAssassin before 4
 DOVEADM_HEADER = "sieve script:\n"
@@ -1336,23 +1337,51 @@ def _owner_of(path):
         return None
 
 
-def site_items(found, owner_of=_owner_of):
+SAME_USER = ("%s would get the same Linux user on the new server as %s (the "
+             "name of both comes down to %s), and one user there means one "
+             "home, one web root and one wp-config.php. Move this one on its "
+             "own, under a name of its own: migrate.py --host NEW --domain "
+             "%s --user NAME")
+
+
+def site_items(found, owner_of=_owner_of, users=None):
     """One item per site from sites(). The id is the same on every run. The
     database password is not in the item: move_site reads it from the site's
-    wp-config.php when it needs it."""
+    wp-config.php when it needs it. 'users' is {domain: user} for a site
+    whose Linux user was given on the command line."""
+    given = users or {}
     items = []
     for site in found:
         name = site["name"].strip().lower()
         docroot = site.get("docroot")
         items.append({
             "id": "site:" + name, "kind": "site", "name": name,
-            "user": site_user(name),
+            "user": given.get(name) or site_user(name),
             "old_owner": owner_of(docroot) if docroot else None,
             "aliases": site.get("aliases") or [], "docroot": docroot,
             "database": site.get("database"),
             "db_user": site.get("db_user"), "db_host": site.get("db_host"),
             "size": site.get("size"), "problem": site.get("problem")})
+    _one_user_per_site(items, given)
     return items
+
+
+def _one_user_per_site(items, given=()):
+    """Two domains one company owns, like example.nl and example.com, come
+    down to the same user name, and one user on the new server means one
+    home, one web root and one wp-config.php: the second site would take
+    over the first. The first domain in alphabetical order keeps the name,
+    so the choice is the same on every run and the cron markers and the
+    notes stay with the same site; the others are shown with the reason
+    instead of being offered. A name that was asked for on the command line
+    keeps it whatever its place in the alphabet."""
+    kept = {}
+    for item in sorted(items, key=lambda item: (item["name"] not in given,
+                                                item["name"])):
+        first = kept.setdefault(item["user"], item)
+        if first is not item and not item.get("problem"):
+            item["problem"] = SAME_USER % (item["name"], first["name"],
+                                           item["user"], item["name"])
 
 
 NO_SITE_JOB = ("This job belongs to no site on this server, so it is not "
@@ -2115,6 +2144,11 @@ def _arguments(argv):
     parser.add_argument("--again", action="store_true",
                         help="catch up a site that already moved: copy its "
                         "files again and replace its database")
+    parser.add_argument("--user", metavar="NAME",
+                        help="the Linux user to give the site on the new "
+                        "server, instead of the name taken from its domain; "
+                        "goes with --domain, for a site whose name would "
+                        "clash with another one's")
     return parser.parse_args(argv)
 
 
@@ -2192,6 +2226,7 @@ def _look_around(args, notes, run=run_command):
     """(mail, mail_database, sites, databases, items) of this server. What
     could not be read goes into notes."""
     domain = args.domain.lower() if args.domain else None
+    wanted_user = getattr(args, "user", None)
     database = mail_database(run, notes)
     mail = mail_inventory(run, database, domain) if database else None
     if mail is not None:
@@ -2205,9 +2240,24 @@ def _look_around(args, notes, run=run_command):
         names = set(s["name"] for s in found)
         jobs = [j for j in jobs if j.get("site") in names]
     items = _domain_items(mail) if mail else []
-    minted = site_items(found)
+    minted = site_items(found, users=_user_for(found, domain, wanted_user))
     items += minted + cron_items(jobs, minted)
     return mail, database, found, (None if domain else sizes), items
+
+
+def _user_for(found, domain, user):
+    """{domain: user} for the one site --user is about: the site of the
+    domain that was asked for, or the only site in the run."""
+    if not user:
+        return {}
+    names = [site["name"] for site in found]
+    wanted = [name for name in names if name == domain] or names
+    if len(wanted) != 1:
+        raise Stopped("--user is the Linux user of ONE site, and this run "
+                      "has %d: %s. Run me again with --domain for the one "
+                      "site whose user name you want to choose."
+                      % (len(names), ", ".join(names) or "none"))
+    return {wanted[0]: user}
 
 
 def _status_of(connection, items):
@@ -2291,6 +2341,16 @@ def main(argv=None, geteuid=os.geteuid):
     try:
         if args.domain and not _DOMAIN_ARGUMENT.fullmatch(args.domain):
             raise Stopped("'%s' isn't a domain name." % args.domain)
+        if args.user and not args.domain:
+            raise Stopped("--user is the Linux user of one site, so it goes "
+                          "with --domain: run me again with --domain "
+                          "example.nl --user %s." % args.user)
+        if args.user and not (len(args.user) <= MAX_USER_NAME
+                              and _USER_ARGUMENT.fullmatch(args.user)):
+            raise Stopped("'%s' isn't a user name the new server takes: use "
+                          "lower case letters, digits, - and _, starting "
+                          "with a letter or a digit, at most %d characters."
+                          % (args.user, MAX_USER_NAME))
         host = args.host or _typed("Name or address of the new server: ").strip()
         if not host:
             raise Stopped("I need the name or address of the new server: run "

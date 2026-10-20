@@ -528,3 +528,53 @@ def test_cron_ids_are_stable_and_a_jobs_user_is_its_sites_new_user():
     assert loose["id"] == first[0]["id"]
     assert "belongs to no site" in loose["problem"]
     assert migrate.offered([loose], {loose["id"]: {"state": "new"}}) == []
+
+
+def _found(*names):
+    return [{"name": name, "aliases": [], "docroot": "/var/www/" + name, "database": None, "problem": None}
+            for name in names]
+
+
+def test_two_domains_that_give_one_user_name_do_not_share_it():
+    """One company's .nl and .com are the normal case, and one Linux user would mean one web root for both."""
+    items = migrate.site_items(_found("example.nl", "example.com"), owner_of=lambda path: None)
+    assert [i["user"] for i in items] == ["example", "example"]
+    # example.com keeps the name: alphabetical, so the same site keeps it on every run.
+    kept, refused = items[1], items[0]
+    assert kept["problem"] is None
+    assert "example.nl" in refused["problem"] and "example.com" in refused["problem"]
+    assert "--user" in refused["problem"]
+    status = {i["id"]: {"state": "new", "detail": ""} for i in items}
+    assert migrate.offered(items, status) == [kept]
+    assert refused["problem"] in " ".join(migrate.dashboard(items, status).split())
+
+
+def test_the_user_asked_for_on_the_command_line_is_the_one_the_site_gets():
+    items = migrate.site_items(_found("example.nl", "example.com"), owner_of=lambda path: None,
+                               users={"example.nl": "examplenl"})
+    assert sorted((i["name"], i["user"]) for i in items) == [("example.com", "example"),
+                                                             ("example.nl", "examplenl")]
+    assert all(i["problem"] is None for i in items)
+
+
+def test_a_cron_job_follows_its_sites_user_whatever_it_is_called():
+    items = migrate.site_items(_found("example.nl"), owner_of=lambda path: None, users={"example.nl": "examplenl"})
+    job = {"user": "www", "line": "* * * * * php /var/www/example.nl/cron.php", "site": "example.nl",
+           "command": "php /var/www/example.nl/cron.php", "interpreter": "php", "settings": [], "problem": None}
+    assert migrate.cron_items([job], items)[0]["user"] == "examplenl"
+
+
+def test_user_without_domain_and_a_name_the_new_server_would_refuse_are_both_stopped(capsys):
+    assert migrate.main(["--host", "new", "--user", "example"], geteuid=lambda: 0) == 1
+    assert "goes with --domain" in capsys.readouterr().out
+    assert migrate.main(["--host", "new", "--domain", "a.nl", "--user", "Example Site"], geteuid=lambda: 0) == 1
+    assert "isn't a user name" in capsys.readouterr().out
+
+
+def test_user_needs_to_know_which_site_it_is_for():
+    args = migrate._arguments(["--domain", "a.nl", "--user", "one"])
+    assert migrate._user_for(_found("a.nl"), "a.nl", "one") == {"a.nl": "one"}
+    assert migrate._user_for(_found("shop.a.nl"), "a.nl", "one") == {"shop.a.nl": "one"}
+    with pytest.raises(migrate.Stopped) as stopped:
+        migrate._user_for(_found("a.nl", "shop.a.nl"), "a.nl2", args.user)
+    assert "ONE site" in stopped.value.message and "shop.a.nl" in stopped.value.message

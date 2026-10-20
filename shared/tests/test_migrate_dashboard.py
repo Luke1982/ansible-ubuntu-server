@@ -247,8 +247,8 @@ def test_the_mail_notes_reach_the_report_and_a_domain_filter_narrows_everything(
     monkeypatch.setattr(migrate, "sites", lambda run, notes: sites)
     monkeypatch.setattr(migrate, "database_sizes", lambda run, notes: {"loose": 1})
     monkeypatch.setattr(migrate, "cron_jobs", lambda run, found, notes: jobs)
-    monkeypatch.setattr(migrate, "site_items", lambda found: [{"id": "site:" + s["name"], "kind": "site",
-                                                               "name": s["name"]} for s in found])
+    monkeypatch.setattr(migrate, "site_items", lambda found, **rest: [{"id": "site:" + s["name"], "kind": "site",
+                                                                       "name": s["name"]} for s in found])
     notes = []
     args = migrate._arguments(["--domain", "a.nl"])
     _, _, found, sizes, items = migrate._look_around(args, notes)
