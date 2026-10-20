@@ -908,14 +908,17 @@ class Connection(object):
         return answer
 
 
-def check(connection):
+def check(connection, show_key=True):
     """The new server's answer to hello. Raises Stopped when it can't be reached, doesn't accept our key, or speaks
-    another version than this file."""
+    another version than this file. With show_key=False the person was already shown the key, so it isn't again."""
     try:
         answer = connection.ask({"request": "hello"})
     except Stopped as problem:
         if not problem.refused:
             raise
+        if not show_key:
+            raise Stopped("%s Add the key shown above, as one line, to %s on the new server (%s@%s), then run me "
+                          "again." % (problem.message.strip(), AUTHORIZED_KEYS, connection.user, connection.host))
         try:
             key = own_key(os.path.dirname(connection.key))
         except Stopped:
@@ -1249,6 +1252,17 @@ def run(connection, items, ask, move=None, notes=None, status=None):
             report.not_tried = list(items[index + 1:])
             print("Stopping here, since nothing else would work either: %s"
                   % problem.message)
+            break
+        except KeyboardInterrupt:
+            message = "You stopped the run."
+            if made:
+                report.files_to_copy.append(item)
+                message = ("The site was made, but its files and database "
+                           "were not brought over. " + message)
+            report.failed.append((item, message))
+            report.stopped = "You stopped the run."
+            report.not_tried = list(items[index + 1:])
+            print("Stopped, as you asked.")
             break
         except Exception as problem:  # that item's failure, not the batch's
             message = str(problem) or "it failed without saying why"
@@ -1638,6 +1652,11 @@ def do_again(connection, items, notes, ask, extra_notes=None, **fakes):
             report.stopped = problem.message
             report.not_tried = list(items[index + 1:])
             break
+        except KeyboardInterrupt:
+            report.failed.append((item, "You stopped the run."))
+            report.stopped = "You stopped the run."
+            report.not_tried = list(items[index + 1:])
+            break
         except MoveFailed as problem:
             report.failed.append((item, str(problem)))
             continue
@@ -1865,9 +1884,10 @@ programs and rsync. To find things it also uses the mysql or mariadb client,
 mysqldump, doveadm, apache2ctl and crontab, when they are there; what it can't
 look at it says so. The new server must be built with this repository.
 
-It writes only three things on the old server: its own key (migrate_key) and
-the known-hosts file beside it (migrate_known_hosts), both in root's .ssh
-folder, and its notes in /var/lib/migrate/state.json."""
+It writes only these on the old server: its own key pair (migrate_key and
+migrate_key.pub) and the known-hosts file beside it (migrate_known_hosts), in
+the .ssh folder of the user running it, and its notes in
+/var/lib/migrate/state.json."""
 
 
 def _arguments(argv):
@@ -1914,15 +1934,32 @@ def _in_domain(name, domain):
     return name == domain or name.endswith("." + domain)
 
 
-def _left_out_of(mail, domains):
-    """The Mail with only the left-out lines that name one of these domains."""
+def _server_spam_lines(mail):
+    """The server-wide spam settings of this server, as hand work: the new
+    server's own were set there on purpose and are not overwritten."""
+    lines = []
+    for entry in mail.file.get("spam") or []:
+        if entry.get("target") == "server":
+            lines.append("The server-wide spam setting %s is %s on this "
+                         "server. It was not moved: the new server keeps its "
+                         "own. Set it there by hand if you want it."
+                         % (entry.get("setting"), entry.get("value")))
+    return lines
+
+
+def _left_out_of(mail, moved):
+    """The Mail with the left-out lines that matter after this run: a line
+    is dropped only when it names a mail domain of this server that did not
+    move. Whatever names no domain is kept. The server-wide spam settings
+    are added as hand work."""
     if mail is None:
         return None
+    others = [d for d in mail.file.get("domains") or [] if d not in moved]
     patterns = [re.compile(r"(?<![a-z0-9.-])%s(?![a-z0-9-])" % re.escape(d))
-                for d in domains]
+                for d in others]
     kept = [text for text in mail.left_out
-            if any(p.search(text.lower()) for p in patterns)]
-    return Mail(mail.file, kept, mail.notes)
+            if not any(p.search(text.lower()) for p in patterns)]
+    return Mail(mail.file, kept + _server_spam_lines(mail), mail.notes)
 
 
 def _typed(prompt):
@@ -1933,14 +1970,18 @@ def _typed(prompt):
 
 
 def _question(text):
-    return _typed("%s Type yes or no: " % text)
+    print("\n".join(textwrap.wrap(text, 79)))
+    return _typed("Type yes or no: ")
 
 
 def _look_around(args, notes, run=run_command):
-    """(mail, mail_database, sites, databases, items) of this server."""
+    """(mail, mail_database, sites, databases, items) of this server. What
+    could not be read goes into notes."""
     domain = args.domain.lower() if args.domain else None
     database = mail_database(run, notes)
     mail = mail_inventory(run, database, domain) if database else None
+    if mail is not None:
+        notes.extend(mail.notes)
     found = sites(run, notes)
     sizes = database_sizes(run, notes)
     jobs = cron_jobs(run, found, notes)
@@ -1983,9 +2024,8 @@ def _work(args, connection, state, notes):
             print("Sites that already moved:")
             for number, item in enumerate(chosen, 1):
                 print("%3d  %s" % (number, _title(item)))
-            chosen = _choose(chosen, "Type the numbers to copy again (like "
-                             "1 3, a range like 2-5, or all), or press Enter "
-                             "for none: ")
+            chosen = _choose(chosen, "Numbers to copy again (like 1 3, 2-5, "
+                             "all; Enter for none): ")
         ask = _question
         result = do_again(connection, chosen, state, ask, extra)
     else:
@@ -1993,9 +2033,8 @@ def _work(args, connection, state, notes):
         lines = offered(items, status, state)
         chosen = []
         if lines:
-            chosen = _choose(lines, "Type the numbers to move (like 1 3, a "
-                             "range like 2-5, or all), or press Enter to "
-                             "move nothing: ")
+            chosen = _choose(lines, "Numbers to move (like 1 3, 2-5, all; "
+                             "Enter for none): ")
         move = mover(connection, state, _question, extra)
         result = run(connection, chosen, _question, move=move, notes=state,
                      status=status)
@@ -2013,8 +2052,7 @@ def _work(args, connection, state, notes):
 def main(argv=None, geteuid=os.geteuid):
     args = _arguments(argv)
     if geteuid() != 0:
-        print("Run me as root: I read other users' cron jobs and mailboxes. "
-              "Try: sudo python3 migrate.py ...")
+        print("Run me as root: I read other users' cron jobs and mailboxes.")
         return 1
     try:
         if args.domain and not _DOMAIN_ARGUMENT.fullmatch(args.domain):
@@ -2024,18 +2062,23 @@ def main(argv=None, geteuid=os.geteuid):
             raise Stopped("I need the name or address of the new server: run "
                           "me again with --host NEW-SERVER.")
         key = own_key()
-        print("This server reaches the new one with this key. If the new "
-              "server does not have it yet, paste this line into\n%s on the "
-              "new server:\n\n%s\n" % (AUTHORIZED_KEYS, key))
+        print("The new server must have this key (one line) in\n%s:\n\n%s\n"
+              % (AUTHORIZED_KEYS, key))
         connection = Connection(host)
-        check(connection)
+        check(connection, show_key=False)
         _work(args, connection, State(), [])
     except Stopped as problem:
         print(problem.message)
         return 1
     except KeyboardInterrupt:
-        print("\nStopped by you. What was already moved stays moved; run me "
-              "again to carry on.")
+        print("\nStopped by you. What was already moved stays moved; run me")
+        print("again to carry on.")
+        return 1
+    except Exception as problem:
+        print("\n".join(textwrap.wrap(
+            "I stopped because of something I did not expect (%s: %s). What "
+            "was already moved stays moved; run me again to carry on."
+            % (type(problem).__name__, problem), 79)))
         return 1
     return 0
 

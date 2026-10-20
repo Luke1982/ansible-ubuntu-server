@@ -184,10 +184,11 @@ def test_help_says_how_to_get_the_file_onto_the_old_server_and_what_it_needs(cap
         migrate.main(["--help"])
     assert stopped.value.code == 0
     text = capsys.readouterr().out
-    assert "scp migrate.py" in text and "as root" in text
+    assert "scp migrate.py root@" in text and "as root" in text
     assert "/home/ansible/.ssh/authorized_keys" in text
-    assert "rsync" in text and "Python 3.6" in text
-    assert "--host" in text and "--domain" in text and "--again" in text
+    assert "rsync" in text and "Python 3.6" in text and "ssh-keygen" in text
+    for written in ("migrate_key", "migrate_key.pub", "migrate_known_hosts", "/var/lib/migrate/state.json"):
+        assert written in text
     assert all(len(line) <= 80 for line in text.splitlines())
 
 
@@ -205,11 +206,21 @@ def test_a_stop_anywhere_prints_its_message_and_exits_nonzero(capsys, monkeypatc
     assert capsys.readouterr().out.strip() == "No key today."
 
 
-def test_only_what_names_a_domain_that_moved_is_left_in_the_report():
-    mail = migrate.Mail({}, ["The forward from @a.nl: a catch-all.", "The forward from info@b.nl to x: no.",
-                             "The domain xa.nl: bad."], [])
-    assert migrate._left_out_of(mail, ["a.nl"]).left_out == ["The forward from @a.nl: a catch-all."]
-    assert migrate._left_out_of(mail, []).left_out == []
+def test_left_out_lines_of_a_domain_that_did_not_move_are_dropped_and_the_rest_kept():
+    lines = ["The forward from @a.nl: a catch-all.", "The forward from info@b.nl to x: no.",
+             "The domain Bad_Name.nl: it isn't a valid domain name.", "The spam setting x for $GLOBAL: bad value."]
+    mail = migrate.Mail({"domains": ["a.nl", "b.nl"], "spam": []}, lines, [])
+    assert migrate._left_out_of(mail, ["a.nl"]).left_out == [lines[0], lines[2], lines[3]]
+    assert migrate._left_out_of(mail, []).left_out == lines[2:]
+
+
+def test_server_wide_spam_settings_are_reported_not_moved():
+    file = {"version": 1, "domains": ["a.nl"], "addresses": [], "forwards": [], "sieve": [],
+            "spam": [{"target": "server", "setting": "required_score", "value": "4"}]}
+    mail = migrate.Mail(file, [], [])
+    assert all(item["data"]["spam"] == [] for item in migrate._domain_items(mail))
+    said = migrate._left_out_of(mail, ["a.nl"]).left_out
+    assert len(said) == 1 and "required_score" in said[0] and "4" in said[0] and "by hand" in said[0]
 
 
 def test_each_mail_domain_gets_only_its_own_part_of_the_file():
@@ -221,3 +232,109 @@ def test_each_mail_domain_gets_only_its_own_part_of_the_file():
     assert first["data"]["addresses"] == [{"address": "x@a.nl"}] and len(first["data"]["forwards"]) == 1
     assert first["data"]["spam"] == [] and second["data"]["spam"] == [{"target": "b.nl"}]
     assert second["data"]["sieve"] == [{"address": "y@b.nl"}] and second["data"]["forwards"] == []
+
+
+def test_the_mail_notes_reach_the_report_and_a_domain_filter_narrows_everything(monkeypatch):
+    mail = migrate.Mail({"version": 1, "domains": ["a.nl"], "addresses": [], "forwards": [], "spam": [],
+                         "sieve": []}, [], ["doveadm is missing."])
+    sites = [{"name": "a.nl", "aliases": [], "docroot": "/w/a", "wordpress": True},
+             {"name": "www.a.nl", "aliases": [], "docroot": "/w/wa", "wordpress": True},
+             {"name": "b.nl", "aliases": [], "docroot": "/w/b", "wordpress": True}]
+    jobs = [{"user": "u", "line": "* * * * * php /w/a/x.php", "site": "a.nl", "interpreter": "php"},
+            {"user": "u", "line": "* * * * * php /w/b/x.php", "site": "b.nl", "interpreter": "php"}]
+    monkeypatch.setattr(migrate, "mail_database", lambda run, notes: "mailserver")
+    monkeypatch.setattr(migrate, "mail_inventory", lambda run, database, domain=None: mail)
+    monkeypatch.setattr(migrate, "sites", lambda run, notes: sites)
+    monkeypatch.setattr(migrate, "database_sizes", lambda run, notes: {"loose": 1})
+    monkeypatch.setattr(migrate, "cron_jobs", lambda run, found, notes: jobs)
+    monkeypatch.setattr(migrate, "site_items", lambda found: [{"id": "site:" + s["name"], "kind": "site",
+                                                               "name": s["name"]} for s in found])
+    notes = []
+    args = migrate._arguments(["--domain", "a.nl"])
+    _, _, found, sizes, items = migrate._look_around(args, notes)
+    assert [i["id"] for i in items if i["kind"] == "site"] == ["site:a.nl", "site:www.a.nl"]
+    assert [i["line"] for i in items if i["kind"] == "cron"] == [jobs[0]["line"]]
+    assert sizes is None and "doveadm is missing." in notes
+
+
+class _Args(object):
+    domain, again = None, False
+
+
+def _wired(monkeypatch, typed, status_state="new", state=None, items=None):
+    mail = migrate.Mail({"version": 1, "domains": ["a.nl", "b.nl"], "addresses": [], "forwards": [], "spam": [],
+                         "sieve": []},
+                        ["The forward from @a.nl: a catch-all.", "The forward from @b.nl: a catch-all."], [])
+    found = [{"name": "plain.nl", "docroot": "/w/p", "wordpress": False}]
+    items = items if items is not None else [_mail("a.nl"), _mail("b.nl")]
+    monkeypatch.setattr(migrate, "_look_around", lambda args, notes: (
+        mail, "mailserver", found, {"loose_db": 5}, items))
+    monkeypatch.setattr(migrate, "_typed", lambda prompt: typed.pop(0))
+
+    class Fake(Connection):
+        def ask(self, request):
+            if request["request"] == "status":
+                return {"ok": True, "items": _status(**{i["id"]: status_state for i in items})}
+            if request["request"] == "dns":
+                return {"ok": False, "error": "no"}
+            return {"ok": True}
+
+    return Fake([]), state or migrate.State(path="/nonexistent-dir-for-test/state.json", say=lambda t: None)
+
+
+def test_the_report_gets_everything_it_needs(monkeypatch, capsys):
+    connection, state = _wired(monkeypatch, ["1"])
+    state.unwritable = lambda: None
+    state.save = lambda: None
+    migrate._work(_Args(), connection, state, ["a note from looking around"])
+    text = capsys.readouterr().out
+    assert "Still to do by hand" in text and "a note from looking around" in text
+    assert "The forward from @a.nl" in text and "The forward from @b.nl" not in text
+    assert "plain.nl" in text and "loose_db" in text
+
+
+def test_again_asks_before_replacing_and_no_leaves_the_site_alone(monkeypatch, capsys, tmp_path):
+    root = tmp_path / "old"
+    root.mkdir()
+    (root / "wp-config.php").write_text("<?php\ndefine('DB_NAME', 'db1');\ndefine('DB_USER', 'u');\n"
+                                        "define('DB_PASSWORD', 'p');\ndefine('DB_HOST', 'localhost');\n")
+    site = dict(_site("a.nl"), docroot=str(root))
+    state = migrate.State(path=str(tmp_path / "state.json"), say=lambda t: None)
+    state.made(site, {"docroot": "/home/a/public_html/www", "database": "db1"})
+    state.moved(site)
+    connection, state = _wired(monkeypatch, ["1", "no"], status_state="exists", state=state, items=[site])
+    args = _Args()
+    args.again = True
+    migrate._work(args, connection, state, [])
+    text = " ".join(capsys.readouterr().out.split())
+    assert "will be emptied and replaced" in text and "Left alone" in text
+    assert not any(r["request"] != "status" for r in connection.requests)
+
+
+def test_an_unexpected_error_is_one_plain_message_and_not_a_traceback(capsys, monkeypatch):
+    monkeypatch.setattr(migrate, "own_key", lambda: (_ for _ in ()).throw(KeyError("oops")))
+    assert migrate.main(["--host", "new"], geteuid=lambda: 0) == 1
+    text = capsys.readouterr().out
+    assert "KeyError" in text and "Traceback" not in text and all(len(l) <= 80 for l in text.splitlines())
+
+
+def test_ctrl_c_in_the_middle_of_a_batch_still_gives_a_report():
+    def move(item, answer):
+        raise KeyboardInterrupt()
+
+    sites = [_site("a.nl"), _site("b.nl")]
+    report = migrate.run(Connection([{"ok": True}]), sites, lambda text: None, move=move)
+    assert report.stopped and report.not_tried == [sites[1]] and report.files_to_copy == [sites[0]]
+
+
+def test_a_refused_login_prints_the_key_only_once(monkeypatch, capsys):
+    class Refusing(object):
+        host, user, key = "new", "ansible", "/x/migrate_key"
+
+        def ask(self, request):
+            raise migrate.Stopped("Not accepted.", refused=True)
+
+    monkeypatch.setattr(migrate, "own_key", lambda *a: "ssh-ed25519 AAAA migrate")
+    monkeypatch.setattr(migrate, "Connection", lambda host: Refusing())
+    assert migrate.main(["--host", "new"], geteuid=lambda: 0) == 1
+    assert capsys.readouterr().out.count("ssh-ed25519 AAAA") == 1

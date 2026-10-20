@@ -495,13 +495,13 @@ For moving a hand-built server onto one built with this repository. Run it from 
 
 1. Copy [`shared/migrate/migrate.py`](shared/migrate/migrate.py) to the old server.
 2. On the old server, as root: `python3 migrate.py --host <new-server>`
-3. It makes a key for itself and prints it. Paste that line into `/home/ansible/.ssh/authorized_keys` on the new server, then run it again.
+3. It makes a key for itself and prints it. Paste that line into `/home/ansible/.ssh/authorized_keys` on the new server, then run `migrate.py` again.
 4. It shows what it found, and what the new server already has. Type the numbers to move, like `1 3`, a range like `2-5`, or `all`.
 5. When it is done it prints a report of what moved and what you still have to do by hand.
 
 It moves:
 
-- Mail domains, with their accounts and passwords, forwards, spam settings and filters.
+- Mail domains, with their accounts and passwords, forwards, filters, and the spam settings of the domain and of each account.
 - WordPress sites, with their files and database.
 - The cron jobs that belong to a site.
 
@@ -510,12 +510,15 @@ It does not move:
 - Mail messages. The report prints an `imapsync` command for each account.
 - Sites that are not WordPress.
 - DNS. The report prints the records each mail domain needs.
+- The server's own spam settings. The new server keeps its own; the report lists the old server's.
+
+The report ends with what is still yours to do by hand: catch-all addresses and send-as permissions that could not move, sites that are not WordPress, databases and cron jobs that belong to no site, and anything the tool could not read.
 
 `--domain example.nl` looks at one mail domain and its sites only. `--again` is for a site that has already moved: it copies the files once more and replaces the new server's database, after asking. Run it again as often as you like; it offers only what has not moved yet.
 
 Once the DNS of a site points at the new server, run `domainctl add <site>` on the new server to get its certificate. Until the DNS moves, both servers run the same cron jobs.
 
-On the old server it writes three files: `migrate_key` and `migrate_known_hosts` in root's `~/.ssh`, and `/var/lib/migrate/state.json`.
+On the old server it writes four files: its key pair, `migrate_key` and `migrate_key.pub`, and `migrate_known_hosts`, all in `~/.ssh` of the user running it, and `/var/lib/migrate/state.json`.
 
 ## Creating password hashes
 
