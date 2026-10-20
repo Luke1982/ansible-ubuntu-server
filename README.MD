@@ -258,7 +258,7 @@ Web servers get `domainctl`, a command-line tool for the sites on the server. Ru
 | `domainctl add DOMAIN` | Sets a site up: its Linux user, directories, permissions, virtual host and certificate |
 | `domainctl list` | The sites with their domain, user and certificate |
 | `domainctl check [USER]` | Whether a site's names, permissions and certificate are in order |
-| `domainctl delete USER` | Removes a site; `--purge` takes the user and its files too |
+| `domainctl delete SITE` | Removes a site, by its name or its domain; `--purge` takes the user and its files too. A site that stopped before it had a virtual host is only its user and files, so those go without `--purge` |
 | `domainctl sync` | Brings the template block and every site's permissions up to date. Run it by hand; the playbook only says to |
 | `domainctl dns credentials` | The TransIP login, shared with mailctl |
 | `domainctl wp install USER` | Installs WordPress on a site with wp-cli: its own database and MariaDB user, and the WP fail2ban plugin |
@@ -310,7 +310,7 @@ Run it again for the same domain whenever something stopped it: it picks up wher
 
 Every address record it publishes is the server's IPv4 address, for the reason in [Mail filters](#the-certificate-for-mail-programs)' neighbourhood: OpenLiteSpeed listens on IPv4 as it comes, so an `AAAA` record would cost every visitor a wait before their browser falls back to the address that answers.
 
-Nothing is rolled back when certbot fails: the site stays up over HTTP and the message says what Let's Encrypt refused. Fix that and run `domainctl add DOMAIN` again, or take it away with `domainctl delete USER`.
+Nothing is rolled back when certbot fails: the site stays up over HTTP and the message says what Let's Encrypt refused. Fix that and run `domainctl add DOMAIN` again, or take it away with `domainctl delete DOMAIN`.
 
 ### The redirect to HTTPS
 

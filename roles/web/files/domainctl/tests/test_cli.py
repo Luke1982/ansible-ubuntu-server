@@ -223,6 +223,59 @@ def test_delete_removes_the_site_but_keeps_the_files(server, monkeypatch):
     assert "still there" in result.output
 
 
+def test_delete_takes_the_domain_as_well(server, monkeypatch):
+    sites.save(server, Site("example", "example.nl"))
+    monkeypatch.setattr(certificates, "delete", lambda config, user: False)
+    result = run("delete", "example.nl", "--yes")
+    assert result.exit_code == 0, result.output
+    assert sites.list_sites(server) == []
+
+
+def _leftover(server, monkeypatch, name):
+    """A user and its directories with no site for them: what add leaves when it stops at the DNS."""
+    server.docroot_of(name).mkdir(parents=True)
+    server.logs_of(name).mkdir(parents=True)
+    monkeypatch.setattr(users, "exists", lambda user: user == name)
+    deleted = []
+    monkeypatch.setattr(users, "delete", lambda user, remove_home: deleted.append((user, remove_home)))
+    return deleted
+
+
+def test_delete_removes_the_user_of_a_site_that_stopped_before_its_virtual_host(server, monkeypatch):
+    """add stopped at the DNS question: the user and its directories are all there is, so they go."""
+    deleted = _leftover(server, monkeypatch, "example")
+    result = run("delete", "example.nl", "--yes")
+    assert result.exit_code == 0, result.output
+    assert deleted == [("example", True)]
+
+
+def test_delete_purge_of_a_site_that_stopped_before_its_virtual_host_does_the_same(server, monkeypatch):
+    deleted = _leftover(server, monkeypatch, "example")
+    result = run("delete", "example.nl", "--purge", "--yes")
+    assert result.exit_code == 0, result.output
+    assert deleted == [("example", True)]
+
+
+def test_the_purge_delete_suggests_works(server, monkeypatch):
+    deleted = _leftover(server, monkeypatch, "example")
+    sites.save(server, Site("example", "example.nl"))
+    monkeypatch.setattr(certificates, "delete", lambda config, user: False)
+    assert "domainctl delete example --purge" in run("delete", "example", "--yes").output
+    result = run("delete", "example", "--purge", "--yes")
+    assert result.exit_code == 0, result.output
+    assert deleted == [("example", True)]
+
+
+def test_delete_leaves_a_site_alone_whose_name_another_domain_would_get(server, monkeypatch):
+    """example.com would get the user example, but that is the site for example.nl."""
+    deleted = _leftover(server, monkeypatch, "example")
+    sites.save(server, Site("example", "example.nl"))
+    result = run("delete", "example.com", "--purge", "--yes")
+    assert result.exit_code == 1
+    assert "no site example.com" in result.output
+    assert deleted == [] and sites.list_sites(server) != []
+
+
 def test_delete_says_which_sites_there_are_when_the_name_is_wrong(server):
     sites.save(server, Site("example", "example.nl"))
     result = run("delete", "typo", "--yes")

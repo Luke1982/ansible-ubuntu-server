@@ -16,6 +16,8 @@ Domain = Annotated[Optional[str], typer.Argument(
     metavar="[DOMAIN]", help="A domain, like example.nl. Asked for when left out.", show_default=False)]
 User = Annotated[Optional[str], typer.Argument(
     metavar="[USER]", help="The site's Linux user. Asked for when left out.", show_default=False)]
+SiteName = Annotated[Optional[str], typer.Argument(
+    metavar="[SITE]", help="The site's name or its domain. Asked for when left out.", show_default=False)]
 UserFilter = Annotated[Optional[str], typer.Argument(
     metavar="[USER]", help="Only show this site.", show_default=False)]
 UserOption = Annotated[Optional[str], typer.Option(
@@ -43,13 +45,23 @@ def ask_user(value: str | None) -> str:
     return names.user_name(ui.ask("Site user", value, "USER"))
 
 
+def ask_site(value: str | None) -> str:
+    """A site's name, or its domain: a name with a dot in it is a domain, since a user name has none."""
+    given = ui.ask("Site or domain", value, "SITE")
+    return names.domain(given, names.MAX_DNS_NAME_LENGTH) if "." in given else names.user_name(given)
+
+
 def find_site(config: Config, user: str) -> sites.Site:
     found = sites.find(config, user)
     if not found:
-        known = ", ".join(site.user for site in sites.list_sites(config))
-        raise CtlError(f"There is no site {user} on this server.",
-                       hint=f"The sites are: {known}." if known else "Add one with: domainctl add DOMAIN")
+        raise no_site(config, user)
     return found
+
+
+def no_site(config: Config, name: str) -> CtlError:
+    known = ", ".join(site.user for site in sites.list_sites(config))
+    return CtlError(f"There is no site {name} on this server.",
+                    hint=f"The sites are: {known}." if known else "Add one with: domainctl add DOMAIN")
 
 
 def www(domain: str) -> str:

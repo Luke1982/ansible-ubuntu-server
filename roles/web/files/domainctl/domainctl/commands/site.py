@@ -13,7 +13,7 @@ from ..core.sites import Site
 from ..session import Session, open_session
 from . import dns
 from .shared import (
-    Domain, ExistingUser, NoDns, Purge, User, UserFilter, UserOption, Yes, ask_domain, ask_user, find_site, www,
+    Domain, ExistingUser, NoDns, Purge, SiteName, UserFilter, UserOption, Yes, ask_domain, ask_site, no_site, www,
 )
 
 
@@ -102,17 +102,26 @@ def list_sites(user: UserFilter = None) -> None:
         ui.console.print(table)
 
 
-def delete(user: User = None, purge: Purge = False, yes: Yes = False) -> None:
+def delete(name: SiteName = None, purge: Purge = False, yes: Yes = False) -> None:
     """Remove a site: its virtual host and its certificate.
 
-    The Linux user and its home directory, with the site's files, are kept unless you add --purge.
+    The Linux user and its home directory, with the site's files, are kept unless you add --purge. A site with no
+    virtual host, because add stopped before the DNS pointed here or it was deleted before, is only its user and
+    directories, so those are deleted.
+
+    Takes the site's domain as well as its name.
 
     [dim]Example:[/] domainctl delete example
+    [dim]By its domain:[/] domainctl delete example.nl
     [dim]Files and all:[/] domainctl delete example --purge
     """
     with open_session() as session:
         config = session.config
-        site = find_site(config, ask_user(user))
+        given = ask_site(name)
+        site = _site_of(config, given)
+        if not site:
+            _delete_leftover(config, _leftover(config, given), yes)
+            return
         what = f"the site {site.user} ({site.domain}) and its certificate"
         if purge:
             ui.warn(f"--purge also deletes {config.home(site.user)} with everything in it. This cannot be undone.")
@@ -130,6 +139,31 @@ def delete(user: User = None, purge: Purge = False, yes: Yes = False) -> None:
         else:
             ui.note(f"{config.home(site.user)} and the user {site.user} are still there. "
                     f"Remove them with: domainctl delete {site.user} --purge")
+
+
+def _site_of(config, given: str) -> Site | None:
+    """The site with this name, or for this domain."""
+    if "." not in given:
+        return sites.find(config, given)
+    return next((site for site in sites.list_sites(config) if site.domain == given), None)
+
+
+def _leftover(config, given: str) -> str:
+    """The user of a site that has no virtual host, but the user and directories domainctl makes. For a domain,
+    that is the user add makes for it by default, unless that one is the site of another domain."""
+    name = names.user_name_for(given) if "." in given else given
+    if sites.find(config, name) or not users.exists(name) or not _ours(config, name):
+        raise no_site(config, given)
+    return name
+
+
+def _delete_leftover(config, name: str, yes: bool) -> None:
+    """A site without a virtual host is only its user and directories, so deleting it deletes those."""
+    ui.warn(f"{name} has no virtual host, only its Linux user and {config.home(name)}, so those are deleted, with "
+            f"everything in them. This cannot be undone.")
+    ui.confirm_by_typing(name, f"Delete the Linux user {name} and all its files?", yes)
+    users.delete(name, remove_home=True)
+    ui.success(f"Removed the user {name} and {config.home(name)}.")
 
 
 def doctor(user: UserFilter = None) -> None:
