@@ -268,15 +268,17 @@ def _wired(monkeypatch, typed, status_state="new", state=None, items=None):
     found = [{"name": "plain.nl", "docroot": "/w/p", "wordpress": False}]
     items = items if items is not None else [_mail("a.nl"), _mail("b.nl")]
     monkeypatch.setattr(migrate, "_look_around", lambda args, notes: (
-        mail, "mailserver", found, {"loose_db": 5}, items))
+        mail, "mailserver", found, {"loose_db": 5, "mailserver": 9}, items))
     monkeypatch.setattr(migrate, "_typed", lambda prompt: typed.pop(0))
 
     class Fake(Connection):
+        host = "new.example"
+
         def ask(self, request):
             if request["request"] == "status":
                 return {"ok": True, "items": _status(**{i["id"]: status_state for i in items})}
             if request["request"] == "dns":
-                return {"ok": False, "error": "no"}
+                return {"ok": True, "text": "DNS-TABLE-FOR-" + request["domain"]}
             return {"ok": True}
 
     return Fake([]), state or migrate.State(path="/nonexistent-dir-for-test/state.json", say=lambda t: None)
@@ -286,8 +288,11 @@ def test_the_report_gets_everything_it_needs(monkeypatch, capsys):
     connection, state = _wired(monkeypatch, ["1"])
     state.unwritable = lambda: None
     state.save = lambda: None
+    monkeypatch.setattr(migrate.socket, "gethostname", lambda: "old.example")
     migrate._work(_Args(), connection, state, ["a note from looking around"])
     text = capsys.readouterr().out
+    assert "DNS-TABLE-FOR-a.nl" in text and "--host1 old.example" in text and "--host2 new.example" in text
+    assert "mailserver" not in text  # the mail database is not a loose one
     assert "Still to do by hand" in text and "a note from looking around" in text
     assert "The forward from @a.nl" in text and "The forward from @b.nl" not in text
     assert "plain.nl" in text and "loose_db" in text
@@ -315,6 +320,7 @@ def test_an_unexpected_error_is_one_plain_message_and_not_a_traceback(capsys, mo
     monkeypatch.setattr(migrate, "own_key", lambda: (_ for _ in ()).throw(KeyError("oops")))
     assert migrate.main(["--host", "new"], geteuid=lambda: 0) == 1
     text = capsys.readouterr().out
+    assert "making the key" in text and len(text.splitlines()) <= 2
     assert "KeyError" in text and "Traceback" not in text and all(len(l) <= 80 for l in text.splitlines())
 
 
@@ -338,3 +344,35 @@ def test_a_refused_login_prints_the_key_only_once(monkeypatch, capsys):
     monkeypatch.setattr(migrate, "Connection", lambda host: Refusing())
     assert migrate.main(["--host", "new"], geteuid=lambda: 0) == 1
     assert capsys.readouterr().out.count("ssh-ed25519 AAAA") == 1
+
+
+def test_do_again_stops_at_ctrl_c_and_says_so():
+    root_less = dict(_site("a.nl"), docroot="/nowhere")
+
+    class State(object):
+        def entry(self, item):
+            return {"docroot": "/x"}
+
+    def interrupted(*args, **kwargs):
+        raise KeyboardInterrupt()
+
+    other = _site("b.nl")
+    original = migrate.move_site
+    migrate.move_site = interrupted
+    try:
+        report = migrate.do_again(Connection([]), [root_less, other], State(), lambda text: "yes")
+    finally:
+        migrate.move_site = original
+    assert report.interrupted and report.not_tried == [other] and report.failed[0][0] is root_less
+
+
+def test_an_interrupted_run_prints_its_report_and_exits_non_zero(monkeypatch, capsys):
+    result = migrate.Report()
+    result.interrupted = True
+    monkeypatch.setattr(migrate, "own_key", lambda: "ssh-ed25519 AAAA migrate")
+    monkeypatch.setattr(migrate, "Connection", lambda host: object())
+    monkeypatch.setattr(migrate, "check", lambda connection, show_key=True: {})
+    monkeypatch.setattr(migrate, "State", lambda: None)
+    monkeypatch.setattr(migrate, "_work", lambda *a: result)
+    assert migrate.main(["--host", "new"], geteuid=lambda: 0) == 1
+    assert "You stopped the run" in capsys.readouterr().out

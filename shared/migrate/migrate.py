@@ -1158,6 +1158,7 @@ class Report(object):
         self.moved, self.skipped, self.failed = [], [], []
         self.files_to_copy, self.left_out = [], []
         self.stopped, self.not_tried = None, []
+        self.interrupted = False  # the person pressed Ctrl-C
 
 
 def _apply_with_questions(connection, item, ask, report):
@@ -1261,6 +1262,7 @@ def run(connection, items, ask, move=None, notes=None, status=None):
                            "were not brought over. " + message)
             report.failed.append((item, message))
             report.stopped = "You stopped the run."
+            report.interrupted = True
             report.not_tried = list(items[index + 1:])
             print("Stopped, as you asked.")
             break
@@ -1655,6 +1657,7 @@ def do_again(connection, items, notes, ask, extra_notes=None, **fakes):
         except KeyboardInterrupt:
             report.failed.append((item, "You stopped the run."))
             report.stopped = "You stopped the run."
+            report.interrupted = True
             report.not_tried = list(items[index + 1:])
             break
         except MoveFailed as problem:
@@ -2008,9 +2011,15 @@ def _choose(lines, prompt):
     return pick(lines, typed)
 
 
-def _work(args, connection, state, notes):
+def _work(args, connection, state, notes, doing=None):
+    """Does the whole run after the connection works and returns its Report.
+    'doing' is a list whose one place always holds what is being done."""
+    doing = doing if doing is not None else [""]
+    doing[0] = "looking around this server"
     mail, database, found, sizes, items = _look_around(args, notes)
+    doing[0] = "asking the new server what it already has"
     status = _status_of(connection, items)
+    doing[0] = "moving what you picked"
     extra = []
     moved_domains = []
     if args.again:
@@ -2044,9 +2053,11 @@ def _work(args, connection, state, notes):
     if args.again:
         mail = None
     print()
+    doing[0] = "writing the report"
     print(report(result, connection=connection, old_server=socket.gethostname(),
                  found_sites=found, mail=mail, databases=sizes, items=items,
                  notes=notes, extra_notes=extra, mail_database=database))
+    return result
 
 
 def main(argv=None, geteuid=os.geteuid):
@@ -2054,6 +2065,7 @@ def main(argv=None, geteuid=os.geteuid):
     if geteuid() != 0:
         print("Run me as root: I read other users' cron jobs and mailboxes.")
         return 1
+    doing = ["starting"]
     try:
         if args.domain and not _DOMAIN_ARGUMENT.fullmatch(args.domain):
             raise Stopped("'%s' isn't a domain name." % args.domain)
@@ -2061,24 +2073,29 @@ def main(argv=None, geteuid=os.geteuid):
         if not host:
             raise Stopped("I need the name or address of the new server: run "
                           "me again with --host NEW-SERVER.")
+        doing[0] = "making the key"
         key = own_key()
         print("The new server must have this key (one line) in\n%s:\n\n%s\n"
               % (AUTHORIZED_KEYS, key))
+        doing[0] = "connecting to the new server"
         connection = Connection(host)
         check(connection, show_key=False)
-        _work(args, connection, State(), [])
+        result = _work(args, connection, State(), [], doing)
+        if result.interrupted:
+            print("You stopped the run; the report above says what moved.")
+            return 1
     except Stopped as problem:
         print(problem.message)
         return 1
     except KeyboardInterrupt:
-        print("\nStopped by you. What was already moved stays moved; run me")
-        print("again to carry on.")
+        print("\nStopped by you while %s. What was already moved stays "
+              "moved; run me again to carry on." % doing[0])
         return 1
     except Exception as problem:
         print("\n".join(textwrap.wrap(
-            "I stopped because of something I did not expect (%s: %s). What "
-            "was already moved stays moved; run me again to carry on."
-            % (type(problem).__name__, problem), 79)))
+            "Stopped by an error while %s: %s: %s. What was already moved "
+            "stays moved; run me again." % (doing[0], type(problem).__name__,
+                                           problem), 79)))
         return 1
     return 0
 
