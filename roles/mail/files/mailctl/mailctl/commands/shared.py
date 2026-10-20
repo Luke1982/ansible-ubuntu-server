@@ -8,7 +8,8 @@ import typer
 
 from .. import ui
 from ..core import (
-    addresses, autodiscover, dkim, dns_check, domains, mailbox, names, sogo, sogofilters, spam, system,
+    addresses, autodiscover, dkim, dns_check, domains, mailbox, names, sieve, sogo, sogofilters, spam, system,
+    transfer,
 )
 from ..core.dns_check import DnsRecord
 from ..core.errors import MailctlError
@@ -149,3 +150,20 @@ def tell_webmail_to_read_them(session: Session) -> None:
         return
     ui.warn("Couldn't reach webmail's cache, so webmail may go on using the settings it already had, and write "
             "them back over these. Have it read them again with: systemctl restart sogo memcached")
+
+
+def keep_readable_filters(filters: list[transfer.Filter]) -> list[transfer.Filter]:
+    """The filters the server can read. Each one that it can't is named with the reason, since it has to be fixed
+    by hand. They are checked one by one, as two accounts may have a filter of the same name."""
+    readable = []
+    for one in filters:
+        problems = sieve.check([sieve.Script(one.name, one.content, one.active)])
+        if not problems:
+            readable.append(one)
+            continue
+        reason = problems[0].removeprefix(f"{one.name}: ")
+        ui.warn(f"Left out the filter {one.name} of {one.address}: {reason}")
+    if filters and not readable:
+        ui.warn("None of the filters can be read, so none are imported. Fix them in the file and import them "
+                "again with: mailctl filters import")
+    return readable

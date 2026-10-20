@@ -7,7 +7,7 @@ import pytest
 from conftest import PASSWORD, ROLE_FILES
 
 from mailctl import ui
-from mailctl.core import addresses, sogofilters, transfer
+from mailctl.core import addresses, mailbox, sogofilters, transfer
 from mailctl.core.errors import MailctlError
 
 HASH = "{SHA512-CRYPT}$6$salt$" + "x" * 86
@@ -204,13 +204,28 @@ def test_import_dry_run_changes_nothing(mailctl, doveadm, tmp_path):
     assert "There are no domains yet" in mailctl.ok("domain", "list")
 
 
-def test_import_creates_nothing_when_a_filter_doesnt_compile(mailctl, doveadm, fake_command, tmp_path):
+def test_import_takes_the_filters_it_can_read_and_names_the_one_it_cant(mailctl, doveadm, fake_command, tmp_path,
+                                                                        database):
+    """One filter the server can't read costs that filter, not the whole file."""
     fake_command("sievec", 'case "$1" in *vacation.sieve) echo "line 2: error: unknown command" >&2; exit 1;; esac')
 
-    output = mailctl.fails("import", str(write(tmp_path, SERVER_FILE)), "--yes")
+    output = mailctl.ok("import", str(write(tmp_path, SERVER_FILE)), "--yes")
 
-    assert "1 filter in" in output and "nothing was imported" in output
-    assert "There are no domains yet" in mailctl.ok("domain", "list")
+    assert "Left out the filter vacation of info@example.nl: line 2: error: unknown command" in output
+    assert "Imported 2 domains, 3 accounts, 2 forwards, 5 spam settings, 1 filter" in output
+    names = [script.name for script in mailbox.sieve_scripts("info@example.nl")]
+    assert "roundcube" in names and "vacation" not in names
+
+
+def test_import_still_creates_the_accounts_when_no_filter_can_be_read(mailctl, doveadm, fake_command, tmp_path,
+                                                                      database):
+    fake_command("sievec", 'echo "line 1: syntax error" >&2; exit 1')
+
+    output = mailctl.ok("import", str(write(tmp_path, SERVER_FILE)), "--yes")
+
+    assert "None of the filters can be read" in output
+    assert "Imported 2 domains, 3 accounts, 2 forwards, 5 spam settings from" in output
+    assert rows(database, "SELECT email FROM virtual_users WHERE email = 'info@example.nl'") == [("info@example.nl",)]
 
 
 # Password hashes of another scheme

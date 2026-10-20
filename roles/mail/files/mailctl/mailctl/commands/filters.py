@@ -12,8 +12,8 @@ from ..core.errors import MailctlError
 from ..session import Session, open_session
 from .dns import DryRun
 from .shared import (
-    Address, Yes, activate_imported, ask_address, attempt, group, into_webmail, tell_webmail_to_read_them,
-    would_be_in_webmail,
+    Address, Yes, activate_imported, ask_address, attempt, group, into_webmail, keep_readable_filters,
+    tell_webmail_to_read_them, would_be_in_webmail,
 )
 
 app = group("Show the mail filters (Sieve scripts) of an account.")
@@ -54,12 +54,10 @@ def import_filters(file: ServerFile = None, address: OnlyAddress = None, replace
         per_account = _per_account(session, found, replace)
         if not per_account:
             return
-        problems = sieve.check([sieve.Script(one.name, one.content, one.active)
-                                for scripts in per_account.values() for one in scripts])
-        if problems:
-            raise MailctlError(f"{ui.plural(len(problems), 'filter')} in {path} can't be read, so nothing was "
-                               "imported:\n" + "\n".join(f"  {problem}" for problem in problems),
-                               hint="Fix them in the file, or leave them out, and try again.")
+        per_account = {account: readable for account, scripts in per_account.items()
+                       if (readable := keep_readable_filters(scripts))}
+        if not per_account:
+            return
         count = sum(len(scripts) for scripts in per_account.values())
         ui.line(f"To import from {path}: {ui.plural(count, 'filter')} of "
                 f"{ui.plural(len(per_account), 'account')}.")

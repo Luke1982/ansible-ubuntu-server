@@ -8,12 +8,13 @@ from typing import Annotated, Optional
 import typer
 
 from .. import ui
-from ..core import accountfile, addresses, dkim, domains, forwards, mailbox, senders, sieve, spam, transfer
+from ..core import accountfile, addresses, dkim, domains, forwards, mailbox, senders, spam, transfer
 from ..core.errors import MailctlError
 from ..session import Session, open_session
 from .dns import DryRun
 from .shared import (
-    Yes, activate_imported, attempt, into_webmail, tell_webmail_to_read_them, would_be_in_webmail,
+    Yes, activate_imported, attempt, into_webmail, keep_readable_filters, tell_webmail_to_read_them,
+    would_be_in_webmail,
 )
 
 ServerFile = Annotated[Optional[str], typer.Argument(
@@ -38,7 +39,8 @@ def import_server(file: ServerFile = None, dry_run: DryRun = False, keep_hashes:
     "spam": [{"target": "example.nl", "setting": "required_score", "value": "4"}],
     "sieve": [{"address": "info@example.nl", "name": "roundcube", "active": true, "content": "..."}]}[/]
 
-    The file and its filters are checked whole before anything is created. Domains and accounts that are already on
+    The file is checked whole before anything is created. A filter this server can't read is left out and named,
+    and the rest is imported. Domains and accounts that are already on
     this server are skipped, with their spam settings and filters; so is a forward that's already there. Running the
     import again carries on where it stopped. Delete the file afterwards: it holds the passwords.
 
@@ -60,11 +62,7 @@ def import_server(file: ServerFile = None, dry_run: DryRun = False, keep_hashes:
             ui.success(f"Everything in {path} is already on this server.")
             return
         plan.report(verbose)
-        problems = sieve.check([sieve.Script(script.name, script.content, script.active) for script in plan.filters])
-        if problems:
-            raise MailctlError(f"{ui.plural(len(problems), 'filter')} in {path} can't be read, so nothing was "
-                               "imported:\n" + "\n".join(f"  {problem}" for problem in problems),
-                               hint="Fix them in the file, or leave them out, and try again.")
+        plan.filters = keep_readable_filters(plan.filters)
         ui.line(f"To create from {path}: {plan.summary()}.")
         if dry_run:
             for address, scripts in plan.filters_per_account().items():

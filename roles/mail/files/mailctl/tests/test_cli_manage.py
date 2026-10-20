@@ -939,6 +939,29 @@ def test_filters_import_takes_only_the_filters_from_a_mail_server_file(mailctl, 
     assert "sales@example.nl" not in mailctl.ok("forward", "list")
 
 
+def test_filters_import_takes_the_filters_it_can_read(mailctl, example_domain, tmp_path, fake_command, database):
+    """The file is not refused over one filter."""
+    fake_command("sievec", 'case "$1" in *broken*) echo "line 1: syntax error" >&2; exit 1;; esac')
+    add_account(mailctl, "info@example.nl")
+    path = server_file(tmp_path, [a_filter(), a_filter(name="broken", active=False)])
+
+    output = mailctl.ok("filters", "import", str(path), "--yes")
+
+    assert "Left out the filter broken of info@example.nl: line 1: syntax error" in output
+    assert "1 filter of 1 account" in output
+    assert [one["name"] for one in sogofilters.read(database, "info@example.nl")] == ["Invoices"]
+
+
+def test_filters_import_with_no_filter_it_can_read_imports_nothing_and_says_so(
+        mailctl, example_domain, tmp_path, fake_command):
+    fake_command("sievec", 'echo "line 1: syntax error" >&2; exit 1')
+    add_account(mailctl, "info@example.nl")
+
+    output = mailctl.ok("filters", "import", str(server_file(tmp_path, [a_filter()])), "--yes")
+
+    assert "Left out the filter roundcube" in output and "None of the filters can be read" in output
+
+
 def test_filters_import_leaves_out_an_account_this_server_doesnt_have(mailctl, example_domain, tmp_path):
     path = server_file(tmp_path, [a_filter("gone@example.nl")], accounts=("gone@example.nl",))
 
