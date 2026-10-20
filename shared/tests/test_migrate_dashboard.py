@@ -86,7 +86,7 @@ def test_one_item_that_fails_does_not_stop_the_rest():
     items = [_mail("a.nl"), _site("b.nl"), _mail("c.nl")]
     moved = []
     connection = Connection([{"ok": False, "error": "mailctl broke"}, {"ok": True}, {"ok": True}])
-    report = migrate.run(connection, items, lambda text: None, move=moved.append)
+    report = migrate.run(connection, items, lambda text: None, move=lambda item, answer: moved.append(item))
     assert report.failed == [(items[0], "mailctl broke")]
     assert [item["name"] for item, _ in report.moved] == ["b.nl", "c.nl"]
     assert moved == [items[1]] and report.files_to_copy == []
@@ -151,7 +151,7 @@ def test_an_answer_that_is_neither_ok_nor_a_question_fails_that_item():
 def test_a_site_whose_files_could_not_be_moved_is_recorded_as_made_with_files_outstanding():
     site, other = _site("a.nl"), _site("b.nl")
 
-    def move(item):
+    def move(item, answer):
         if item is site:
             raise RuntimeError("the copy broke")
 
@@ -164,7 +164,7 @@ def test_a_site_whose_files_could_not_be_moved_is_recorded_as_made_with_files_ou
 def test_a_connection_lost_while_moving_files_still_records_the_site_as_made():
     sites = [_site("a.nl"), _site("b.nl")]
 
-    def move(item):
+    def move(item, answer):
         raise migrate.Stopped("I can't reach it.")
 
     report = migrate.run(Connection([{"ok": True}]), sites, lambda text: None, move=move)
