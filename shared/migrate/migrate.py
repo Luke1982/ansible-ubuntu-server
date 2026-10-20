@@ -23,6 +23,7 @@ _PASSWORD_HASH = re.compile(r"(\{[A-Za-z0-9.-]+\}\S+|\$[0-9a-z]+\$\S+)")
 _FILTER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}")
 _DOMAIN_ARGUMENT = re.compile(r"[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?")
 MAX_DOMAIN, MAX_ADDRESS, MAX_LOCAL_PART, MAX_HASH, MAX_VALUE, MAX_SCRIPT = 50, 100, 64, 150, 100, 1 << 20
+SPAM_RENAMED = {"whitelist_from": "welcomelist_from", "blacklist_from": "blocklist_from"}  # SpamAssassin before 4
 DOVEADM_HEADER = "sieve script:\n"
 
 
@@ -92,20 +93,17 @@ def mail_database(run, notes=None):
 
 
 def mail_inventory(run, database, domain=None, mail_root=VMAIL):
-    """The mail of this server as the file 'mailctl import' reads, for one domain or all of them.
-
-    Beside the file's own parts it holds 'left_out' (what mailctl would refuse, each with the reason) and 'notes'
-    (what couldn't be read). Take those out with file_part() before writing the file.
-    """
+    """The mail of this server as a Mail: .file is what 'mailctl import' reads, for one domain or all of them, and
+    .left_out and .notes are the reports. They are kept apart so the file can be written as it is."""
     if domain is not None and not _DOMAIN_ARGUMENT.fullmatch(domain):
         # It goes into the queries, so it is a domain name and nothing else.
         raise ValueError("'%s' isn't a domain name." % domain)
-    inventory = {"version": VERSION, "domains": [], "addresses": [], "forwards": [], "spam": [], "sieve": [],
-                 "left_out": [], "notes": []}
-    left_out, notes = inventory["left_out"], inventory["notes"]
+    inventory = {"version": VERSION, "domains": [], "addresses": [], "forwards": [], "spam": [], "sieve": []}
+    left_out, notes = [], []
+    result = Mail(inventory, left_out, notes)
     if not re.fullmatch(r"[A-Za-z0-9_]+", database or ""):
         notes.append("'%s' isn't a database name." % database)
-        return inventory
+        return result
     wanted = domain.lower() if domain else None
     where = {"domains": "", "users": "", "aliases": "", "senders": ""}
     if wanted:
@@ -146,21 +144,30 @@ def mail_inventory(run, database, domain=None, mail_root=VMAIL):
         "ORDER BY source, destination" % (database, where["aliases"]), "the forwards"), senders, left_out)
 
     inventory["spam"] = _spam(run, wanted, notes, left_out)
+    folders = []
     for address in sorted(known):
-        for script in filters_of(run, address, mail_root, notes):
+        for script in filters_of(run, address, mail_root, notes, folders):
             inventory["sieve"].append(dict(script, address=address))
+    if folders:
+        notes.append("The filters of %s were read from %s/<domain>/<user>/sieve, since doveadm couldn't give them. "
+                     "An account that keeps its filters somewhere else shows none." % (", ".join(folders), mail_root))
     _one_active_filter(inventory["sieve"], left_out)
     for entry in list(inventory["sieve"]):
         reason = _filter_problem(entry)
         if reason:
             inventory["sieve"].remove(entry)
             left_out.append("The filter %s of %s: %s" % (entry["name"], entry["address"], reason))
-    return inventory
+    return result
 
 
-def file_part(inventory):
-    """The inventory as the file itself: without the reports that only the person running this reads."""
-    return {key: inventory[key] for key in ("version", "domains", "addresses", "forwards", "spam", "sieve")}
+class Mail(object):
+    """What was found: the file mailctl reads, and apart from it what was left out of it and what couldn't be read.
+    A report inside the file would make mailctl refuse it whole, so the reports are not in .file."""
+
+    def __init__(self, file, left_out, notes):
+        self.file = file
+        self.left_out = left_out
+        self.notes = notes
 
 
 def _valid_domain(name):
@@ -255,30 +262,52 @@ def _spam(run, wanted, notes, left_out):
             continue
         if wanted and not (target == wanted or target.endswith("@" + wanted)):
             continue  # the server's settings belong to the server, not to one domain
-        if not setting.strip() or len(setting) > MAX_VALUE or len(value) > MAX_VALUE:
-            left_out.append("The spam setting %s for %s: it is empty or longer than %d characters."
-                            % (setting, username, MAX_VALUE))
+        reason = _spam_problem(setting, value)
+        if reason:
+            left_out.append("The spam setting %s for %s: %s" % (setting, username, reason))
             continue
         settings.append({"target": target, "setting": setting, "value": value})
     return settings
 
 
-def filters_of(run, address, mail_root=VMAIL, notes=None):
+def _spam_problem(setting, value):
+    """Why mailctl's reader would refuse this setting, in plain words; None when it takes it."""
+    name = setting.strip().lower()
+    name = SPAM_RENAMED.get(name, name)
+    if name == "required_score":
+        if not re.fullmatch(r"[+-]?\d+(\.\d+)?", value.strip()):
+            return "'%s' isn't a number." % value.strip()
+    elif name in ("welcomelist_from", "blocklist_from"):
+        for pattern in value.split():
+            if len(pattern) > MAX_VALUE or not re.fullmatch(r"\S*[@.]\S*", pattern):
+                return "'%s' isn't an address or pattern like *@example.nl." % pattern
+    elif not name or len(name) > MAX_VALUE or len(value) > MAX_VALUE:
+        return "it is empty or longer than %d characters." % MAX_VALUE
+    return None
+
+
+def filters_of(run, address, mail_root=VMAIL, notes=None, folders=None):
     """The Sieve filters of an account as {name, active, content}: from doveadm, or when that can't, from the
-    account's sieve folder."""
+    account's sieve folder. An account read from its folder is added to 'folders', so one note can say so."""
     notes = notes if notes is not None else []
+    folders = folders if folders is not None else []
     try:
         return _filters_by_doveadm(run, address)
     except CommandFailed as problem:
-        found = _filters_in_folder(address, mail_root)
-        if found is None:
-            if not problem.missing:
-                notes.append("Couldn't read the filters of %s: %s." % (address, problem.message))
-            elif not any(note.startswith("doveadm isn't installed") for note in notes):
-                notes.append("doveadm isn't installed and %s has no sieve folder under %s, so filters can't be read."
-                             % (address, mail_root))
-            return []
-        return found
+        reason = problem.message
+    try:
+        found = _filters_in_folder(address, mail_root, notes)
+    except (OSError, UnicodeError) as problem:
+        notes.append("Couldn't read the filters of %s: %s." % (address, problem))
+        return []
+    if found is None:
+        notes.append("Couldn't read the filters of %s: %s, and there is no folder %s." % (
+            address, reason, _sieve_folder(address, mail_root)))
+        return []
+    folders.append(address)
+    if not found:
+        notes.append("The sieve folder of %s is there but holds no scripts (*.sieve)." % address)
+    return found
 
 
 def _filters_by_doveadm(run, address):
@@ -294,13 +323,17 @@ def _filters_by_doveadm(run, address):
     return scripts
 
 
-def _filters_in_folder(address, mail_root):
+def _sieve_folder(address, mail_root):
     local_part, _, domain_part = address.rpartition("@")
-    home = os.path.join(mail_root, domain_part, local_part)
-    folder = os.path.join(home, "sieve")
+    return os.path.join(mail_root, domain_part, local_part, "sieve")
+
+
+def _filters_in_folder(address, mail_root, notes):
+    folder = _sieve_folder(address, mail_root)
     if not os.path.isdir(folder):
         return None
-    active = os.path.realpath(os.path.join(home, ".dovecot.sieve"))
+    active_file = os.path.join(os.path.dirname(folder), ".dovecot.sieve")
+    active = os.path.realpath(active_file)
     scripts = []
     for file_name in sorted(os.listdir(folder)):
         path = os.path.join(folder, file_name)
@@ -309,6 +342,9 @@ def _filters_in_folder(address, mail_root):
         with open(path, encoding="utf-8", errors="replace") as handle:
             scripts.append({"name": file_name[:-len(".sieve")], "active": os.path.realpath(path) == active,
                             "content": handle.read()})
+    if os.path.lexists(active_file) and not any(script["active"] for script in scripts):
+        notes.append("%s is not one of the scripts in the sieve folder, so no filter of %s is switched on."
+                     % (active_file, address))
     return scripts
 
 
