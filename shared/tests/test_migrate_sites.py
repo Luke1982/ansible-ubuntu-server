@@ -603,3 +603,18 @@ def test_a_failure_that_knows_nothing_still_says_the_site_was_made(tmp_path):
     report = migrate.run(NewServer(tmp_path, {"apply": ANSWER}), [_shop()], lambda text: None, move=move)
     assert report.failed[0][1].startswith(migrate.MADE_NOT_FILLED)
     assert "couldn't write my notes" in report.failed[0][1]
+
+
+def test_a_command_that_never_answers_becomes_a_note_and_not_a_hang():
+    """A client waiting on a machine that drops packets would otherwise leave the person with an empty screen."""
+    assert migrate.LOOK_TIMEOUT == 120  # the limit every discovery command runs with
+    with pytest.raises(migrate.CommandFailed) as failed:
+        migrate.run_command(sys.executable, "-c", "import time; time.sleep(60)", timeout=1)
+    assert "didn't answer within 1 seconds" in failed.value.message
+    assert not failed.value.missing  # it is there, it just said nothing
+
+    notes = []
+    server = Server({"information_schema": migrate.CommandFailed("mariadb didn't answer within 1 seconds, so it "
+                                                                 "was not looked at")})
+    assert migrate.database_sizes(server, notes) == {}
+    assert "didn't answer" in notes[0]

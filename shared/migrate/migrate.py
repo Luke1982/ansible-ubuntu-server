@@ -55,9 +55,17 @@ class CommandFailed(Exception):
         self.missing = missing
 
 
-def run_command(*args, stdin=None, env=None):
+LOOK_TIMEOUT = 120  # plenty for any command that only looks something up, and short enough to say so
+
+
+def run_command(*args, stdin=None, env=None, timeout=LOOK_TIMEOUT):
     """The output of a command. This is the one place a command is run, so tests and dry runs can stand in for it.
-    'env' is added to this program's own environment for that one command (a password goes here, never in args)."""
+    'env' is added to this program's own environment for that one command (a password goes here, never in args).
+
+    A command that does not answer within 'timeout' seconds is killed and told about, like one that isn't there at
+    all: a mysql client whose my.cnf points at a machine that drops packets, or doveadm on a mailbox on a dead
+    mount, would otherwise hang the whole tool with nothing on the screen at all. rsync and the dump have no
+    limit (run_visible and run_piped): those legitimately run for hours, and show their own progress."""
     try:
         process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    env=dict(os.environ, **env) if env else None)
@@ -65,7 +73,17 @@ def run_command(*args, stdin=None, env=None):
         raise CommandFailed("%s isn't installed" % args[0], missing=True)
     except OSError as problem:
         raise CommandFailed("can't run %s: %s" % (args[0], problem))
-    out, err = process.communicate(stdin.encode() if stdin is not None else None)
+    try:
+        out, err = process.communicate(stdin.encode() if stdin is not None else None, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        try:
+            # Reaps the killed command. With a limit of its own: a child of its own can keep the pipes open, and
+            # waiting here forever is the thing we just stopped doing.
+            process.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
+        raise CommandFailed("%s didn't answer within %d seconds, so it was not looked at" % (args[0], timeout))
     if process.returncode != 0:
         said = err.decode("utf-8", "replace").strip() or "it stopped with code %d" % process.returncode
         raise CommandFailed("%s failed: %s" % (args[0], " ".join(said.split())))
