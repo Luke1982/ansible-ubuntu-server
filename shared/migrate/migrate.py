@@ -1037,9 +1037,15 @@ def offered(inventory, status):
     return [item for item in inventory if _verdict(item, status)[1]]
 
 
-def _fit(text, width):
+def _fit(text, width, middle=False):
+    """Text cut to the width. A name is cut in the middle (middle=True): its end tells two names apart."""
     text = " ".join(str(text).split())
-    return text if len(text) <= width else text[:width - 3] + "..."
+    if len(text) <= width:
+        return text
+    if middle:
+        head = (width - 3 + 1) // 2
+        return text[:head] + "..." + text[len(text) - (width - 3 - head):]
+    return text[:width - 3] + "..."
 
 
 def dashboard(inventory, status):
@@ -1053,12 +1059,12 @@ def dashboard(inventory, status):
             number += 1
             label = str(number)
         rows.append("%3s  %-8s %-28s %s" % (label, KIND_NAMES.get(item.get("kind"), "Other"),
-                                           _fit(_title(item), 28), _fit(info, 37)))
+                                           _fit(_title(item), 28, True), _fit(info, 36)))
         if reason:
             notes.append("%s: %s" % (_title(item), reason))
     if not rows:
         return "Nothing was found on this server to move."
-    out = ["No.  What     Name                         What moving it takes / the new server says"]
+    out = ["No.  What     Name                         What it takes"]
     out.extend(row.rstrip() for row in rows)
     if notes:
         out.append("")
@@ -1077,12 +1083,15 @@ def pick(lines, typed, say=print):
     """The items that what was typed comes down to. 'lines' are the offered items (offered()); a number is the
     place of an item in it, counted from 1. Numbers (1 3), ranges (2-5), commas and 'all' are understood. A number
     that is not on the list is never acted on, and is said so."""
-    chosen, unknown, unreadable = set(), [], []
-    for word in str(typed).lower().replace(",", " ").split():
+    chosen, unreadable, notes = set(), [], []
+    words = str(typed).lower().replace(",", " ").split()
+    if not words:
+        say("You typed nothing, so nothing is picked.")
+    for word in words:
         if word == "all":
             chosen.update(range(1, len(lines) + 1))
             continue
-        match = re.fullmatch(r"(\d+)(?:-(\d+))?", word)
+        match = re.fullmatch(r"([0-9]+)(?:-([0-9]+))?", word)
         if not match:
             unreadable.append(word)
             continue
@@ -1090,20 +1099,28 @@ def pick(lines, typed, say=print):
         last = int(match.group(2)) if match.group(2) else first
         if last < first:
             first, last = last, first
-        chosen.update(range(max(first, 1), min(last, len(lines)) + 1))
-        if first < 1 or last > len(lines):
-            unknown.append(word)
+            notes.append("%s is backwards, so it is taken as %d-%d." % (word, first, last))
+        low, high = max(first, 1), min(last, len(lines))
+        chosen.update(range(low, high + 1))
+        if low > high:
+            notes.append("%s is not on the list, so nothing is picked for it." % word)
+        elif (low, high) != (first, last):
+            outside = [str(number) if number == other else "%d-%d" % (number, other)
+                       for number, other in ((first, low - 1), (high + 1, last)) if number <= other]
+            notes.append("The list has %s, so %s is taken as %s. Not on the list: %s." % (
+                _plural(len(lines), "item", "items"), word, "%d-%d" % (low, high) if low != high else str(low),
+                ", ".join(outside)))
     if unreadable:
         say("I don't understand: %s. Type numbers like 1 3, a range like 2-5, or all." % ", ".join(unreadable))
-    if unknown:
-        say("Not on the list, so left alone: %s. The list has %s." % (
-            ", ".join(unknown), _plural(len(lines), "item", "items")))
+    for note in notes:
+        say(note)
     return [lines[number - 1] for number in sorted(chosen)]
 
 
 class Report(object):
-    """What a run did, as values. moved and failed hold (item, answer or message) pairs; skipped holds (item, why).
-    files_to_copy are sites that were made while their files were still not copied. left_out are the mail accounts
+    """What a run did, as values. moved holds (item, answer) pairs of what is completely done; failed holds
+    (item, message) and skipped (item, why). files_to_copy are sites that were made on the new server but whose files
+    and database are NOT brought over yet (no move was given, or it failed); such a site is never in moved. left_out are the mail accounts
     that got no password. stopped is the message that ended the run early, and not_tried the items after it."""
 
     def __init__(self):
@@ -1135,39 +1152,46 @@ def _apply_with_questions(connection, item, ask, report):
 def run(connection, items, ask, move=None):
     """Moves the items one by one and returns a Report. 'ask' is called with the new server's question and gives
     "yes" or "no". 'move' is called with a site after it was made, to bring its files and database. One item going
-    wrong stops that item only; the new server not answering ends the run."""
+    wrong stops that item only; the new server not answering ends the run. A site that was made but not filled is
+    in files_to_copy, whatever went wrong after it was made."""
     report = Report()
     for index, item in enumerate(items):
         print("Moving %d of %d: %s" % (index + 1, len(items), _title(item)))
+        made = False  # a site the new server made, whose files are not there yet
         try:
             answer, unanswered = _apply_with_questions(connection, item, ask, report)
             if unanswered is not None:
                 report.failed.append((item, "The new server asked a question that got no answer: %s"
                                       % unanswered.get("question")))
             elif answer.get("ok"):
-                if item.get("kind") == "site":
-                    if move is None:
-                        report.files_to_copy.append(item)
-                    else:
-                        try:
-                            move(item)
-                        except Stopped:
-                            raise
-                        except Exception as problem:
-                            report.failed.append((item, "The site was made, but its files and database were not "
-                                                  "brought over: %s" % (problem,)))
-                            continue
-                report.moved.append((item, answer))
+                made = item.get("kind") == "site"
+                if made and move is not None:
+                    move(item)
+                    made = False
+                if made:
+                    report.files_to_copy.append(item)
+                else:
+                    report.moved.append((item, answer))
             elif answer.get("skipped"):
                 report.skipped.append((item, answer.get("error") or "Left alone, as you asked."))
+            elif answer.get("needs_password"):
+                report.failed.append((item, answer.get("error") or "A password was needed and not given."))
             else:
                 report.failed.append((item, answer.get("error") or "The new server gave no reason."))
         except Stopped as problem:
-            report.failed.append((item, problem.message))
+            message = problem.message
+            if made:
+                report.files_to_copy.append(item)
+                message = "The site was made, but its files and database were not brought over: " + message
+            report.failed.append((item, message))
             report.stopped = problem.message
             report.not_tried = list(items[index + 1:])
             print("Stopping here, since nothing else would work either: %s" % problem.message)
             break
-        except Exception as problem:  # a move that failed is that site's failure, not the batch's
-            report.failed.append((item, str(problem) or "it failed without saying why"))
+        except Exception as problem:  # that item's failure, not the batch's
+            message = str(problem) or "it failed without saying why"
+            if made:
+                report.files_to_copy.append(item)
+                message = "The site was made, but its files and database were not brought over: " + message
+            report.failed.append((item, message))
     return report
