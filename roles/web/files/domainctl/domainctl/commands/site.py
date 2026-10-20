@@ -152,7 +152,7 @@ def _leftover(config, given: str) -> str:
     """The user of a site that has no virtual host, but the user and directories domainctl makes. For a domain,
     that is the user add makes for it by default, unless that one is the site of another domain."""
     name = names.user_name_for(given) if "." in given else given
-    if sites.find(config, name) or not users.exists(name) or not _ours(config, name):
+    if sites.find(config, name) or not users.exists(name) or not layout.made_by_domainctl(config, name):
         raise no_site(config, given)
     return name
 
@@ -293,18 +293,12 @@ def _free_name(config, domain: str, existing_user: bool) -> str:
     if site:
         raise CtlError(f"The name {name}, taken from {domain}, is the site for {site.domain}.",
                        hint=f"Choose another one with --user, or remove that site with: domainctl delete {name}")
-    if users.exists(name) and not existing_user and not _ours(config, name):
+    if users.exists(name) and not existing_user and not layout.made_by_domainctl(config, name):
         # A server being moved to domainctl has the user and its files already; that is what --existing-user is for.
         raise CtlError(f"There is already a Linux user {name}, taken from {domain}, but no site for it.",
                        hint=f"Give it this site with: domainctl add {domain} --existing-user\n"
                             f"Or make a site under another name with --user.")
     return names.user_name(name)
-
-
-def _ours(config, name: str) -> bool:
-    """Whether the Linux user is one domainctl made for this site: its home holds the directories it makes. That
-    is how a run that stopped at the DNS picks up where it left off, without --existing-user for its own work."""
-    return config.docroot_of(name).is_dir() and config.logs_of(name).is_dir()
 
 
 def _check_names(session: Session, domain: str, no_dns: bool, yes: bool) -> list[NameCheck]:
@@ -382,7 +376,7 @@ def _reserve(config, site: Site, is_retry: bool, existing_user: bool) -> None:
     clash = sites.taken_by_another(config, site.names, site.user, lines)
     if clash:
         raise CtlError(clash, hint="Remove it first, or choose another domain.")
-    if is_retry or existing_user or not users.exists(site.user) or _ours(config, site.user):
+    if is_retry or existing_user or not users.exists(site.user) or layout.made_by_domainctl(config, site.user):
         return
     raise CtlError(f"There is already a Linux user {site.user} on this server, but no site for it.",
                    hint="Add --existing-user to use it and its home directory, or another name with --user.")

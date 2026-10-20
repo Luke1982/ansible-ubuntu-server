@@ -181,8 +181,10 @@ class Failed(Exception):
 
 
 def _run(command, what, stdin=None):
+    # The request pipe is our own standard input: no child may read from it.
+    extra = {"input": stdin} if stdin is not None else {"stdin": subprocess.DEVNULL}
     try:
-        done = subprocess.run(command, capture_output=True, text=True, input=stdin, timeout=COMMAND_TIMEOUT)
+        done = subprocess.run(command, capture_output=True, text=True, timeout=COMMAND_TIMEOUT, **extra)
     except (OSError, subprocess.SubprocessError) as error:
         raise Failed(f"{what} didn't work ({error}).") from error
     if done.returncode != 0:
@@ -225,20 +227,23 @@ def _database_taken(name):
     return any(count != "0" for count in counts)
 
 
-def _php_value(text, key):
-    found = re.search(rf"define\s*\(\s*['\"]{key}['\"]\s*,\s*'((?:[^'\\]|\\.)*)'", text)
-    return re.sub(r"\\(.)", r"\1", found[1]) if found else None
+# The rules of serverctl.names, written out again because migratectl never imports the tools.
+_LABEL = r"(?!-)[a-z0-9-]{1,63}(?<!-)"
+_DOMAIN = re.compile(rf"(?:{_LABEL}\.)+(?=[a-z0-9-]*[a-z]){_LABEL}")
+_USER_NAME = re.compile(r"[a-z0-9][a-z0-9_-]*")
 
 
 def _site_fields(item):
     if item.get("kind") != "site":
         raise ValueError(f"I can't apply the kind {item.get('kind')!r} yet")
     name, user = _text(item, "name"), _text(item, "user")
+    if len(name) > 50 or not _DOMAIN.fullmatch(name):
+        raise ValueError(f"{name!r} isn't a valid domain name")
     database = item.get("database") or None
-    if database is not None and not (isinstance(database, str) and re.fullmatch(r"[A-Za-z0-9_$-]{1,64}", database)):
-        raise ValueError("the database name may only hold letters, digits, - and _")
-    if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", user):
-        raise ValueError(f"{user!r} can't be a user name")
+    for what, value in (("user", user), ("database", database)):
+        if value is not None and not (isinstance(value, str) and len(value) <= 32 and _USER_NAME.fullmatch(value)):
+            raise ValueError(f"{value!r} isn't a valid {what} name: use lower case letters, digits, - and _, "
+                             f"starting with a letter or digit, at most 32 characters")
     return name, user, database
 
 
@@ -263,26 +268,53 @@ def _apply_site(item, answers):
     steps = []
     try:
         _run(["domainctl", "add", name, "--user", user, "--no-dns", "--yes"], f"Making the site {name}")
-        steps.append(f"Made the site {name} and its user {user}.")
-        password = None
+        steps.append(f"Made the site {name}, its user {user} and its directories.")
         if database:
             config = os.path.join(docroot, "wp-config.php")
-            if not os.path.exists(config):
-                # wp adopt only works on a site's own wp-config.php. The real one replaces this when the files arrive.
-                with open(config, "w") as file:
-                    file.write("<?php\n" + STUB_MARK + "\n" + "".join(
-                        f"define( '{key}', '' );\n" for key in ("DB_NAME", "DB_USER", "DB_PASSWORD", "DB_HOST")))
-                shutil.chown(config, user, user)
+            if _write_stub(config, user):
+                steps.append(f"Put a stand-in wp-config.php in {docroot}; the site's own one replaces it when the "
+                             f"files arrive.")
             _run(["domainctl", "wp", "adopt", user, "--database", database, "--replace", "--yes"],
                  f"Making the database {database}")
-            steps.append(f"Made the database {database} and a MariaDB user of the same name.")
-            with open(config, errors="replace") as file:
-                password = _php_value(file.read(), "DB_PASSWORD")
+            steps.append(f"Made the database {database} and a MariaDB user of the same name. Its password is in the "
+                         f"site's own wp-config.php.")
     except (Failed, OSError, LookupError) as error:
-        done = " ".join(steps)
-        return {"ok": False, "error": f"{error} {done + ' ' if done else ''}Fix the cause and send the site again."}
-    return {"ok": True, "docroot": docroot, "database": database, "db_user": database, "password": password,
+        return {"ok": False, "error": f"{error} {_what_exists(user, docroot, database)} "
+                                      f"Fix the cause and send the site again."}
+    return {"ok": True, "docroot": docroot, "database": database, "db_user": database,
+            "note": "The database's password is in the site's own wp-config.php, and changes when the dump is read in.",
             "steps": steps}
+
+
+def _write_stub(path, user):
+    """wp adopt only works on a wp-config.php, and the site's own has not arrived yet. O_EXCL so a real one is
+    never overwritten; returns whether a stub was written."""
+    text = "<?php\n" + STUB_MARK + "\n" + "".join(
+        f"define( '{key}', '' );\n" for key in ("DB_NAME", "DB_USER", "DB_PASSWORD", "DB_HOST"))
+    text += "die( 'This is a stand-in wp-config.php: the site\\'s own never arrived.' );\n"
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o640)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "w") as file:
+        file.write(text)
+    shutil.chown(path, user, user)
+    return True
+
+
+def _what_exists(user, docroot, database):
+    """After a failure: what is there now, so a half-built site can be told from an untouched one."""
+    made = [f"The user {user} and the directories under {docroot}"] if os.path.isdir(docroot) else []
+    config = os.path.join(docroot, "wp-config.php")
+    if _is_ours(config) and os.path.exists(config):
+        made.append("a stand-in wp-config.php")
+    if database:
+        try:
+            made.append(f"the database {database}" if _database_taken(database) else "")
+        except Failed:
+            made.append(f"maybe the database {database} (I couldn't look)")
+    made = [m for m in made if m]
+    return "Now there is " + ", ".join(made) + "." if made else "Nothing was made."
 
 
 def _only_item(request):
@@ -310,7 +342,11 @@ def finish_site(request):
         docroot = _docroot(user)
         if not os.path.isdir(docroot):
             return {"ok": False, "error": f"There is no web root at {docroot} yet. Make the site first."}
-        _run(["chown", "-R", f"{user}:{user}", docroot], "Giving the files to the site's user")
+        config = os.path.join(docroot, "wp-config.php")
+        if os.path.exists(config) and _is_ours(config):
+            return {"ok": False, "error": f"The files never brought a real wp-config.php: {config} is still the "
+                                          f"stand-in. Copy the site's files again, then finish it."}
+        _run(["chown", "-R", "-h", f"{user}:{user}", docroot], "Giving the files to the site's user")
         index = os.path.join(docroot, "index.html")
         # index.html is served before index.php, so the placeholder would hide the site that just arrived.
         if any(os.path.exists(os.path.join(docroot, own)) for own in OWN_INDEXES) and _is_ours(index):

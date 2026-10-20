@@ -264,11 +264,13 @@ class Machine:
     def __init__(self, homes):
         self.homes = homes
         self.calls = []
+        self.kwargs = []
         self.databases = set()
         self.fail = {}
 
     def run(self, command, **kwargs):
         self.calls.append(command)
+        self.kwargs.append(kwargs)
         failing = self.fail.get(" ".join(command[:2]))
         if failing:
             return types.SimpleNamespace(returncode=1, stdout="", stderr=failing)
@@ -281,8 +283,8 @@ class Machine:
             (root / "index.html").write_text("<p>This site is set up and waiting for its files.</p>")
         if command[:3] == ["domainctl", "wp", "adopt"]:
             config = self.homes / command[3] / "public_html" / "www" / "wp-config.php"
-            empty, filled = "define( 'DB_PASSWORD', '' );", "define( 'DB_PASSWORD', 'p\\'w' );"
-            config.write_text(config.read_text().replace(empty, filled))
+            assert config.exists(), "wp adopt needs a wp-config.php"
+            self.databases.add(command[command.index("--database") + 1])
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
     def ran(self, program):
@@ -310,7 +312,8 @@ def test_a_new_site_is_made_and_says_where_the_files_go(machine):
     answer = migratectl.answer(APPLY_SITE)
     assert answer["ok"] is True, answer
     assert answer["docroot"] == str(web_root(machine))
-    assert answer["database"] == "example" and answer["db_user"] == "example" and answer["password"] == "p'w"
+    assert answer["database"] == "example" and answer["db_user"] == "example" and "password" not in answer
+    assert "wp-config.php" in answer["note"] and "stand-in wp-config.php" in " ".join(answer["steps"])
     assert ["domainctl", "add", "example.nl", "--user", "example", "--no-dns", "--yes"] in machine.calls
     assert ["domainctl", "wp", "adopt", "example", "--database", "example", "--replace", "--yes"] in machine.calls
     assert answer["steps"]
@@ -349,7 +352,9 @@ def test_answering_yes_goes_on_and_answering_no_leaves_both_sides_as_they_were(m
 def test_a_failing_command_is_a_refusal_that_says_what_was_already_made(machine):
     machine.fail["domainctl wp"] = "There is already a database example."
     answer = migratectl.answer(APPLY_SITE)
-    assert answer["ok"] is False and "already a database" in answer["error"] and "Made the site" in answer["error"]
+    assert answer["ok"] is False and "already a database" in answer["error"]
+    assert "user example" in answer["error"] and "stand-in wp-config.php" in answer["error"]
+    assert "the database example" not in answer["error"].split("Now there is")[1]
 
 
 def test_an_item_that_is_not_a_site_is_an_error_not_a_crash(machine):
@@ -360,8 +365,48 @@ def test_an_item_that_is_not_a_site_is_an_error_not_a_crash(machine):
 def test_finish_gives_the_files_to_the_site_user(machine):
     migratectl.answer(APPLY_SITE)
     (web_root(machine) / "index.php").write_text("<?php")
+    (web_root(machine) / "wp-config.php").write_text("<?php // the site's own")
     answer = migratectl.answer({"request": "finish_site", "item": APPLY_SITE["item"]})
     assert answer["ok"] is True, answer
-    assert ["chown", "-R", "example:example", str(web_root(machine))] in machine.calls
+    assert ["chown", "-R", "-h", "example:example", str(web_root(machine))] in machine.calls
     assert machine.calls[-1] == ["domainctl", "sync"]
     assert not (web_root(machine) / "index.html").exists()
+
+
+def test_no_child_command_reads_the_request_pipe(machine):
+    migratectl.answer(APPLY_SITE)
+    migratectl.answer({"request": "finish_site", "item": APPLY_SITE["item"]})
+    assert all(kw.get("stdin") == migratectl.subprocess.DEVNULL for call, kw in zip(machine.calls, machine.kwargs)
+               if call[0] != "mariadb")
+
+
+def test_a_site_without_a_database_gets_no_stand_in_and_no_adopt(machine):
+    item = {**APPLY_SITE["item"], "database": None}
+    answer = migratectl.answer({"request": "apply", "item": item})
+    assert answer["ok"] is True and answer["database"] is None
+    assert not (web_root(machine) / "wp-config.php").exists()
+    assert not [call for call in machine.calls if call[:3] == ["domainctl", "wp", "adopt"]]
+
+
+def test_a_real_wp_config_is_never_overwritten_by_the_stand_in(machine):
+    web_root(machine).mkdir(parents=True)
+    (web_root(machine) / "wp-config.php").write_text("<?php // the real one")
+    answer = migratectl.answer({**APPLY_SITE, "answers": {"files": "yes"}})
+    assert answer["ok"] is True and (web_root(machine) / "wp-config.php").read_text() == "<?php // the real one"
+
+
+def test_finish_refuses_a_site_whose_files_never_brought_a_real_wp_config(machine):
+    migratectl.answer(APPLY_SITE)
+    (web_root(machine) / "index.php").write_text("<?php")
+    answer = migratectl.answer({"request": "finish_site", "item": APPLY_SITE["item"]})
+    assert answer["ok"] is False and "never brought a real wp-config.php" in answer["error"]
+    assert (web_root(machine) / "index.html").exists()
+    assert ["domainctl", "sync"] not in machine.calls and machine.ran("chown") == []
+
+
+@pytest.mark.parametrize("field, value", [("name", "-rf.nl"), ("name", "nodot"), ("user", "_x"), ("user", "Example"),
+                                          ("database", "a$b"), ("database", "x" * 33)])
+def test_a_name_domainctl_would_refuse_is_refused_before_anything_is_made(machine, field, value):
+    item = {**APPLY_SITE["item"], field: value}
+    answer = migratectl.answer({"request": "apply", "item": item})
+    assert answer["ok"] is False and machine.calls == []

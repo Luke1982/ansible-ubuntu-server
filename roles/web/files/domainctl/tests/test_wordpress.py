@@ -6,7 +6,7 @@ import pytest
 from typer.testing import CliRunner
 
 from domainctl import cli
-from domainctl.core import acl, sites, wordpress
+from domainctl.core import acl, sites, users, wordpress
 from domainctl.core.sites import Site
 from serverctl import system
 from test_cli import run, server  # noqa: F401  (server is a fixture)
@@ -383,3 +383,25 @@ def test_adopt_says_the_old_database_is_gone_when_it_fails_after_replacing_it(se
 
     assert result.exit_code == 1
     assert "old database example is gone" in result.output.replace("\n", " ")
+
+
+def test_adopt_works_for_a_site_whose_virtual_host_waits_for_the_dns(server, fake, monkeypatch):  # noqa: F811
+    """domainctl add --no-dns leaves a user and directories only; the files and database come over before the DNS."""
+    docroot = server.docroot_of("example")
+    docroot.mkdir(parents=True)
+    server.logs_of("example").mkdir(parents=True)
+    (docroot / "wp-config.php").write_text(WP_CONFIG)
+    monkeypatch.setattr(users, "exists", lambda name: name == "example")
+    assert sites.list_sites(server) == []
+
+    result = adopt()
+
+    assert result.exit_code == 0, result.output
+    assert "waiting for the DNS" in result.output
+    assert fake.databases == {"example"}
+
+
+def test_adopt_still_refuses_a_user_that_domainctl_did_not_make(server, fake, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(users, "exists", lambda name: True)
+    result = adopt()
+    assert result.exit_code == 1 and "There is no site example" in result.output

@@ -44,6 +44,12 @@ def create(config: Config, user: str, domain: str) -> None:
         _own(index, user)
 
 
+def made_by_domainctl(config: Config, user: str) -> bool:
+    """Whether the Linux user is one domainctl made for a site: its home holds the directories it makes. That is
+    how a run that stopped at the DNS picks up where it left off, without --existing-user for its own work."""
+    return config.docroot_of(user).is_dir() and config.logs_of(user).is_dir()
+
+
 def remove_placeholder(config: Config, user: str) -> bool:
     """Takes the placeholder away once the site has an index of its own, and says whether the site has one.
 

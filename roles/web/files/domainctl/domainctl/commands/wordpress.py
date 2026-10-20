@@ -11,7 +11,7 @@ from serverctl import names, ui
 from serverctl.dns import Status
 from serverctl.errors import CtlError
 
-from ..core import certificates, layout, sites, wordpress
+from ..core import certificates, layout, sites, users, wordpress
 from ..core.wordpress import Plugin
 from ..session import open_session
 from .shared import User, UserFilter, Yes, ask_user, find_site, group
@@ -117,14 +117,14 @@ def adopt(user: User = None, database: Database = None, dump: Dump = None, repla
     """
     with open_session() as session:
         config = session.config
-        site = find_site(config, ask_user(user))
-        name = names.user_name(database or site.user)
-        if not wordpress.is_configured(config, site.user):
-            raise CtlError(f"There is no wp-config.php in {config.docroot_of(site.user)}.",
+        owner = _adopting_user(config, ask_user(user))
+        name = names.user_name(database or owner)
+        if not wordpress.is_configured(config, owner):
+            raise CtlError(f"There is no wp-config.php in {config.docroot_of(owner)}.",
                            hint="Copy the site's files there first, wp-config.php included, and run this again.")
         if dump not in (None, "-") and not Path(dump).is_file():
             raise CtlError(f"There is no dump at {dump}.")
-        wordpress.check_config(config, site.user)  # before the old database goes, not after the dump is in
+        wordpress.check_config(config, owner)  # before the old database goes, not after the dump is in
         taken = wordpress.database_taken(name)
         if taken and not replace:
             raise CtlError(f"There is already {taken} in MariaDB.",
@@ -138,7 +138,7 @@ def adopt(user: User = None, database: Database = None, dump: Dump = None, repla
             if dump is not None:
                 with ui.console.status("Reading the dump in…"):
                     _read_dump(name, dump)
-            wordpress.adopt_config(config, site.user, name, name, password)
+            wordpress.adopt_config(config, owner, name, name, password)
         except CtlError as problem:
             wordpress.drop_database(name)  # nothing knows its password
             if taken:
@@ -148,7 +148,20 @@ def adopt(user: User = None, database: Database = None, dump: Dump = None, repla
         ui.success(f"{'Replaced' if taken else 'Made'} the database {name}, with a MariaDB user of the same name.")
         if dump is not None:
             ui.success("Read the dump into it.")
-        ui.success(f"{config.docroot_of(site.user) / 'wp-config.php'} now points at it.")
+        ui.success(f"{config.docroot_of(owner) / 'wp-config.php'} now points at it.")
+
+
+def _adopting_user(config, user: str) -> str:
+    """The site's user. A site whose domain still points at the old server has its user and directories but no
+    virtual host yet, and that is the state it is in while its files and database are moved over."""
+    if sites.find(config, user):
+        return user
+    if users.exists(user) and layout.made_by_domainctl(config, user):
+        ui.note(f"The virtual host of {user} is still waiting for the DNS; its files and database can be put in "
+                f"place meanwhile.")
+        return user
+    find_site(config, user)  # says there is no such site, and which there are
+    return user
 
 
 def _read_dump(database: str, dump: str) -> None:
