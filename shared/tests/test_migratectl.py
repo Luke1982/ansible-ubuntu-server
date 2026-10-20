@@ -1,3 +1,4 @@
+import os
 import io
 import json
 import types
@@ -429,3 +430,144 @@ def test_a_name_domainctl_would_refuse_is_refused_before_anything_is_made(machin
     item = {**APPLY_SITE["item"], field: value}
     answer = migratectl.answer({"request": "apply", "item": item})
     assert answer["ok"] is False and machine.calls == []
+
+
+class Server:
+    """A new server for mail and cron: mailctl import reads its file, doveadm lists schemes, crontab keeps text."""
+
+    def __init__(self):
+        self.calls, self.kwargs = [], []
+        self.import_file = None
+        self.import_mode = None
+        self.import_exit = 0
+        self.accounts = {"old@a.nl"}
+        self.crontabs = {}
+
+    def run(self, command, **kwargs):
+        self.calls.append(command)
+        self.kwargs.append(kwargs)
+        ok = lambda out="": types.SimpleNamespace(returncode=0, stdout=out, stderr="")  # noqa: E731
+        if command[:2] == ["doveadm", "pw"]:
+            return ok("SHA512-CRYPT SHA256-CRYPT MD5-CRYPT PLAIN\n")
+        if command[:2] == ["mailctl", "import"]:
+            self.import_file = command[2]
+            self.import_mode = os.stat(command[2]).st_mode & 0o777
+            if self.import_exit:
+                return types.SimpleNamespace(returncode=self.import_exit, stdout="", stderr="Error: no good")
+            return ok("Imported 2 accounts.\n")
+        if command[:3] == ["mailctl", "address", "password"]:
+            if command[3] not in self.accounts:
+                return types.SimpleNamespace(returncode=1, stdout="", stderr=f"Error: {command[3]} doesn't exist")
+            return ok()
+        if command[0] == "crontab" and command[3:] == ["-l"]:
+            if command[2] not in self.crontabs:
+                return types.SimpleNamespace(returncode=1, stdout="", stderr="no crontab")
+            return ok(self.crontabs[command[2]])
+        if command[0] == "crontab" and command[3:] == ["-"]:
+            self.crontabs[command[2]] = kwargs["input"]
+            return ok()
+        raise AssertionError(command)
+
+
+@pytest.fixture
+def server(monkeypatch):
+    new = Server()
+    monkeypatch.setattr(migratectl.subprocess, "run", new.run)
+    return new
+
+
+def mail_item(*accounts):
+    return {"id": "mail:a.nl", "kind": "mail_domain", "name": "a.nl",
+            "data": {"domains": ["a.nl"], "addresses": list(accounts)}}
+
+
+OWN = {"address": "own@a.nl", "password_hash": "{SHA512-CRYPT}$6$xx"}
+WEAK = {"address": "weak@a.nl", "password_hash": "{MD5-CRYPT}$1$xx"}
+UNREADABLE = {"address": "odd@a.nl", "password_hash": "{SSHA256}secrethashvalue"}
+
+
+def test_a_mail_domain_is_imported_and_the_file_is_deleted(server):
+    answer = migratectl.answer({"request": "apply", "item": mail_item(OWN, WEAK)})
+    assert answer["ok"] is True, answer
+    call = next(c for c in server.calls if c[:2] == ["mailctl", "import"])
+    assert call[3:] == ["--yes", "--verbose", "--keep-hashes"]
+    assert not os.path.exists(server.import_file)
+    assert answer["mailctl"]["exit"] == 0 and "Imported" in answer["mailctl"]["stdout"]
+    assert answer["weak"] == ["weak@a.nl"]
+
+
+def test_the_file_is_never_readable_by_anybody_else(server):
+    migratectl.answer({"request": "apply", "item": mail_item(OWN)})
+    assert server.import_mode == 0o600
+
+
+def test_an_account_that_needs_a_password_is_named_back(server):
+    answer = migratectl.answer({"request": "apply", "item": mail_item(OWN, UNREADABLE)})
+    assert answer["ok"] is False and answer["needs_password"] == ["odd@a.nl"]
+    assert "Nothing was created" in answer["error"] and "password" in answer["error"]
+    assert not [c for c in server.calls if c[:2] == ["mailctl", "import"]]
+    assert "secrethashvalue" not in json.dumps(answer)
+
+
+def test_an_account_given_its_password_imports_as_one_ordinary_import(server):
+    given = {**UNREADABLE, "password": "plain-secret"}
+    answer = migratectl.answer({"request": "apply", "item": mail_item(given)})
+    assert answer["ok"] is True and "needs_password" not in answer
+    assert "plain-secret" not in json.dumps(answer)
+
+
+def test_the_import_file_is_gone_after_a_failure_and_the_answer_carries_mailctls_words(server):
+    server.import_exit = 1
+    answer = migratectl.answer({"request": "apply", "item": mail_item(OWN)})
+    assert answer["ok"] is False and answer["mailctl"]["exit"] == 1
+    assert "no good" in answer["error"]
+    assert not os.path.exists(server.import_file)
+
+
+def test_a_password_typed_on_the_old_server_is_hashed_here(server):
+    item = {"id": "p", "kind": "mail_passwords", "passwords": {"old@a.nl": "hunter22hunter"}}
+    answer = migratectl.answer({"request": "apply", "item": item})
+    assert answer["ok"] is True and answer["done"] == ["old@a.nl"]
+    assert server.calls == [["mailctl", "address", "password", "old@a.nl", "--password-stdin"]]
+    assert "hunter22hunter" in server.kwargs[0]["input"]
+    assert not any("hunter22hunter" in part for call in server.calls for part in call)
+
+
+def test_an_address_that_does_not_exist_is_reported_and_the_rest_go_on(server):
+    item = {"id": "p", "kind": "mail_passwords", "passwords": {"gone@a.nl": "pw-one-1234", "old@a.nl": "pw-two-1234"}}
+    answer = migratectl.answer({"request": "apply", "item": item})
+    assert answer["ok"] is False and answer["done"] == ["old@a.nl"] and list(answer["failed"]) == ["gone@a.nl"]
+    assert "pw-one-1234" not in json.dumps(answer)
+
+
+CRON = {"id": "cron:example:0", "kind": "cron", "user": "example", "line": "*/5 * * * * php /home/example/x.php",
+        "settings": ["MAILTO=me@example.nl", "PATH=/usr/bin"]}
+
+
+def test_a_cron_job_is_installed_for_the_sites_user(server):
+    answer = migratectl.answer({"request": "apply", "item": CRON})
+    assert answer["ok"] is True, answer
+    assert server.crontabs["example"] == ("# migratectl: cron:example:0\nMAILTO=me@example.nl\nPATH=/usr/bin\n"
+                                          "*/5 * * * * php /home/example/x.php\n")
+
+
+def test_the_same_cron_item_applied_twice_adds_one_job_and_keeps_existing_lines(server):
+    server.crontabs["example"] = "# mine\n0 1 * * * /bin/true"
+    migratectl.answer({"request": "apply", "item": CRON})
+    again = migratectl.answer({"request": "apply", "item": CRON})
+    assert again["ok"] is True and again["already"] is True
+    text = server.crontabs["example"]
+    assert text.startswith("# mine\n0 1 * * * /bin/true\n") and text.count("php /home/example/x.php") == 1
+
+
+def test_no_mail_or_cron_child_reads_the_request_pipe(server):
+    migratectl.answer({"request": "apply", "item": mail_item(WEAK)})
+    migratectl.answer({"request": "apply", "item": {"id": "p", "kind": "mail_passwords", "passwords": {"old@a.nl": "x"}}})
+    migratectl.answer({"request": "apply", "item": CRON})
+    assert server.kwargs
+    assert all("input" in kw or kw.get("stdin") == migratectl.subprocess.DEVNULL for kw in server.kwargs)
+
+
+def test_an_unknown_kind_is_still_refused(server):
+    answer = migratectl.answer({"request": "apply", "item": {"id": "x", "kind": "dance"}})
+    assert answer["ok"] is False and server.calls == []

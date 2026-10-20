@@ -11,8 +11,10 @@ import os
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
+import tempfile
 import unicodedata
 
 PROTOCOL_VERSION = 1
@@ -236,7 +238,7 @@ _USER_NAME = re.compile(r"[a-z0-9][a-z0-9_-]*")
 
 def _site_fields(item):
     if item.get("kind") != "site":
-        raise ValueError(f"I can't apply the kind {item.get('kind')!r} yet")
+        raise ValueError(f"I can't use the kind {item.get('kind')!r} here")
     # Like serverctl.names: lower-cased and stripped first, and the cleaned value is what goes on to domainctl.
     # domainctl allows a site domain up to the DNS limit, not the 50 of a mail domain.
     name, user = _text(item, "name").strip().lower(), _text(item, "user").strip().lower()
@@ -329,12 +331,147 @@ def _only_item(request):
     return item
 
 
+# The rules of mailctl's addresses module, written out again because migratectl never imports the tools.
+# A hash is "{SCHEME}hash", or a bare crypt hash "$id$..." whose scheme is named by its id. Dovecot here can read a
+# hash when its scheme is in the list `doveadm pw -l` prints. A readable scheme that is not strong (MD5-CRYPT, PLAIN)
+# is "weak": it imports fine. An unreadable one makes `mailctl import` without a terminal refuse everything.
+OWN_SCHEME = "SHA512-CRYPT"
+STRONG_SCHEMES = {"SHA256-CRYPT", "SHA512-CRYPT", "BLF-CRYPT", "ARGON2I", "ARGON2ID", "PBKDF2", "SCRAM-SHA-256"}
+CRYPT_IDS = {"1": "MD5-CRYPT", "5": "SHA256-CRYPT", "6": "SHA512-CRYPT", "2a": "BLF-CRYPT", "2b": "BLF-CRYPT",
+             "2y": "BLF-CRYPT"}
+
+
+def _scheme_of(password_hash):
+    if password_hash.startswith("{") and "}" in password_hash:
+        return password_hash[1:password_hash.index("}")].upper()
+    if password_hash.startswith("$") and password_hash.count("$") >= 2:
+        return CRYPT_IDS.get(password_hash.split("$")[1], "CRYPT")
+    return "UNKNOWN"
+
+
+def _readable_schemes():
+    return {scheme.upper() for scheme in _run(["doveadm", "pw", "-l"], "Asking Dovecot which schemes it reads").split()}
+
+
+def _sort_accounts(data):
+    """(needs a password, weak) for the accounts of an import file: addresses, never hashes."""
+    accounts = [a for a in data.get("addresses", []) if isinstance(a, dict) and isinstance(a.get("address"), str)]
+    hashed = [a for a in accounts if not a.get("password") and isinstance(a.get("password_hash"), str)
+              and a["password_hash"] and _scheme_of(a["password_hash"]) != OWN_SCHEME]
+    if not hashed:
+        return [], []
+    readable = _readable_schemes()
+    needs = [a["address"] for a in hashed if _scheme_of(a["password_hash"]) not in readable]
+    weak = [a["address"] for a in hashed if _scheme_of(a["password_hash"]) in readable
+            and _scheme_of(a["password_hash"]) not in STRONG_SCHEMES]
+    return needs, weak
+
+
+def _said(done):
+    return {"exit": done.returncode, "stdout": done.stdout, "stderr": done.stderr}
+
+
+def _apply_mail_domain(item):
+    name = _text(item, "name")
+    data = item.get("data")
+    if not isinstance(data, dict):
+        raise ValueError("the item has no data (the JSON for mailctl import)")
+    needs, weak = _sort_accounts(data)
+    result = {"weak": weak}
+    if needs:
+        # mailctl would refuse the whole file for these; saying so here keeps nothing half-made.
+        return {"ok": False, **result, "needs_password": needs,
+                "error": f"{name} needs a password for {len(needs)} account(s) before it can be imported: their "
+                         f"password hash is in a scheme this server can't read. Nothing was created. Send the same "
+                         f"item again with the plain password in the \"password\" field of those accounts."}
+    fd, path = tempfile.mkstemp(prefix="migratectl-", suffix=".json")  # created 0600, root's
+    try:
+        os.fchmod(fd, stat.S_IRUSR | stat.S_IWUSR)
+        with os.fdopen(fd, "w") as file:
+            json.dump(data, file)
+        try:
+            done = subprocess.run(["mailctl", "import", path, "--yes", "--verbose", "--keep-hashes"],
+                                  capture_output=True, text=True, timeout=COMMAND_TIMEOUT,
+                                  stdin=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError) as error:
+            return {"ok": False, **result, "error": f"Importing {name} didn't work ({error}). Nothing is known to "
+                                                    f"have been created."}
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    reply = {**result, "mailctl": _said(done)}
+    if done.returncode == 0:
+        return {"ok": True, **reply, "steps": [f"Imported {name} with mailctl."]}
+    lines = (done.stderr or done.stdout or "").strip().splitlines()
+    return {"ok": False, **reply, "error": f"mailctl import didn't work" + (f": {lines[-1]}" if lines else ".")}
+
+
+def _apply_mail_passwords(item):
+    passwords = item.get("passwords")
+    if not isinstance(passwords, dict) or not passwords:
+        raise ValueError("the item has no passwords, like {\"passwords\": {address: password}}")
+    done, failed = [], {}
+    for address, password in passwords.items():
+        if not isinstance(address, str) or not isinstance(password, str) or not password:
+            failed[str(address)] = "there is no password to set"
+            continue
+        try:
+            _run(["mailctl", "address", "password", address, "--password-stdin"], "Setting the password",
+                 stdin=password + "\n")
+            done.append(address)
+        except Failed as error:
+            # The password is only ever on stdin, but keep it out of the words whatever the tool echoes.
+            failed[address] = str(error).replace(password, "***")
+    if failed:
+        return {"ok": False, "done": done, "failed": failed,
+                "error": f"The password could not be set for {len(failed)} of {len(passwords)} account(s): "
+                         f"{', '.join(failed)}. The other accounts were done."}
+    return {"ok": True, "done": done, "steps": [f"Set the password of {a}." for a in done]}
+
+
+def _apply_cron(item):
+    user, line, key = _text(item, "user").strip().lower(), _text(item, "line"), _text(item, "id")
+    if not _USER_NAME.fullmatch(user):
+        raise ValueError(f"{user!r} isn't a valid user name")
+    settings = item.get("settings") or []
+    if not isinstance(settings, list) or not all(isinstance(s, str) for s in settings):
+        raise ValueError("the settings must be a list of NAME=value lines")
+    if any("\n" in text for text in [line, key, *settings]):
+        raise ValueError("a cron line must be one line")
+    marker = f"# migratectl: {key}"
+    try:
+        listed = subprocess.run(["crontab", "-u", user, "-l"], capture_output=True, text=True,
+                                timeout=COMMAND_TIMEOUT, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise Failed(f"Reading the crontab of {user} didn't work ({error}).") from error
+    existing = listed.stdout if listed.returncode == 0 else ""  # no crontab yet is not an error
+    if marker in existing.splitlines():
+        return {"ok": True, "already": True, "steps": [f"The job was already in the crontab of {user}."]}
+    text = existing + ("" if not existing or existing.endswith("\n") else "\n")
+    text += "\n".join([marker, *settings, line]) + "\n"
+    _run(["crontab", "-u", user, "-"], f"Installing the crontab of {user}", stdin=text)
+    return {"ok": True, "already": False, "steps": [f"Added the job to the crontab of {user}."]}
+
+
+APPLIERS = {"site": _apply_site, "mail_domain": _apply_mail_domain, "mail_passwords": _apply_mail_passwords}
+
+
 def apply(request):
     answers = request.get("answers", {})
     if not isinstance(answers, dict):
         return {"ok": False, "error": "The answers must be a JSON object."}
     try:
-        return _apply_site(_only_item(request), answers)
+        item = _only_item(request)
+        kind = item.get("kind")
+        if kind == "site":
+            return _apply_site(item, answers)
+        if kind == "cron":
+            return _apply_cron(item)
+        if kind in ("mail_domain", "mail_passwords"):
+            return APPLIERS[kind](item)
+        raise ValueError(f"I can't apply the kind {kind!r} yet")
     except ValueError as error:
         return {"ok": False, "error": f"I can't apply this item: {error}."}
     except Failed as error:
