@@ -102,6 +102,7 @@ def test_one_domain_leaves_the_others_out():
 def test_a_catch_all_address_is_left_out_and_reported():
     server = _server(**{
         "virtual_aliases": "@example.nl\tinfo@example.nl\nsales@example.nl\tinfo@example.nl\n",
+        "virtual_sender_aliases": "",
         "virtual_users": "info@example.nl\t%s\n@example.nl\t%s\n" % (HASH, HASH),
     })
     inventory = migrate.mail_inventory(server, "mailserver", mail_root="/nonexistent")

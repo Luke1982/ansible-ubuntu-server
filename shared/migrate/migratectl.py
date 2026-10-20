@@ -183,9 +183,11 @@ class Failed(Exception):
     """A command did not do its job. The message says what, in words for a person."""
 
 
-def _run(command, what, stdin=None):
+def _run(command, what, stdin=None, env=None):
     # The request pipe is our own standard input: no child may read from it.
     extra = {"input": stdin} if stdin is not None else {"stdin": subprocess.DEVNULL}
+    if env is not None:
+        extra["env"] = env
     try:
         done = subprocess.run(command, capture_output=True, text=True, timeout=COMMAND_TIMEOUT, **extra)
     except (OSError, subprocess.SubprocessError) as error:
@@ -540,7 +542,22 @@ def finish_site(request):
     return {"ok": True, "steps": [f"Gave the files in {docroot} to {user}.", "Updated the web server."]}
 
 
-HANDLERS = {"hello": hello, "status": status, "apply": apply, "finish_site": finish_site}
+def dns(request):
+    """The text of `mailctl dns show DOMAIN`, as it comes, for the old server to print."""
+    domain = request.get("domain")
+    domain = domain.strip().lower() if isinstance(domain, str) else ""
+    if len(domain) > 253 or not _DOMAIN.fullmatch(domain):
+        return {"ok": False, "error": f"{domain!r} isn't a valid domain name."}
+    try:
+        # COLUMNS: the table is printed for the old server's terminal, which is 80 wide.
+        text = _run(["mailctl", "dns", "show", domain], f"Asking for the DNS records of {domain}",
+                    env=dict(os.environ, COLUMNS="80"))
+    except Failed as error:
+        return {"ok": False, "error": str(error)}
+    return {"ok": True, "text": text}
+
+
+HANDLERS = {"hello": hello, "status": status, "apply": apply, "finish_site": finish_site, "dns": dns}
 
 
 def answer(request):

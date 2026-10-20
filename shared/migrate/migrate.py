@@ -14,6 +14,7 @@ import os
 import pwd
 import re
 import shlex
+import socket
 import subprocess
 import textwrap
 
@@ -156,9 +157,11 @@ def mail_inventory(run, database, domain=None, mail_root=VMAIL):
 
     senders = rows("SELECT alias, users FROM %s.virtual_sender_aliases %s" % (database, where["senders"]),
                    "who may send as which address")
+    no_forward = []  # said last, after the rest of what was left out
     inventory["forwards"] = _forwards(rows(
         "SELECT source, destination FROM %s.virtual_aliases WHERE LOWER(source) <> LOWER(destination) %s "
-        "ORDER BY source, destination" % (database, where["aliases"]), "the forwards"), senders, left_out)
+        "ORDER BY source, destination" % (database, where["aliases"]), "the forwards"), senders, left_out,
+        no_forward)
 
     inventory["spam"] = _spam(run, wanted, notes, left_out)
     folders = []
@@ -174,6 +177,7 @@ def mail_inventory(run, database, domain=None, mail_root=VMAIL):
         if reason:
             inventory["sieve"].remove(entry)
             left_out.append("The filter %s of %s: %s" % (entry["name"], entry["address"], reason))
+    left_out.extend(no_forward)
     return result
 
 
@@ -225,7 +229,7 @@ def _accounts(rows, left_out):
     return accounts
 
 
-def _forwards(rows, senders, left_out):
+def _forwards(rows, senders, left_out, last=None):
     # Postfix keeps who may send as an address as a list of logins; a forward may send as its source when its
     # destination is in that list.
     allowed = {}
@@ -249,6 +253,12 @@ def _forwards(rows, senders, left_out):
             seen.add((source, destination))
             forwards.append({"source": source, "destination": destination,
                              "send_as": destination in allowed.get(source, ())})
+    # The file has a place for this permission only as part of a forward, so one without a forward is named.
+    last = left_out if last is None else last
+    for source in sorted(allowed):
+        for login in sorted(allowed[source]):
+            if (source, login) not in seen:
+                last.append("%s may send as %s, and no forward goes with it" % (login, source))
     return forwards
 
 
@@ -1634,3 +1644,187 @@ def do_again(connection, items, notes, ask, extra_notes=None, **fakes):
         else:
             report.moved.append((item, result))
     return report
+
+
+# ---- The report that ends a run ----------------------------------------------
+
+SYSTEM_DATABASES = ("information_schema", "performance_schema", "mysql", "sys")
+DNS_BY_HAND = "On the new server, run: mailctl dns show %s"
+AFTER_DNS = ("Once the DNS of a site points at the new server, run this on the "
+             "new server for each site, to get its certificate:")
+BOTH_RUN_JOBS = ("Until the DNS points at the new server, BOTH servers run "
+                 "the same cron jobs. Switch the jobs off on the old server "
+                 "when you move the DNS.")
+
+
+def _wrap(text, indent="  "):
+    return textwrap.wrap(text, 79, initial_indent=indent,
+                         subsequent_indent=indent) or [indent]
+
+
+def _section(out, title, lines):
+    if lines:
+        out.extend(["", title] + lines)
+
+
+def _bullets(texts):
+    lines = []
+    for text in texts:
+        lines.extend(textwrap.wrap(str(text), 79, initial_indent="  - ",
+                                   subsequent_indent="    ") or ["  -"])
+    return lines
+
+
+def _ask_dns(connection, domain):
+    """The new server's table of records for a domain, or None."""
+    try:
+        answer = connection.ask({"request": "dns", "domain": domain})
+    except Exception:  # a missing DNS section never stops the report
+        return None
+    text = answer.get("text") if answer.get("ok") else None
+    return text.rstrip() if isinstance(text, str) and text.strip() else None
+
+
+def _imapsync(old, new, address):
+    secret = "'TYPE-THE-PASSWORD-HERE'"
+    return "\n".join(["imapsync \\"] + [
+        "  --host%s %s --user%s %s \\" % (n, shlex.quote(host), n,
+                                           shlex.quote(address))
+        + "\n  --password%s %s --ssl%s%s" % (n, secret, n, end)
+        for n, host, end in ((1, old, " \\"), (2, new, ""))]).splitlines()
+
+
+def _same_item(one, other):
+    return one.get("id") is not None and one.get("id") == other.get("id")
+
+
+def report(result, connection=None, old_server=None, found_sites=None,
+           mail=None, databases=None, items=None, notes=None,
+           extra_notes=None, mail_database=None):
+    """What a run did and what is still to do by hand, as text of at most
+    79 columns. 'connection' is asked for the DNS records; 'found_sites' is
+    sites(), 'databases' is database_sizes(), 'items' everything the
+    dashboard offered, 'mail' the Mail from mail_inventory() and 'notes'
+    what the discovery could not read."""
+    new_name = getattr(connection, "host", None) or "the new server"
+    old_name = old_server or socket.gethostname()
+    moved = list(result.moved)
+    undone = [item for item in result.files_to_copy
+              if not any(_same_item(item, f[0]) for f in result.failed)]
+    if not moved and not result.files_to_copy:
+        line = "Nothing was moved."
+        if result.failed or result.skipped or result.stopped:
+            line = "Nothing was moved (%d failed, %d left alone)." % (
+                len(result.failed), len(result.skipped))
+        return "\n".join(_wrap(line, "")) + "\n"
+
+    out = ["Report", "======"]
+    done = []
+    for item, answer in moved:
+        title = _title(item)
+        if item.get("kind") == "site":
+            where = answer.get("docroot") if isinstance(answer, dict) else None
+            title += (": the Linux user on the new server is %s%s"
+                      % (item.get("user") or site_user(item["name"]),
+                         ", the files are in %s" % where if where else ""))
+        done.append(title)
+    _section(out, "Moved:", _bullets(done))
+    _section(out, "Made on the new server, but its files and database are "
+             "not there yet:", _bullets(
+                 "%s (Linux user %s)" % (_title(i), i.get("user") or
+                                         site_user(i["name"])) for i in undone))
+
+    def cron_by_hand(item):
+        return item.get("kind") == "cron" and item.get("problem") == NO_SITE_JOB
+
+    failed = [(i, why) for i, why in result.failed if not cron_by_hand(i)]
+    _section(out, "Did not work:", _bullets(
+        "%s: %s" % (_title(i), why) for i, why in failed))
+    _section(out, "Left alone:", _bullets(
+        "%s: %s" % (_title(i), why) for i, why in result.skipped
+        if not cron_by_hand(i)))
+    if result.stopped:
+        _section(out, "The run stopped early:", _bullets([result.stopped]))
+    _section(out, "Not tried:", _bullets(_title(i) for i in result.not_tried))
+    _section(out, "Mail accounts left out, because they got no password:",
+             _bullets(result.left_out))
+    _section(out, "Good to know:", _bullets(extra_notes or []))
+
+    domains, accounts = [], []
+    for item, _ in moved:
+        if item.get("kind") != "mail_domain":
+            continue
+        domains.append(item.get("name") or "")
+        data = item.get("data") if isinstance(item.get("data"), dict) else {}
+        for account in data.get("addresses") or []:
+            address = account.get("address") if isinstance(account, dict) \
+                else None
+            if address and address not in result.left_out:
+                accounts.append(address)
+    if accounts:
+        out.extend([""] + textwrap.wrap(
+            "Mail messages are not moved by this tool. Run one of these for "
+            "each account, with the password filled in (it is the same on "
+            "both servers):", 79))
+        for address in accounts:
+            out.append("")
+            out.extend(_imapsync(old_name, new_name, address))
+    for domain in domains:
+        text = _ask_dns(connection, domain) if connection else None
+        out.extend(["", "DNS records for %s:" % domain])
+        if text:
+            out.extend(text.splitlines())
+        else:
+            out.extend(_wrap(DNS_BY_HAND % domain))
+
+    sites_done = [i for i, _ in moved if i.get("kind") == "site"]
+    if sites_done:
+        out.extend([""] + textwrap.wrap(AFTER_DNS, 79))
+        out.extend("  domainctl add %s" % i["name"] for i in sites_done)
+
+    jobs = []
+    for item in list(items or []) + [i for i, _ in result.skipped] + [
+            i for i, _ in result.failed]:
+        if cron_by_hand(item) and not any(_same_item(item, j) for j in jobs):
+            jobs.append(item)
+    if any(i.get("kind") == "cron" for i, _ in moved):
+        out.extend([""] + textwrap.wrap(BOTH_RUN_JOBS, 79))
+    _section(out, "Cron jobs that belong to no site, so they were not moved:",
+             _bullets("%s (user %s)" % (j["line"], j.get("old_user")
+                                        or j.get("user")) for j in jobs))
+
+    mail_left = list(getattr(mail, "left_out", None) or [])
+    catch_alls = [t for t in mail_left if "catch-all" in t
+                  or (t.startswith("The forward from") and "catch" in t)]
+    send_as = [t for t in mail_left if "may send as" in t]
+    other_forwards = [t for t in mail_left if t.startswith("The forward from")
+                      and t not in catch_alls]
+    rest = [t for t in mail_left
+            if t not in catch_alls and t not in send_as
+            and t not in other_forwards]
+    hand = []
+    _section(hand, "Catch-all addresses and aliases that could not be moved. "
+             "Set them up on the new server by hand:",
+             _bullets(catch_alls + other_forwards))
+    _section(hand, "Permission to send as another address, with no forward "
+             "to carry it. Set it on the new server by hand:",
+             _bullets(send_as))
+    _section(hand, "Other mail settings that were left out:", _bullets(rest))
+    others = [s for s in (found_sites or []) if not s.get("wordpress")]
+    _section(hand, "Sites that are not WordPress. They are not moved; copy "
+             "them by hand:", _bullets(
+                 "%s (files in %s)" % (s["name"], s.get("docroot") or
+                                       "an unknown place") for s in others))
+    known = set(SYSTEM_DATABASES) | {SPAM_DATABASE}
+    known.update(d for d in (mail_database,) if d)
+    known.update(s["database"] for s in (found_sites or [])
+                 if s.get("database"))
+    loose = sorted(name for name in (databases or {}) if name not in known)
+    _section(hand, "Databases that belong to no site. They are not moved:",
+             _bullets(loose))
+    _section(hand, "What the server could not read while looking around:",
+             _bullets(notes or []))
+    if hand:
+        out.extend(["", "Still to do by hand", "-------------------"])
+        out.extend(hand[1:] if hand[0] == "" else hand)
+    return "\n".join(out) + "\n"
