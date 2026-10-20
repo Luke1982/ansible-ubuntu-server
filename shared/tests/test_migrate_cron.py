@@ -210,7 +210,7 @@ def test_a_job_whose_site_has_not_moved_is_not_sent_and_says_why(tmp_path):
 
     report = migrate.run(Connection(), [item], lambda text: None, php="/usr/bin/php")
     assert asked == [] and report.moved == []
-    assert len(report.skipped) == 1 and "has not moved yet" in report.skipped[0][1]
+    assert len(report.skipped) == 1 and "Move the site first" in report.skipped[0][1]
 
 
 def test_a_job_sent_after_its_site_carries_the_new_paths(tmp_path):

@@ -1206,10 +1206,10 @@ def pick(lines, typed, say=print):
 class Report(object):
     """What a run did, as values. moved holds (item, answer) pairs of what is completely done; failed holds
     (item, message) and skipped (item, why). already holds (item, answer) for what the new server found it had
-    done before, so nothing was changed for it. files_to_copy are sites that were made on the new server but whose
-    files
-    and database are NOT brought over yet (no move was given, or it failed); such a site is never in moved. left_out are the mail accounts
-    that got no password. stopped is the message that ended the run early, and not_tried the items after it."""
+    done before, so nothing was changed for it. files_to_copy are sites that were made on the new server but
+    whose files and database are NOT brought over yet (no move was given, or it failed); such a site is never in
+    moved. left_out are the mail accounts that got no password. stopped is the message that ended the run early,
+    and not_tried the items after it."""
 
     def __init__(self):
         self.moved, self.skipped, self.failed = [], [], []
@@ -1485,9 +1485,9 @@ SITE_FIRST = ("The site %s is not being moved, so this job isn't either: "
               "its paths would point at files that aren't there.")
 NO_OLD_ROOT = ("I don't know where the files of %s are on this server, so "
                "the paths in this job can't be pointed at the new server.")
-NO_NEW_ROOT = ("The site %s has not moved yet, so where its files are on the "
-               "new server isn't known and this job's paths can't be pointed "
-               "at them. Move the site first, then this job.")
+NO_NEW_ROOT = ("I don't know where the files of %s are on the new server, so "
+               "this job's paths can't be pointed at them. Move the site "
+               "first, in this same run, and then this job.")
 OUTSIDE_SITE = ("This job uses %s, which is not part of the site, so there "
                 "is no way to know where it is on the new server. Set this "
                 "job up there by hand.")
