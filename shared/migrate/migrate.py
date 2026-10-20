@@ -1183,12 +1183,15 @@ def pick(lines, typed, say=print):
 
 class Report(object):
     """What a run did, as values. moved holds (item, answer) pairs of what is completely done; failed holds
-    (item, message) and skipped (item, why). files_to_copy are sites that were made on the new server but whose files
+    (item, message) and skipped (item, why). already holds (item, answer) for what the new server found it had
+    done before, so nothing was changed for it. files_to_copy are sites that were made on the new server but whose
+    files
     and database are NOT brought over yet (no move was given, or it failed); such a site is never in moved. left_out are the mail accounts
     that got no password. stopped is the message that ended the run early, and not_tried the items after it."""
 
     def __init__(self):
         self.moved, self.skipped, self.failed = [], [], []
+        self.already = []
         self.files_to_copy, self.left_out = [], []
         self.stopped, self.not_tried = None, []
         self.interrupted = False  # the person pressed Ctrl-C
@@ -1307,7 +1310,12 @@ def run(connection, items, ask, move=None, notes=None, status=None, php=None,
                 else:
                     if notes is not None:
                         notes.moved(item)
-                    report.moved.append((item, answer))
+                    # The new server says when it had done this before: a
+                    # job behind its own marker is not work this run did.
+                    if answer.get("already"):
+                        report.already.append((item, answer))
+                    else:
+                        report.moved.append((item, answer))
             elif answer.get("skipped"):
                 report.skipped.append((item, answer.get("error")
                                        or "Left alone, as you asked."))
@@ -2036,6 +2044,8 @@ def report(result, connection=None, old_server=None, found_sites=None,
                          ", the files are in %s" % where if where else ""))
         done.append(title)
     _section(out, "Moved:", _bullets(done))
+    _section(out, "Was already there, so nothing was changed:",
+             _bullets(_what(item) for item, _ in result.already))
     _section(out, "Made on the new server, but its files and database are "
              "not there yet:", _bullets(
                  "%s (Linux user %s)" % (_what(i), i.get("user") or
@@ -2103,7 +2113,7 @@ def report(result, connection=None, old_server=None, found_sites=None,
             i for i, _ in result.failed]:
         if cron_by_hand(item) and not any(_same_item(item, j) for j in jobs):
             jobs.append(item)
-    if any(i.get("kind") == "cron" for i, _ in moved):
+    if any(i.get("kind") == "cron" for i, _ in moved + list(result.already)):
         out.extend([""] + textwrap.wrap(BOTH_RUN_JOBS, 79))
     _section(out, "Cron jobs that belong to no site, so they were not moved:",
              _bullets("%s (user %s)" % (j["line"], j.get("old_user")

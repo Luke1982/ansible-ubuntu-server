@@ -245,3 +245,32 @@ def test_a_lock_file_in_tmp_travels_as_it_is(tmp_path):
     assert item["problem"] is None
     sent, _ = migrate.cron_for_new_server(item, NEW_ROOT, "/usr/bin/php")
     assert sent["line"] == "@daily flock -n /tmp/x.lock /usr/bin/php %s/x.php" % NEW_ROOT
+
+
+def test_a_job_the_state_says_moved_is_not_offered_a_second_time(tmp_path):
+    item = _item(tmp_path, PLESK)
+    notes = migrate.State(path=str(tmp_path / "state.json"), say=lambda text: None)
+    notes.items[item["id"]] = {"status": "moved"}
+    # The new server can't read a crontab through either tool, so it always says new for a job.
+    status = {item["id"]: {"state": "new", "detail": "Nothing on this server was checked for this job."}}
+
+    assert migrate.offered([item], status, notes) == []
+    assert "already moved from here" in migrate.dashboard([item], status, notes)
+
+
+def test_a_job_the_new_server_already_had_is_not_reported_as_moved(tmp_path):
+    item = _item(tmp_path, PLESK)
+    notes = migrate.State(path=str(tmp_path / "state.json"), say=lambda text: None)
+    notes.items[SITE_ITEMS[0]["id"]] = {"status": "moved", "docroot": NEW_ROOT}  # its site moved in an earlier run
+
+    class Connection(object):
+        def ask(self, request):
+            return {"ok": True, "already": True, "steps": ["The job was already in the crontab of shopexample."]}
+
+    report = migrate.run(Connection(), [item], lambda text: None, php="/usr/bin/php",
+                         notes=notes, status={item["id"]: {"state": "new"}},
+                         extra_notes=[])
+    assert report.moved == [] and [i["id"] for i, _ in report.already] == [item["id"]]
+    text = migrate.report(report)
+    assert "Was already there" in text and "Moved:" not in text
+    assert "BOTH servers" in text  # both servers still run it until the DNS moves
