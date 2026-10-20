@@ -145,7 +145,7 @@ A reviewer read this document and asked what a builder couldn't settle alone. Th
 | Catch-all addresses and aliases mailctl can't express | Left out of the file before it is imported, so one of them can't refuse the whole domain, and listed at the end as hand work |
 | One mail filter the new side refuses | `mailctl import` and `mailctl filters import` take the filters they can read and name the ones they can't, instead of refusing the whole file over one of them. That is a change to mailctl, and part of this work |
 | Databases that belong to no WordPress site | Reported, like the sites that aren't WordPress. Never moved by itself |
-| Being allowed to send under another address, where no forward goes with it | A mailbox can be allowed to put another address in the From line. The file carries that along with the forward it belongs to, so a permission without a forward has nowhere to go: it is printed at the end for you to set yourself |
+| Being allowed to send under another address, where no forward goes with it | A mailbox can be allowed to put another address in the From line. The export file only has a field for that as part of a forward, so a permission without a forward can't be written to the file. It is printed at the end and set on the new server by hand |
 
 ## Left to the builder
 
