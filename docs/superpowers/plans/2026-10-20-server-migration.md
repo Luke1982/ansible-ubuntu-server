@@ -247,7 +247,7 @@ git commit -am "feat(migrate): the new server says what it already has"
   - `mail_database(run) -> str or None` — the database that has all four tables, or None.
   - `mail_inventory(run, database, domain=None) -> Mail` — `.file` is what `mailctl import` reads, for one domain or all of them, with `version`, `domains`, `addresses`, `forwards`, `spam`, `sieve` and nothing else; `.left_out` and `.notes` sit beside it, never inside it, because a file with an unknown key is refused whole.
   - `filters_of(run, address) -> list` — `doveadm sieve list`/`get`, falling back to the account's sieve directory.
-  - `run(*args, stdin=None) -> str` — the one place a command is run; tests pass their own.
+  - `run_command(*args, stdin=None) -> str` — the one place a command is run; tests pass their own. (Named `run` until Task 11, which needed that name for the batch runner; the discovery functions still take it as their `run` parameter.)
 
 - [ ] **Step 1: Write the failing tests**
 

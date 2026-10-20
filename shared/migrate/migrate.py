@@ -1528,7 +1528,11 @@ def move_site(connection, site, answer, again=False, notes=None, ask=None,
     shell = " ".join(shlex.quote(word)
                      for word in ["ssh"] + connection.options())
     try:
-        code = runner("rsync", "-az", "-s", "--progress", "--omit-dir-times",
+        # --info=progress2: one line that keeps being overwritten, instead of
+        # --progress, which prints a line per file and buries every real
+        # message under fifty thousand of them on a WordPress site. It wants
+        # rsync 3.1, which every server new enough to run this file has.
+        code = runner("rsync", "-az", "-s", "--info=progress2", "--human-readable", "--omit-dir-times",
                       "--no-owner", "--no-group", "-e", shell,
                       "--rsync-path", "sudo -n rsync",
                       source.rstrip("/") + "/", target)
