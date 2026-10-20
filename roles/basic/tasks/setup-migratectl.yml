@@ -1,0 +1,11 @@
+---
+
+# The old server runs this over SSH as `sudo -n migratectl` when a server is moved over to this one.
+# It is installed everywhere so a server is ready before anyone needs to move to it.
+- name: Install migratectl
+  copy:
+    src: "{{ role_path }}/../../shared/migrate/migratectl.py"
+    dest: /usr/local/bin/migratectl
+    mode: 0755
+    owner: root
+    group: root
