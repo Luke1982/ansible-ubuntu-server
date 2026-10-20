@@ -6,18 +6,31 @@ Automated provisioning of Ubuntu servers with roles for base configuration, web 
 
 ### 1. Prepare the target server
 
-On a fresh Ubuntu server, create the `ansible` user and grant it passwordless sudo:
+On a fresh Ubuntu server, as root, create the `ansible` user and grant it passwordless sudo. The whole block can
+be pasted at once: nothing in it asks a question.
 
 ```bash
-adduser ansible
+adduser --disabled-password --gecos "" ansible
 usermod -aG sudo ansible
 echo "ansible ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/ansible
+chmod 440 /etc/sudoers.d/ansible
 ```
 
-Copy your SSH key to the server:
+Plain `adduser ansible` asks for a password and then for a full name, a room number and so on, and anything pasted
+after it is answered into those questions instead of being run.
+
+The user has no password: Ansible logs in with a key, and sudo asks for none. So give it the key you are logged in
+with yourself, rather than `ssh-copy-id`, which would need a password to get in:
 
 ```bash
-ssh-copy-id ansible@<server-ip>
+install -d -m 700 -o ansible -g ansible /home/ansible/.ssh
+install -m 600 -o ansible -g ansible ~/.ssh/authorized_keys /home/ansible/.ssh/authorized_keys
+```
+
+From your own machine, check that it works before running anything else:
+
+```bash
+ssh ansible@<server-ip> sudo true
 ```
 
 ### 2. Install Ansible dependencies
