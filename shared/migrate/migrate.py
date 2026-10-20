@@ -8,6 +8,7 @@ old server has an old Python and none of our other files.
 import glob
 import json
 import os
+import pwd
 import re
 import subprocess
 
@@ -561,3 +562,123 @@ def _outside_or_missing_config(site, config):
     elif os.path.lexists(os.path.join(docroot, "wp-includes", "version.php")):
         site["wordpress"] = True
         site["problem"] = "%s has WordPress's files but no wp-config.php, so its database isn't known." % docroot
+
+
+CRON_DIR = "/etc/cron.d"
+PASSWD = "/etc/passwd"
+
+_CRON_ENV = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\s*=")
+_CRON_PATH = re.compile(r"""(?<![\w.:/-])/[^\s'"`<>;|&()=,]+""")
+_CRON_WORD = re.compile(r"""[^\s'"`<>;|&()]+""")
+# php, php7.4, php-cli, ea-php74, lsphp81 and the panel copies of them
+_PHP_NAME = re.compile(r"^(?:ea-|ls)?php(?:-?cli)?[0-9.]*(?:-cli)?$")
+_OTHER_PROGRAMS = {"wp": "wp-cli", "curl": "curl", "wget": "wget", "bash": "bash", "sh": "sh", "python3": "python3",
+                   "python": "python"}
+
+
+def _cron_users(sites, passwd, notes):
+    names = []
+    for site in sites:
+        try:
+            names.append(pwd.getpwuid(os.stat(site["docroot"]).st_uid).pw_name if site.get("docroot") else None)
+        except (OSError, KeyError):
+            pass
+    try:
+        with open(passwd) as handle:
+            names.extend(line.split(":")[0] for line in handle if line.strip() and not line.startswith("#"))
+    except OSError as problem:
+        notes.append("Couldn't read %s (%s), so only the owners of the sites' folders were checked for cron jobs."
+                     % (passwd, problem.strerror or problem))
+    names.append("root")
+    seen = []
+    for name in names:
+        if name and name not in seen:
+            seen.append(name)
+    return seen
+
+
+def _cron_lines(text, with_user):
+    """(line, user, command) for each job; comments, blank lines and NAME=value settings are not jobs. A line starts
+    with five time fields or one @word, and in /etc/cron.d a user name follows."""
+    for raw in text.split("\n"):
+        line = raw.strip()
+        if not line or line.startswith("#") or _CRON_ENV.match(line):
+            continue
+        before = (1 if line.startswith("@") else 5) + (1 if with_user else 0)
+        fields = line.split(None, before)
+        if len(fields) <= before:
+            continue
+        yield line, (fields[before - 1] if with_user else None), fields[before]
+
+
+def _interpreter(command):
+    """What the job runs, as written, or None when nothing in it is a program this can name. The first
+    recognisable word wins, so 'cd /x && /usr/bin/php7.4 cron.php' gives the php and not the cd."""
+    for word in _CRON_WORD.findall(command):
+        name = os.path.basename(word)
+        if _PHP_NAME.match(name) or name in _OTHER_PROGRAMS:
+            return word
+    return None
+
+
+def _site_of(command, sites):
+    best = None
+    for path in _CRON_PATH.findall(command):
+        path = os.path.normpath(path)
+        for site in sites:
+            root = (site.get("docroot") or "").rstrip("/")
+            if root and (path == root or path.startswith(root + "/")):
+                if best is None or len(root) > len(best[0]):
+                    best = (root, site["name"])
+    return best[1] if best else None
+
+
+def _cron_job(line, user, command, sites):
+    interpreter = _interpreter(command)
+    problem = None
+    if interpreter is None:
+        problem = "I can't tell which program this job runs, so it can't be set up for the new server by itself."
+    return {"user": user, "line": line, "site": _site_of(command, sites), "interpreter": interpreter,
+            "problem": problem}
+
+
+def cron_jobs(run, sites, notes=None, passwd=PASSWD, cron_dir=CRON_DIR):
+    """One dict per cron job on the server: user, line (as written), site (the name of the site its paths point
+    into, or None), interpreter (as the job writes it, or None) and problem (plain words, or None). Everything
+    that couldn't be read goes into notes: a job nobody knows about stops running after the move."""
+    notes = notes if notes is not None else []
+    jobs = []
+    users = _cron_users(sites, passwd, notes)
+    for index, user in enumerate(users):
+        try:
+            output = run("crontab", "-l", "-u", user)
+        except CommandFailed as failed:
+            if failed.missing:
+                notes.append("The crontab command isn't installed, so the personal cron jobs of %s weren't read."
+                             % ", ".join(users[index:]))
+                break
+            if "no crontab for" not in failed.message:
+                notes.append("Couldn't read the cron jobs of %s: %s." % (user, failed.message))
+            continue
+        for line, _, command in _cron_lines(output, False):
+            jobs.append(_cron_job(line, user, command, sites))
+    try:
+        names = sorted(os.listdir(cron_dir))
+    except FileNotFoundError:
+        names = []
+    except OSError as problem:
+        notes.append("Couldn't read the cron jobs in %s: %s." % (cron_dir, problem.strerror or problem))
+        names = []
+    for name in names:
+        path = os.path.join(cron_dir, name)
+        if name.startswith(".") or not os.path.isfile(path):
+            continue
+        try:
+            with open(path, errors="replace") as handle:
+                text = handle.read()
+        except OSError as problem:
+            notes.append("Couldn't read the cron file %s: %s." % (path, problem.strerror or problem))
+            continue
+        for line, user, command in _cron_lines(text, True):
+            jobs.append(_cron_job(line, user, command, sites))
+    return jobs
