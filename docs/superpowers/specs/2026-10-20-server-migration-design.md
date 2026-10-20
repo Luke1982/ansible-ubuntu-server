@@ -94,8 +94,9 @@ the logs even while the domain still points at the old server), then the databas
 rsyncs the files over the same SSH connection and streams a dump of the database into the new one. The new side
 writes the database name, user and password into the `wp-config.php` there. Nothing is deleted on the old server.
 
-**A cron job.** Installed for the user the site belongs to, with the paths rewritten to the new web root, and shown
-before it is installed: a job that refers to anything outside the site is shown and skipped.
+**A cron job.** Installed for the user the site belongs to and running from that moment, with the paths and the
+PHP interpreter rewritten for the new server. A job that refers to anything outside the site is shown and skipped.
+Until the DNS is flipped the old server runs the same jobs, which the run says once, in the report.
 
 ## What the end of a run says
 
@@ -138,7 +139,7 @@ A reviewer read this document and asked what a builder couldn't settle alone. Th
 | A password hash the new server can't check | That account is left out of the import and reported, with the command to create it by hand. No password is ever invented. `--ask-passwords` asks for one per account during the run instead |
 | What "already there" means per item | Mail: `mailctl import` merges and only adds what is missing, so a domain that is partly there needs no question. A site asks when its web root holds files or its database exists. A database is never replaced without a yes meant for that database |
 | Who makes the WordPress database and writes `wp-config.php` | A new `domainctl wp adopt`: it makes the database and its user, imports the dump, and changes the four `define()` lines in the `wp-config.php` that came across, keeping its salts, table prefix and own constants. `domainctl` stays the only thing that touches sites and databases; after the rsync the files are given to the site's user and `domainctl sync` is run |
-| Cron jobs starting at once | Installed switched off, with the line to switch them on at cutover: while DNS still points at the old server both would run, and a newsletter or a payment job that runs twice is worse than one that runs late. The interpreter path is rewritten (`/opt/plesk/php/8.1/bin/php` and the like); a job whose paths can't be mapped is shown and skipped |
+| Cron jobs starting at once | Installed and running, as asked. Until the DNS is flipped both servers run them, which the run says once. The interpreter path is rewritten (`/opt/plesk/php/8.1/bin/php` and the like); a job whose paths can't be mapped is shown and skipped |
 | Catch-all addresses and aliases mailctl can't express | Left out of the file before it is imported, so one of them can't refuse the whole domain, and listed at the end as hand work |
 | One Sieve filter the new side refuses | Filters are their own step, after the accounts: a filter that fails costs filters, never the domain |
 | Databases that belong to no WordPress site | Reported, like the sites that aren't WordPress. Never moved by itself |
