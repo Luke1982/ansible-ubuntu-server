@@ -8,6 +8,7 @@ mailctl and domainctl are only ever run as commands, never imported, so either m
 
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -37,12 +38,16 @@ def _is_rule(line):
     return all(c.isspace() or unicodedata.name(c, "").startswith("BOX DRAWINGS") for c in line)
 
 
-def _table_rows(command, what):
+def _table_rows(command, what, by_column=False):
     """The rows of a table that a tool prints for people, each as its list of fields.
 
     The tools have no machine-readable output, so this is the one place that reads their tables. It only trusts
     a table it can see whole: a header with a border line under it. Output it can't make sense of is an error,
     never an empty list, because "nothing there" would make the caller create things that already exist.
+
+    A table with a cell that holds several words (the aliases of a site) is cut at the columns of its header,
+    since the words can't be told from separate fields. A cell too long for its column continues on a line of
+    its own with the other cells empty; that line is merged back into the row above it.
     """
     cannot = f"couldn't read the list of {what} on this server"
     try:
@@ -52,15 +57,25 @@ def _table_rows(command, what):
         raise Unreadable(f"{cannot} ({error})") from error
     if done.returncode != 0:
         raise Unreadable(f"{cannot}: {command[0]} stopped with an error")
-    lines = [line.strip() for line in done.stdout.splitlines() if line.strip()]
+    lines = [line.rstrip() for line in done.stdout.splitlines() if line.strip()]
     rule = next((i for i, line in enumerate(lines) if i > 0 and _is_rule(line)), None)
     if rule is None:
         if any(line.startswith("There are no") for line in lines):
             return []
         raise Unreadable(cannot)
-    rows = [line.split() for line in lines[rule + 1:] if not _is_rule(line)]
-    if not rows:
+    body = [line for line in lines[rule + 1:] if not _is_rule(line)]
+    if not body:
         raise Unreadable(cannot)
+    if not by_column:
+        return [line.split() for line in body]
+    starts = [m.start() for m in re.finditer(r"\S+(?: \S+)*", lines[rule - 1])]
+    rows = []
+    for line in body:
+        cells = [line[start:end].strip() for start, end in zip(starts, starts[1:] + [None])]
+        if rows and not cells[0]:
+            rows[-1] = [f"{old} {new}".strip() for old, new in zip(rows[-1], cells)]
+        else:
+            rows.append(cells)
     return rows
 
 
@@ -72,7 +87,7 @@ def _mail_domains(cache):
 
 def _sites(cache):
     if "sites" not in cache:
-        cache["sites"] = _table_rows(["domainctl", "list"], "sites")
+        cache["sites"] = _table_rows(["domainctl", "list"], "sites", by_column=True)
     return cache["sites"]
 
 
@@ -97,18 +112,20 @@ def _mail_domain_state(item, cache):
 def _site_state(item, cache):
     domain, user = _text(item, "name"), _text(item, "user")
     for row in _sites(cache):
+        served = [row[1], *re.findall(r"[^\s,]+", row[2])] if len(row) > 2 else row[1:2]
         if row[0] == user:
-            if len(row) > 1 and row[1] == domain:
+            if domain in served[:1]:
                 return "exists", f"The site {domain} is already here."
             return "refused", f"The user {user} already serves another site here. Use another user name."
-        if len(row) > 1 and row[1] == domain:
+        if domain in served:
             return "refused", f"{domain} is already served here by the user {row[0]}."
     return "new", f"{domain} is not on this server yet."
 
 
 def _cron_state(item, cache):
     # A crontab can't be read through either tool, so a cron job is only ever added, never compared.
-    return "new", f"The job will be added to the crontab of {_text(item, 'user')}."
+    return "new", (f"Nothing on this server was checked for this job; it will be added to the crontab of "
+                   f"{_text(item, 'user')}.")
 
 
 KINDS = {  # kind -> (tool it needs, how to judge an item)

@@ -226,3 +226,33 @@ def test_an_answer_that_cannot_be_serialized_becomes_an_error_and_the_loop_goes_
     answers = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert [a["ok"] for a in answers] == [False, False]
     assert "JSON" in answers[0]["error"]
+
+
+WRAPPED_SITES = (
+    " Site      Domain        Also                       Certificate \n"
+    f" {BAR} \n"
+    " example   example.nl    www.example.nl, shop.nl,   valid \n"
+    "                         blog.example.nl                      \n"
+    " second    second.nl     \u2013                          valid \n"
+)
+
+
+def test_a_domain_served_as_an_alias_of_another_site_is_refused(lists):
+    lists["domainctl"] = WRAPPED_SITES
+    answer = site("shop.nl", "shopuser")
+    assert answer["state"] == "refused" and "example" in answer["detail"]
+
+
+def test_an_alias_on_a_wrapped_line_is_still_found(lists):
+    lists["domainctl"] = WRAPPED_SITES
+    assert site("blog.example.nl", "blog")["state"] == "refused"
+
+
+def test_a_site_next_to_a_wrapped_row_is_still_read_and_a_free_domain_is_new(lists):
+    lists["domainctl"] = WRAPPED_SITES
+    assert site("second.nl", "second")["state"] == "exists"
+    assert site("free.nl", "free")["state"] == "new"
+
+
+def test_a_cron_job_says_nothing_on_the_server_was_checked(lists):
+    assert "Nothing on this server was checked" in status("cron:example:0", "cron", user="example")["detail"]
