@@ -69,3 +69,160 @@ def test_a_line_nested_too_deeply_gets_an_error_and_the_next_line_is_still_answe
     migratectl.main()
     answers = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert [a["ok"] for a in answers] == [False, True]
+
+
+BAR = "\u2501" * 69
+MAIL_TABLE = (
+    " " * 69 + " \n"
+    " Domain                 Addresses   Forwards   Disk usage   DKIM key \n"
+    f" {BAR} \n"
+    " boersma-advocaten.nl           1          0          0 B   \u2713        \n"
+    " " * 1 + " " * 68 + " \n"
+)
+SITES_TABLE = (
+    " Site      Domain        Also   Certificate \n"
+    f" {BAR} \n"
+    " example   example.nl    \u2013      valid \n"
+)
+NO_SITES = "There are no sites on this server yet.\n"
+
+
+@pytest.fixture
+def lists(monkeypatch):
+    """Both tools installed; what they print is set per test in the returned dict, keyed by command name."""
+    installed = {"mailctl": "/usr/local/bin/mailctl", "domainctl": "/usr/local/bin/domainctl"}
+    monkeypatch.setattr(migratectl.shutil, "which", installed.get)
+    output = {"mailctl": MAIL_TABLE, "domainctl": SITES_TABLE}
+    seen = []
+
+    def run(command, **kwargs):
+        seen.append(kwargs)
+        out = output[command[0]]
+        if isinstance(out, int):
+            return types.SimpleNamespace(returncode=out, stdout="", stderr="boom")
+        return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
+
+    monkeypatch.setattr(migratectl.subprocess, "run", run)
+    output["seen"] = seen
+    return output
+
+
+def status(item_id, kind, **fields):
+    item = {"id": item_id, "kind": kind, **fields}
+    answer = migratectl.answer({"request": "status", "items": [item]})
+    assert answer["ok"] is True, answer
+    return answer["items"][item_id]
+
+
+def mail(name):
+    return status(f"mail:{name}", "mail_domain", name=name)
+
+
+def site(name, user):
+    return status(f"site:{name}", "site", name=name, user=user)
+
+
+def test_a_mail_domain_the_server_has_is_exists_with_what_is_in_it(lists):
+    answer = mail("boersma-advocaten.nl")
+    assert answer["state"] == "exists"
+    assert "1 accounts" in answer["detail"] and "0 forwards" in answer["detail"]
+
+
+def test_a_mail_domain_the_server_does_not_have_is_new(lists):
+    assert mail("other.nl")["state"] == "new"
+
+
+def test_the_tables_are_read_at_a_width_that_does_not_cut_them_off(lists):
+    mail("other.nl")
+    assert lists["seen"][0]["env"]["COLUMNS"] == "200"
+
+
+def test_a_site_whose_user_is_taken_by_another_site_is_refused(lists):
+    answer = site("other.nl", "example")
+    assert answer["state"] == "refused" and "example" in answer["detail"]
+
+
+def test_a_site_that_is_already_set_up_is_exists(lists):
+    assert site("example.nl", "example")["state"] == "exists"
+
+
+def test_a_domain_served_by_another_user_is_refused(lists):
+    assert site("example.nl", "other")["state"] == "refused"
+
+
+def test_a_site_with_a_free_user_and_domain_is_new(lists):
+    assert site("other.nl", "other")["state"] == "new"
+
+
+def test_a_server_with_no_sites_says_new_for_a_site(lists):
+    lists["domainctl"] = NO_SITES
+    assert site("example.nl", "example")["state"] == "new"
+
+
+def test_a_cron_job_is_new_because_the_crontab_cannot_be_compared(lists):
+    assert status("cron:example:0", "cron", user="example")["state"] == "new"
+
+
+def test_a_server_without_mailctl_refuses_mail_items(fake_command):
+    """A web-only server says so instead of failing on a command that isn't there."""
+    answer = mail("example.nl")
+    assert answer["state"] == "refused" and "mailctl" in answer["detail"]
+
+
+def test_a_server_without_domainctl_refuses_sites(fake_command):
+    assert site("example.nl", "example")["state"] == "refused"
+
+
+def test_a_list_that_cannot_be_read_is_refused_never_new(lists):
+    lists["mailctl"] = "Something unexpected happened\n"
+    answer = mail("example.nl")
+    assert answer["state"] == "refused" and "ouldn't read the list of mail domains" in answer["detail"]
+
+
+def test_a_table_with_a_header_but_no_rows_is_refused_never_new(lists):
+    lists["mailctl"] = " Domain  Addresses \n " + BAR + " \n"
+    assert mail("example.nl")["state"] == "refused"
+
+
+def test_a_list_command_that_fails_is_refused_never_new(lists):
+    lists["domainctl"] = 1
+    assert site("example.nl", "example")["state"] == "refused"
+
+
+def test_a_list_command_that_cannot_run_is_refused_never_new(lists, monkeypatch):
+    def broken(command, **kwargs):
+        raise OSError("no such file")
+
+    monkeypatch.setattr(migratectl.subprocess, "run", broken)
+    assert mail("example.nl")["state"] == "refused"
+
+
+def test_a_kind_it_does_not_know_is_refused(lists):
+    assert status("x:1", "teapot")["state"] == "refused"
+
+
+def test_an_item_without_a_name_is_refused_not_a_crash(lists):
+    assert status("mail:?", "mail_domain")["state"] == "refused"
+
+
+def test_items_without_a_list_or_an_id_are_an_error(lists):
+    assert migratectl.answer({"request": "status"})["ok"] is False
+    assert migratectl.answer({"request": "status", "items": [{"kind": "site"}]})["ok"] is False
+
+
+def test_each_item_gets_its_own_answer(lists):
+    items = [{"id": "a", "kind": "mail_domain", "name": "other.nl"},
+             {"id": "b", "kind": "mail_domain", "name": "boersma-advocaten.nl"}]
+    answer = migratectl.answer({"request": "status", "items": items})
+    assert {k: v["state"] for k, v in answer["items"].items()} == {"a": "new", "b": "exists"}
+
+
+def test_an_answer_that_cannot_be_serialized_becomes_an_error_and_the_loop_goes_on(
+    capsys, monkeypatch, fake_command
+):
+    monkeypatch.setitem(migratectl.HANDLERS, "hello", lambda request: {"ok": True, "oops": object()})
+    monkeypatch.setattr(migratectl.sys, "stdin", _stdin(b'{"request": "hello"}\n{"request": "dance"}\n'))
+    migratectl.main()
+    answers = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [a["ok"] for a in answers] == [False, False]
+    assert "JSON" in answers[0]["error"]
