@@ -40,7 +40,7 @@
     -subj "/CN={{ hostname }}"
   args:
     creates: "{{ ols_root }}/conf/listener.crt"
-  when: "'*:443' not in (ols_listeners.content | b64decode)"
+  when: not ols_listeners.content | b64decode | regex_search('(?m)^\\s*address\\s+\\S*:443\\s*$')
 
 - name: Keep the listener's key to OpenLiteSpeed
   file:
@@ -48,7 +48,7 @@
     owner: lsadm
     group: lsadm
     mode: 0600
-  when: "'*:443' not in (ols_listeners.content | b64decode)"
+  when: not ols_listeners.content | b64decode | regex_search('(?m)^\\s*address\\s+\\S*:443\\s*$')
 
 - name: Add the listener for port 80
   blockinfile:
@@ -59,7 +59,7 @@
         address                 *:80
         secure                  0
       }
-  when: "'*:80' not in (ols_listeners.content | b64decode)"
+  when: not ols_listeners.content | b64decode | regex_search('(?m)^\\s*address\\s+\\S*:80\\s*$')
   notify: restart openlitespeed
 
 - name: Add the listener for port 443
@@ -74,5 +74,5 @@
         certFile                {{ ols_root }}/conf/listener.crt
         certChain               0
       }
-  when: "'*:443' not in (ols_listeners.content | b64decode)"
+  when: not ols_listeners.content | b64decode | regex_search('(?m)^\\s*address\\s+\\S*:443\\s*$')
   notify: restart openlitespeed
