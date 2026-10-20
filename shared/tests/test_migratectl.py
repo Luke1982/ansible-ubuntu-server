@@ -376,8 +376,27 @@ def test_finish_gives_the_files_to_the_site_user(machine):
 def test_no_child_command_reads_the_request_pipe(machine):
     migratectl.answer(APPLY_SITE)
     migratectl.answer({"request": "finish_site", "item": APPLY_SITE["item"]})
-    assert all(kw.get("stdin") == migratectl.subprocess.DEVNULL for call, kw in zip(machine.calls, machine.kwargs)
-               if call[0] != "mariadb")
+    assert machine.kwargs
+    assert all("input" in kw or kw.get("stdin") == migratectl.subprocess.DEVNULL for kw in machine.kwargs)
+
+
+def test_the_commands_behind_status_do_not_read_the_request_pipe_either(lists):
+    status("site:example.nl", "site", name="example.nl", user="example")
+    mail("other.nl")
+    assert len(lists["seen"]) == 2
+    assert all(kw.get("stdin") == migratectl.subprocess.DEVNULL for kw in lists["seen"])
+
+
+def test_a_name_in_capitals_is_lower_cased_and_that_is_what_domainctl_gets(machine):
+    item = {**APPLY_SITE["item"], "name": " Example.NL ", "user": "Example", "database": "Example"}
+    assert migratectl.answer({"request": "apply", "item": item})["ok"] is True
+    assert ["domainctl", "add", "example.nl", "--user", "example", "--no-dns", "--yes"] in machine.calls
+
+
+def test_a_long_site_domain_is_accepted_up_to_the_dns_limit(machine):
+    long = ".".join(["a" * 60] * 3) + ".nl"
+    item = {**APPLY_SITE["item"], "name": long}
+    assert len(long) > 50 and migratectl.answer({"request": "apply", "item": item})["ok"] is True
 
 
 def test_a_site_without_a_database_gets_no_stand_in_and_no_adopt(machine):
@@ -404,7 +423,7 @@ def test_finish_refuses_a_site_whose_files_never_brought_a_real_wp_config(machin
     assert ["domainctl", "sync"] not in machine.calls and machine.ran("chown") == []
 
 
-@pytest.mark.parametrize("field, value", [("name", "-rf.nl"), ("name", "nodot"), ("user", "_x"), ("user", "Example"),
+@pytest.mark.parametrize("field, value", [("name", "-rf.nl"), ("name", "nodot"), ("user", "_x"), ("user", "ex ample"),
                                           ("database", "a$b"), ("database", "x" * 33)])
 def test_a_name_domainctl_would_refuse_is_refused_before_anything_is_made(machine, field, value):
     item = {**APPLY_SITE["item"], field: value}

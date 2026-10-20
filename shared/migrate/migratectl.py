@@ -52,6 +52,7 @@ def _table_rows(command, what, by_column=False):
     cannot = f"couldn't read the list of {what} on this server"
     try:
         done = subprocess.run(command, capture_output=True, text=True, timeout=LIST_TIMEOUT,
+                              stdin=subprocess.DEVNULL,
                               env={**os.environ, "COLUMNS": "200"})
     except (OSError, subprocess.SubprocessError) as error:
         raise Unreadable(f"{cannot} ({error})") from error
@@ -236,10 +237,14 @@ _USER_NAME = re.compile(r"[a-z0-9][a-z0-9_-]*")
 def _site_fields(item):
     if item.get("kind") != "site":
         raise ValueError(f"I can't apply the kind {item.get('kind')!r} yet")
-    name, user = _text(item, "name"), _text(item, "user")
-    if len(name) > 50 or not _DOMAIN.fullmatch(name):
+    # Like serverctl.names: lower-cased and stripped first, and the cleaned value is what goes on to domainctl.
+    # domainctl allows a site domain up to the DNS limit, not the 50 of a mail domain.
+    name, user = _text(item, "name").strip().lower(), _text(item, "user").strip().lower()
+    if len(name) > 253 or not _DOMAIN.fullmatch(name):
         raise ValueError(f"{name!r} isn't a valid domain name")
     database = item.get("database") or None
+    if isinstance(database, str):
+        database = database.strip().lower()
     for what, value in (("user", user), ("database", database)):
         if value is not None and not (isinstance(value, str) and len(value) <= 32 and _USER_NAME.fullmatch(value)):
             raise ValueError(f"{value!r} isn't a valid {what} name: use lower case letters, digits, - and _, "
