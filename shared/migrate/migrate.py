@@ -13,6 +13,7 @@ import os
 import pwd
 import re
 import subprocess
+import textwrap
 
 MAIL_TABLES = ("virtual_domains", "virtual_users", "virtual_aliases", "virtual_sender_aliases")
 SPAM_DATABASE = "spamassassin"
@@ -46,7 +47,7 @@ class CommandFailed(Exception):
         self.missing = missing
 
 
-def run(*args, stdin=None):
+def run_command(*args, stdin=None):
     """The output of a command. This is the one place a command is run, so tests and dry runs can stand in for it."""
     try:
         process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -748,7 +749,7 @@ def _ssh_directory():
     return os.path.join(os.path.expanduser("~"), ".ssh")
 
 
-def own_key(directory=None, run=run):
+def own_key(directory=None, run=run_command):
     """Makes this tool's own key (ed25519, no passphrase, the private half readable by its owner only) when there is
     none, and returns the public half to paste on the new server. Run again, it gives the same key back."""
     directory = directory or _ssh_directory()
@@ -925,15 +926,20 @@ def _typed_password(prompt):
         return ""
 
 
-def apply_item(connection, item, ask_password=None, say=print):
+def apply_item(connection, item, ask_password=None, say=print, answers=None):
     """Sends one item to the new server to be made. Returns (answer, skipped). When the answer says some mail
     accounts need a password the new server can't get from the stored one, each is asked for here (nothing shows on
     screen), and the same item is sent again with it. Enter skips an account: it is left out and named in 'skipped'.
-    A password goes nowhere but the one request: not into the state file, a command line or a message."""
+    A password goes nowhere but the one request: not into the state file, a command line or a message.
+    'answers' are the replies to the new server's questions about this item ({about: "yes" or "no"}); they go along
+    with every request."""
     ask_password = ask_password or _typed_password
     item = copy.deepcopy(item)
     skipped, asked = [], set()
-    answer = connection.ask({"request": "apply", "item": item})
+    request = {"request": "apply", "item": item}
+    if answers:
+        request["answers"] = dict(answers)
+    answer = connection.ask(request)
     while not answer.get("ok") and answer.get("needs_password"):
         wanted = [name for name in answer["needs_password"] if isinstance(name, str)]
         if not wanted or asked.intersection(wanted):
@@ -960,5 +966,208 @@ def apply_item(connection, item, ask_password=None, say=print):
                     isinstance(entry, dict) and str(entry.get("address", "")).lower() == address.lower())]
                 data["spam"] = [entry for entry in data.get("spam", []) if not (
                     isinstance(entry, dict) and str(entry.get("target", "")).lower() == address.lower())]
-        answer = connection.ask({"request": "apply", "item": item})
+        answer = connection.ask(request)
     return answer, skipped
+
+
+KIND_NAMES = {"mail_domain": "Mail", "site": "Website", "cron": "Cron job"}
+_WIDTH = 79  # one less than a terminal's 80, so no line wraps by itself
+
+
+def _title(item):
+    name = item.get("name")
+    if not name and item.get("kind") == "cron":
+        name = "%s: %s" % (item.get("user"), item.get("line"))
+    return str(name or item.get("id") or "?")
+
+
+def _size(count):
+    if not isinstance(count, (int, float)) or isinstance(count, bool):
+        return None
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if count < 1000 or unit == "GB":
+            return "%d %s" % (count, unit) if unit == "bytes" else "%.1f %s" % (count, unit)
+        count /= 1000.0
+
+
+def _plural(count, one, many):
+    return "%d %s" % (count, one if count == 1 else many)
+
+
+def cost(item):
+    """What moving this item will cost, in words; from what the inventory already carries."""
+    kind = item.get("kind")
+    if kind == "site":
+        if not item.get("database"):
+            return "the site's files"
+        size = _size(item.get("size"))
+        return "files and a database of %s" % size if size else "files and a database"
+    if kind == "mail_domain":
+        data = item.get("data") if isinstance(item.get("data"), dict) else {}
+        accounts, forwards = data.get("addresses"), data.get("forwards")
+        parts = []
+        if isinstance(accounts, list):
+            parts.append(_plural(len(accounts), "mailbox", "mailboxes"))
+        if isinstance(forwards, list):
+            parts.append(_plural(len(forwards), "forward", "forwards"))
+        return " and ".join(parts) or "the mail settings"
+    if kind == "cron":
+        return "one job"
+    return ""
+
+
+def _verdict(item, status):
+    """(what the new server said in short, can it move, the longer reason or None)."""
+    said = status.get(item.get("id")) if isinstance(status, dict) else None
+    state = said.get("state") if isinstance(said, dict) else None
+    detail = said.get("detail") if isinstance(said, dict) else None
+    if state == "exists":
+        return "already on the new server", False, None
+    if state == "refused":
+        return "can't be moved", False, detail
+    if state != "new":
+        return "the new server didn't say", False, "The new server gave no answer about this."
+    if item.get("problem"):
+        return "needs a look first", False, item["problem"]
+    return cost(item), True, None
+
+
+def offered(inventory, status):
+    """The items that can be moved, in the order the dashboard numbers them."""
+    return [item for item in inventory if _verdict(item, status)[1]]
+
+
+def _fit(text, width):
+    text = " ".join(str(text).split())
+    return text if len(text) <= width else text[:width - 3] + "..."
+
+
+def dashboard(inventory, status):
+    """The list as it is printed. 'status' is what the new server said, by item id: {id: {"state", "detail"}}.
+    Only an item that can be moved gets a number (the same order as offered()); the others show why not."""
+    rows, notes, number = [], [], 0
+    for item in inventory:
+        info, movable, reason = _verdict(item, status)
+        label = ""
+        if movable:
+            number += 1
+            label = str(number)
+        rows.append("%3s  %-8s %-28s %s" % (label, KIND_NAMES.get(item.get("kind"), "Other"),
+                                           _fit(_title(item), 28), _fit(info, 37)))
+        if reason:
+            notes.append("%s: %s" % (_title(item), reason))
+    if not rows:
+        return "Nothing was found on this server to move."
+    out = ["No.  What     Name                         What moving it takes / the new server says"]
+    out.extend(row.rstrip() for row in rows)
+    if notes:
+        out.append("")
+        out.append("Why some can't be moved:")
+        for note in notes:
+            out.extend(textwrap.wrap(note, _WIDTH, initial_indent="  ", subsequent_indent="    ",
+                                     break_long_words=True))
+    return "\n".join(_fit_line(line) for line in out)
+
+
+def _fit_line(line):
+    return line if len(line) <= _WIDTH else line[:_WIDTH - 3] + "..."
+
+
+def pick(lines, typed, say=print):
+    """The items that what was typed comes down to. 'lines' are the offered items (offered()); a number is the
+    place of an item in it, counted from 1. Numbers (1 3), ranges (2-5), commas and 'all' are understood. A number
+    that is not on the list is never acted on, and is said so."""
+    chosen, unknown, unreadable = set(), [], []
+    for word in str(typed).lower().replace(",", " ").split():
+        if word == "all":
+            chosen.update(range(1, len(lines) + 1))
+            continue
+        match = re.fullmatch(r"(\d+)(?:-(\d+))?", word)
+        if not match:
+            unreadable.append(word)
+            continue
+        first = int(match.group(1))
+        last = int(match.group(2)) if match.group(2) else first
+        if last < first:
+            first, last = last, first
+        chosen.update(range(max(first, 1), min(last, len(lines)) + 1))
+        if first < 1 or last > len(lines):
+            unknown.append(word)
+    if unreadable:
+        say("I don't understand: %s. Type numbers like 1 3, a range like 2-5, or all." % ", ".join(unreadable))
+    if unknown:
+        say("Not on the list, so left alone: %s. The list has %s." % (
+            ", ".join(unknown), _plural(len(lines), "item", "items")))
+    return [lines[number - 1] for number in sorted(chosen)]
+
+
+class Report(object):
+    """What a run did, as values. moved and failed hold (item, answer or message) pairs; skipped holds (item, why).
+    files_to_copy are sites that were made while their files were still not copied. left_out are the mail accounts
+    that got no password. stopped is the message that ended the run early, and not_tried the items after it."""
+
+    def __init__(self):
+        self.moved, self.skipped, self.failed = [], [], []
+        self.files_to_copy, self.left_out = [], []
+        self.stopped, self.not_tried = None, []
+
+
+def _apply_with_questions(connection, item, ask, report):
+    """(answer, question nobody answered or None). Each question from the new server goes to 'ask', which gives
+    "yes" or "no"; any other reply (or none) means nobody answered."""
+    answers = {}
+    while True:
+        answer, left_out = apply_item(connection, item, answers=answers)
+        report.left_out.extend(left_out)
+        question = answer.get("ask") if not answer.get("ok") else None
+        if not isinstance(question, dict):
+            return answer, None
+        about = question.get("about")
+        if about in answers:
+            return answer, None
+        reply = ask(question.get("question") or "The new server has a question about %s." % _title(item))
+        reply = reply.strip().lower() if isinstance(reply, str) else None
+        if reply not in ("yes", "no"):
+            return answer, question
+        answers[about] = reply
+
+
+def run(connection, items, ask, move=None):
+    """Moves the items one by one and returns a Report. 'ask' is called with the new server's question and gives
+    "yes" or "no". 'move' is called with a site after it was made, to bring its files and database. One item going
+    wrong stops that item only; the new server not answering ends the run."""
+    report = Report()
+    for index, item in enumerate(items):
+        print("Moving %d of %d: %s" % (index + 1, len(items), _title(item)))
+        try:
+            answer, unanswered = _apply_with_questions(connection, item, ask, report)
+            if unanswered is not None:
+                report.failed.append((item, "The new server asked a question that got no answer: %s"
+                                      % unanswered.get("question")))
+            elif answer.get("ok"):
+                if item.get("kind") == "site":
+                    if move is None:
+                        report.files_to_copy.append(item)
+                    else:
+                        try:
+                            move(item)
+                        except Stopped:
+                            raise
+                        except Exception as problem:
+                            report.failed.append((item, "The site was made, but its files and database were not "
+                                                  "brought over: %s" % (problem,)))
+                            continue
+                report.moved.append((item, answer))
+            elif answer.get("skipped"):
+                report.skipped.append((item, answer.get("error") or "Left alone, as you asked."))
+            else:
+                report.failed.append((item, answer.get("error") or "The new server gave no reason."))
+        except Stopped as problem:
+            report.failed.append((item, problem.message))
+            report.stopped = problem.message
+            report.not_tried = list(items[index + 1:])
+            print("Stopping here, since nothing else would work either: %s" % problem.message)
+            break
+        except Exception as problem:  # a move that failed is that site's failure, not the batch's
+            report.failed.append((item, str(problem) or "it failed without saying why"))
+    return report
