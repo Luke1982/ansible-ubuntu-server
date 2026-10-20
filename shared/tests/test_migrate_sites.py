@@ -578,3 +578,28 @@ def test_user_needs_to_know_which_site_it_is_for():
     with pytest.raises(migrate.Stopped) as stopped:
         migrate._user_for(_found("a.nl", "shop.a.nl"), "a.nl2", args.user)
     assert "ONE site" in stopped.value.message and "shop.a.nl" in stopped.value.message
+
+
+def test_a_failure_that_says_how_far_it_got_reaches_the_report_in_its_own_words(tmp_path):
+    """move_site says exactly what is across; a line in front of it saying the opposite is worse than nothing."""
+    site = _shop()
+    own = ("The files of shop.example.nl are across, but mysqldump stopped with code 2, so the database may be "
+           "only partly there.")
+
+    def move(item, answer):
+        raise migrate.MoveFailed(own)
+
+    report = migrate.run(NewServer(tmp_path, {"apply": ANSWER}), [site], lambda text: None, move=move)
+    assert report.failed == [(site, own)]
+    assert report.files_to_copy == [site]
+    text = " ".join(migrate.report(report, NewServer(tmp_path)).split())
+    assert own in text and migrate.MADE_NOT_FILLED not in text
+
+
+def test_a_failure_that_knows_nothing_still_says_the_site_was_made(tmp_path):
+    def move(item, answer):
+        raise migrate.MoveFailed("I couldn't write my notes in /var/lib/migrate (read-only).", told=False)
+
+    report = migrate.run(NewServer(tmp_path, {"apply": ANSWER}), [_shop()], lambda text: None, move=move)
+    assert report.failed[0][1].startswith(migrate.MADE_NOT_FILLED)
+    assert "couldn't write my notes" in report.failed[0][1]

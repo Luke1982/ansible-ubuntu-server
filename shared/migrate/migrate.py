@@ -1186,6 +1186,10 @@ def _apply_with_questions(connection, item, ask, report):
         answers[about] = reply
 
 
+MADE_NOT_FILLED = ("The site was made, but its files and database were not "
+                   "brought over")
+
+
 def _say(text, say=print):
     say("\n".join(textwrap.wrap(str(text), _WIDTH)) or "")
 
@@ -1285,8 +1289,7 @@ def run(connection, items, ask, move=None, notes=None, status=None, php=None,
             message = problem.message
             if made:
                 report.files_to_copy.append(item)
-                message = ("The site was made, but its files and database "
-                           "were not brought over: " + message)
+                message = MADE_NOT_FILLED + ": " + message
             report.failed.append((item, message))
             report.stopped = problem.message
             report.not_tried = list(items[index + 1:])
@@ -1297,20 +1300,28 @@ def run(connection, items, ask, move=None, notes=None, status=None, php=None,
             message = "You stopped the run."
             if made:
                 report.files_to_copy.append(item)
-                message = ("The site was made, but its files and database "
-                           "were not brought over. " + message)
+                message = MADE_NOT_FILLED + ". " + message
             report.failed.append((item, message))
             report.stopped = "You stopped the run."
             report.interrupted = True
             report.not_tried = list(items[index + 1:])
             print("Stopped, as you asked.")
             break
+        except MoveFailed as problem:
+            # Its own message says how far it got ("The files of X are
+            # across, but …"), so nothing is put in front of it: two
+            # sentences that contradict each other are worse than one.
+            message = problem.message or "it failed without saying why"
+            if made:
+                report.files_to_copy.append(item)
+                if not problem.told:
+                    message = MADE_NOT_FILLED + ": " + message
+            report.failed.append((item, message))
         except Exception as problem:  # that item's failure, not the batch's
             message = str(problem) or "it failed without saying why"
             if made:
                 report.files_to_copy.append(item)
-                message = ("The site was made, but its files and database "
-                           "were not brought over: " + message)
+                message = MADE_NOT_FILLED + ": " + message
             report.failed.append((item, message))
     return report
 
