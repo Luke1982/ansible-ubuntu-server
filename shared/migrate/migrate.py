@@ -5,6 +5,7 @@ It only reads: it changes nothing on this server. Standard library only and noth
 old server has an old Python and none of our other files.
 """
 
+import glob
 import json
 import os
 import re
@@ -25,6 +26,8 @@ _DOMAIN_ARGUMENT = re.compile(r"[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?")
 MAX_DOMAIN, MAX_ADDRESS, MAX_LOCAL_PART, MAX_HASH, MAX_VALUE, MAX_SCRIPT = 50, 100, 64, 150, 100, 1 << 20
 SPAM_RENAMED = {"whitelist_from": "welcomelist_from", "blacklist_from": "blocklist_from"}  # SpamAssassin before 4
 DOVEADM_HEADER = "sieve script:\n"
+SITES_ENABLED = "/etc/apache2/sites-enabled"
+APACHE_ROOT = "/etc/apache2"
 
 
 class CommandFailed(Exception):
@@ -368,3 +371,177 @@ def _one_active_filter(scripts, left_out):
                             % (script["name"], script["address"]))
         elif script["active"]:
             active.add(script["address"])
+
+
+# Where apache2ctl -S says a virtual host is: "port 443 namevhost example.nl (/etc/apache2/sites-enabled/x.conf:2)"
+# (Apache 2.4), or the same without "port 443 namevhost" in front of the name (Apache 2.2).
+_VHOST_LINE = re.compile(r"^\s+(?:port\s+\d+\s+namevhost\s+)?(\S+)\s+\((.+):(\d+)\)\s*$")
+_VHOST_ALIAS = re.compile(r"^\s+alias\s+(\S+)\s*$")
+
+# The quoted text of a PHP string, with its escapes still in it.
+_QUOTED = r"""(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")"""
+_WP_DEFINE = r"""^[ \t]*define[ \t]*\([ \t]*['"]%s['"][ \t]*,[ \t]*""" + _QUOTED + r"""[ \t]*\)[ \t]*;"""
+_WP_PREFIX = re.compile(r"^[ \t]*\$table_prefix[ \t]*=[ \t]*" + _QUOTED + r"[ \t]*;", re.MULTILINE)
+WP_SETTINGS = ("DB_NAME", "DB_USER", "DB_PASSWORD", "DB_HOST")
+
+
+def _php_text(found):
+    """The text of a match of _QUOTED, with \\' \\" and \\\\ unescaped like move-wordpress.sh and domainctl do."""
+    text = found.group(1) if found.group(1) is not None else found.group(2)
+    return re.sub(r"\\([\\'\"])", r"\1", text)
+
+
+def wp_settings(path):
+    """DB_NAME, DB_USER, DB_PASSWORD and DB_HOST from a wp-config.php, and its $table_prefix as 'prefix'. A setting
+    the file doesn't have is None. None when the file can't be read at all: that is not the same as 'has no
+    settings', and the caller must not treat it so. DB_HOST is kept as it is: host, host:port or host:/socket."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    except OSError:
+        return None
+    settings = {}
+    for name in WP_SETTINGS:
+        # The first define() wins, as in move-wordpress.sh.
+        found = re.search(_WP_DEFINE % name, text, re.MULTILINE)
+        settings[name] = _php_text(found) if found else None
+    prefix = _WP_PREFIX.search(text)
+    settings["prefix"] = _php_text(prefix) if prefix else None
+    return settings
+
+
+def database_sizes(run, notes=None):
+    """Bytes per database (tables and indexes), as {name: bytes}. Empty, with a note, when the server can't say."""
+    notes = notes if notes is not None else []
+    try:
+        rows = query(run, "SELECT table_schema, COALESCE(SUM(data_length + index_length), 0) "
+                          "FROM information_schema.tables GROUP BY table_schema")
+    except CommandFailed as problem:
+        notes.append("Couldn't measure the databases: %s." % problem.message)
+        return {}
+    return {row[0]: int(row[1]) for row in rows if len(row) == 2 and row[1].isdigit()}
+
+
+def _vhost_directives(lines):
+    """ServerName, ServerAlias names and DocumentRoot of the lines of one <VirtualHost> block."""
+    name, aliases, docroot = None, [], None
+    for line in lines:
+        words = line.split("#", 1)[0].split()
+        if len(words) < 2:
+            continue
+        directive, arguments = words[0].lower(), [word.strip("\"'") for word in words[1:]]
+        if directive == "servername" and name is None:
+            name = arguments[0].lower()
+        elif directive == "serveralias":
+            aliases.extend(argument.lower() for argument in arguments)
+        elif directive == "documentroot" and docroot is None:
+            docroot = arguments[0] if os.path.isabs(arguments[0]) else os.path.join(APACHE_ROOT, arguments[0])
+    return name, aliases, docroot
+
+
+def _vhost_block(lines, start):
+    """The lines inside the <VirtualHost> that begins at line number 'start' (counting from 1)."""
+    block = []
+    for line in lines[start:]:
+        if line.strip().lower().startswith("</virtualhost"):
+            break
+        block.append(line)
+    return block
+
+
+def _vhosts_from_apache(output, notes):
+    """[{name, aliases, docroot, problem}] from 'apache2ctl -S', each file read at the line it names."""
+    found, order, files = {}, [], {}
+    current = None
+    for line in output.split("\n"):
+        vhost = _VHOST_LINE.match(line)
+        alias = _VHOST_ALIAS.match(line)
+        if vhost and "default server" not in line and "is a NameVirtualHost" not in line:
+            name = vhost.group(1).lower()
+            current = found.get(name)
+            if current is None:
+                current = found[name] = {"name": name, "aliases": [], "docroot": None, "problem": None}
+                order.append(name)
+            path, number = vhost.group(2), int(vhost.group(3))
+            if current["docroot"] is None and current["problem"] is None:
+                try:
+                    if path not in files:
+                        with open(path, encoding="utf-8", errors="replace") as handle:
+                            files[path] = handle.read().split("\n")
+                except OSError as problem:
+                    current["problem"] = "Couldn't read %s, so the site's directory isn't known: %s." % (path, problem)
+                    continue
+                _, aliases, docroot = _vhost_directives(_vhost_block(files[path], number))
+                current["docroot"] = docroot
+                current["aliases"].extend(alias_name for alias_name in aliases if alias_name not in current["aliases"])
+        elif alias and current is not None:
+            if alias.group(1).lower() not in current["aliases"]:
+                current["aliases"].append(alias.group(1).lower())
+    return [found[name] for name in order]
+
+
+def _vhosts_from_files(sites_dir, notes):
+    """The same, without Apache's help: every *.conf in sites-enabled read for its <VirtualHost> blocks."""
+    vhosts = {}
+    for path in sorted(glob.glob(os.path.join(sites_dir, "*.conf"))):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                lines = handle.read().split("\n")
+        except OSError as problem:
+            notes.append("Couldn't read %s: %s." % (path, problem))
+            continue
+        for number, line in enumerate(lines, 1):
+            if not line.strip().lower().startswith("<virtualhost"):
+                continue
+            name, aliases, docroot = _vhost_directives(_vhost_block(lines, number))
+            if name is None:
+                notes.append("A virtual host in %s (line %d) has no ServerName, so it is left out." % (path, number))
+                continue
+            site = vhosts.setdefault(name, {"name": name, "aliases": [], "docroot": None, "problem": None})
+            site["docroot"] = site["docroot"] or docroot
+            site["aliases"].extend(alias for alias in aliases if alias not in site["aliases"])
+    return list(vhosts.values())
+
+
+def sites(run, notes=None, sites_dir=SITES_ENABLED, sizes=None):
+    """One dict per site Apache serves: name, aliases, docroot, wordpress, database, db_user, db_password, db_host,
+    prefix, size (bytes, or None) and problem (plain words, or None). A site with a problem is not safe to move as
+    it is. 'sizes' is database_sizes(), looked up here when not given."""
+    notes = notes if notes is not None else []
+    try:
+        vhosts = _vhosts_from_apache(run("apache2ctl", "-S"), notes)
+        if not vhosts:
+            raise CommandFailed("it listed no virtual hosts")
+    except CommandFailed as failed:
+        notes.append("Couldn't get the sites from apache2ctl (%s), so %s was read instead."
+                     % (failed.message, sites_dir))
+        vhosts = _vhosts_from_files(sites_dir, notes)
+    if not vhosts:
+        notes.append("No sites were found in Apache's configuration.")
+    if sizes is None:
+        sizes = database_sizes(run, notes) if vhosts else {}
+    for site in vhosts:
+        _look_for_wordpress(site, sizes)
+    return vhosts
+
+
+def _look_for_wordpress(site, sizes):
+    site.update(wordpress=False, database=None, db_user=None, db_password=None, db_host=None, prefix=None, size=None)
+    if site["docroot"] is None:
+        site["problem"] = site["problem"] or "Its configuration has no DocumentRoot, so its files can't be found."
+        return
+    config = os.path.join(site["docroot"], "wp-config.php")
+    if not os.path.lexists(config):
+        return
+    site["wordpress"] = True
+    found = wp_settings(config)
+    if found is None:
+        site["problem"] = "%s is there but can't be read, so the database of this site isn't known." % config
+        return
+    site.update(database=found["DB_NAME"], db_user=found["DB_USER"], db_password=found["DB_PASSWORD"],
+                db_host=found["DB_HOST"], prefix=found["prefix"])
+    empty = [name for name in ("DB_NAME", "DB_USER", "DB_PASSWORD") if not found[name]]
+    if empty:
+        site["problem"] = "%s has no value for %s, so the database of this site isn't fully known." % (
+            config, ", ".join(empty))
+    site["size"] = sizes.get(site["database"])
