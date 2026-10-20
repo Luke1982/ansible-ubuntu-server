@@ -121,3 +121,42 @@ def test_migratectl_gives_the_dns_text_as_it_comes(monkeypatch):
     assert answer == {"ok": True, "text": "a  b\n"}
     assert seen["command"] == ["mailctl", "dns", "show", "example.nl"] and seen["env"]["COLUMNS"] == "80"
     assert migratectl.answer({"request": "dns", "domain": "-x; rm"})["ok"] is False
+
+
+def test_the_report_says_where_a_moved_sites_dns_must_point():
+    result = _result()
+    result.moved = [(dict(SITE, aliases=["www.shop.nl"]), {"ok": True, "docroot": "/home/shop/public_html/www"})]
+    text = migrate.report(result, Connection(), addresses=["81.4.127.10", "2a02:2770::21a:4aff:fe8c:1"])
+    joined = " ".join(text.split())
+    assert "A record for 81.4.127.10" in joined and "AAAA record for 2a02:2770::21a:4aff:fe8c:1" in joined
+    assert "shop.nl, www.shop.nl" in joined
+    assert all(len(line) <= 79 for line in text.splitlines())
+
+
+def test_without_an_address_the_report_says_to_look_it_up_on_the_new_server():
+    result = _result()
+    result.moved = [(SITE, {"ok": True})]
+    joined = " ".join(migrate.report(result, Connection(), addresses=[]).split())
+    assert "didn't say which addresses it has" in joined and "ip addr" in joined
+
+
+def test_a_run_without_a_site_says_nothing_about_a_records():
+    result = migrate.Report()
+    result.moved = [(MAIL, {"ok": True})]
+    assert "A record" not in migrate.report(result, Connection(), addresses=["81.4.127.10"])
+
+
+def test_migratectl_says_which_addresses_it_has(monkeypatch):
+    def run(command, **kwargs):
+        assert command[:3] == ["ip", "-json", "route"]
+        address = "81.4.127.10" if command[-1].count(".") == 3 else "2a02:2770::1"
+        return type("Done", (), {"returncode": 0, "stdout": '[{"prefsrc": "%s"}]' % address, "stderr": ""})()
+    monkeypatch.setattr(migratectl.subprocess, "run", run)
+    assert migratectl.answer({"request": "hello"})["addresses"] == ["81.4.127.10", "2a02:2770::1"]
+
+
+def test_migratectl_leaves_an_address_out_rather_than_guessing(monkeypatch):
+    def broken(command, **kwargs):
+        raise OSError("no ip command here")
+    monkeypatch.setattr(migratectl.subprocess, "run", broken)
+    assert migratectl.answer({"request": "hello"})["addresses"] == []

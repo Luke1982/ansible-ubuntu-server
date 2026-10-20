@@ -32,6 +32,30 @@ def _php():
     return found or max(glob.glob(OLS_PHP), default=None)
 
 
+# Addresses on the internet, to ask which route the kernel takes; nothing is sent to them.
+ROUTE_PROBES = ("1.1.1.1", "2606:4700:4700::1111")
+
+
+def _addresses():
+    """The addresses this server is reached on, so the old server can say where a site's DNS must point: the
+    source address the kernel picks for its default route, for IPv4 and for IPv6. This is what
+    serverctl.system.server_ips does, written out again because migratectl never imports the tools. An address it
+    can't find is left out rather than guessed: the report then says to look on the new server itself."""
+    found = []
+    for probe in ROUTE_PROBES:
+        try:
+            done = subprocess.run(["ip", "-json", "route", "get", probe], capture_output=True, text=True,
+                                  timeout=LIST_TIMEOUT, stdin=subprocess.DEVNULL)
+            routes = json.loads(done.stdout) if done.returncode == 0 else []
+        except (OSError, subprocess.SubprocessError, ValueError):
+            continue  # no route for that kind of address, or no ip command at all
+        for route in routes if isinstance(routes, list) else []:
+            source = route.get("prefsrc") if isinstance(route, dict) else None
+            if isinstance(source, str) and source and source not in found:
+                found.append(source)
+    return found
+
+
 def hello(request):
     return {
         "ok": True,
@@ -39,6 +63,7 @@ def hello(request):
         "server": socket.gethostname(),
         "tools": {name: shutil.which(name) is not None for name in TOOLS},
         "php": _php(),
+        "addresses": _addresses(),
     }
 
 

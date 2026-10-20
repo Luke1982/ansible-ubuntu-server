@@ -2010,6 +2010,11 @@ SYSTEM_DATABASES = ("information_schema", "performance_schema", "mysql", "sys")
 DNS_BY_HAND = "On the new server, run: mailctl dns show %s"
 AFTER_DNS = ("Once the DNS of a site points at the new server, run this on the "
              "new server for each site, to get its certificate:")
+SITE_DNS_UNKNOWN = ("Each of the names below needs an A record, and an AAAA "
+                    "record where there is IPv6, pointing at the new server. "
+                    "It didn't say which addresses it has, so look them up "
+                    "there (ip addr). Until a name points at the new server, "
+                    "this server keeps answering for it.")
 BOTH_RUN_JOBS = ("Until the DNS points at the new server, BOTH servers run "
                  "the same cron jobs. Switch the jobs off on the old server "
                  "when you move the DNS.")
@@ -2031,6 +2036,22 @@ def _bullets(texts):
         lines.extend(textwrap.wrap(str(text), 79, initial_indent="  - ",
                                    subsequent_indent="    ") or ["  -"])
     return lines
+
+
+def _dns_for_sites(addresses):
+    """What a moved site's DNS needs, in words: the new server's own
+    addresses, as the new server reported them. Nothing here is guessed
+    from the name that was typed."""
+    found = [text for text in (addresses or [])
+             if isinstance(text, str) and text.strip()]
+    kinds = [("an A record for %s", [a for a in found if ":" not in a]),
+             ("an AAAA record for %s", [a for a in found if ":" in a])]
+    parts = [words % ", ".join(these) for words, these in kinds if these]
+    if not parts:
+        return SITE_DNS_UNKNOWN
+    return ("Each of the names below needs %s. Until a name points at the "
+            "new server, this server keeps answering for it."
+            % " and ".join(parts))
 
 
 def _what(item):
@@ -2065,12 +2086,13 @@ def _same_item(one, other):
 
 def report(result, connection=None, old_server=None, found_sites=None,
            mail=None, databases=None, items=None, notes=None,
-           extra_notes=None, mail_database=None):
+           extra_notes=None, mail_database=None, addresses=None):
     """What a run did and what is still to do by hand, as text of at most
     79 columns. 'connection' is asked for the DNS records; 'found_sites' is
     sites(), 'databases' is database_sizes(), 'items' everything the
-    dashboard offered, 'mail' the Mail from mail_inventory() and 'notes'
-    what the discovery could not read."""
+    dashboard offered, 'mail' the Mail from mail_inventory(), 'notes'
+    what the discovery could not read and 'addresses' the addresses the new
+    server says it has, for the sites' DNS records."""
     new_name = getattr(connection, "host", None) or "the new server"
     old_name = old_server or socket.gethostname()
     moved = list(result.moved)
@@ -2148,6 +2170,11 @@ def report(result, connection=None, old_server=None, found_sites=None,
 
     sites_done = [i for i, _ in moved if i.get("kind") == "site"]
     if sites_done:
+        out.extend(["", "DNS records for the sites that moved:"])
+        out.extend(_wrap(_dns_for_sites(addresses)))
+        out.extend(_bullets(", ".join([i["name"]] + [
+            a for a in (i.get("aliases") or []) if isinstance(a, str)])
+            for i in sites_done))
         out.extend([""] + textwrap.wrap(AFTER_DNS, 79))
         out.extend("  domainctl add %s" % i["name"] for i in sites_done)
 
@@ -2424,7 +2451,8 @@ def _work(args, connection, state, notes, doing=None, hello=None):
     doing[0] = "writing the report"
     print(report(result, connection=connection, old_server=socket.gethostname(),
                  found_sites=found, mail=mail, databases=sizes, items=items,
-                 notes=notes, extra_notes=extra, mail_database=database))
+                 notes=notes, extra_notes=extra, mail_database=database,
+                 addresses=(hello or {}).get("addresses")))
     return result
 
 
