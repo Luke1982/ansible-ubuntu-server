@@ -375,7 +375,8 @@ def _one_active_filter(scripts, left_out):
 
 # Where apache2ctl -S says a virtual host is: "port 443 namevhost example.nl (/etc/apache2/sites-enabled/x.conf:2)"
 # (Apache 2.4), or the same without "port 443 namevhost" in front of the name (Apache 2.2).
-_VHOST_LINE = re.compile(r"^\s+(?:port\s+\d+\s+namevhost\s+)?(\S+)\s+\((.+):(\d+)\)\s*$")
+# A port with a single virtual host has "*:443" in front of the name instead, not indented.
+_VHOST_LINE = re.compile(r"^\s*(?:port\s+\d+\s+namevhost\s+|\S+:\d+\s+)?(\S+)\s+\((.+):(\d+)\)\s*$")
 _VHOST_ALIAS = re.compile(r"^\s+alias\s+(\S+)\s*$")
 
 # The quoted text of a PHP string, with its escapes still in it.
@@ -532,6 +533,7 @@ def _look_for_wordpress(site, sizes):
         return
     config = os.path.join(site["docroot"], "wp-config.php")
     if not os.path.lexists(config):
+        _outside_or_missing_config(site, config)
         return
     site["wordpress"] = True
     found = wp_settings(config)
@@ -545,3 +547,17 @@ def _look_for_wordpress(site, sizes):
         site["problem"] = "%s has no value for %s, so the database of this site isn't fully known." % (
             config, ", ".join(empty))
     site["size"] = sizes.get(site["database"])
+
+
+def _outside_or_missing_config(site, config):
+    """A site with no wp-config.php in its directory may still be WordPress. WordPress takes the one a directory up
+    when there is no wp-settings.php beside it; and a directory with WordPress's own files has lost its config."""
+    docroot = site["docroot"]
+    above = os.path.join(os.path.dirname(docroot.rstrip("/")), "wp-config.php")
+    if os.path.lexists(above) and not os.path.lexists(os.path.join(os.path.dirname(above), "wp-settings.php")):
+        site["wordpress"] = True
+        site["problem"] = ("The wp-config.php of this site is %s, outside its web directory. That isn't supported "
+                           "yet, so its database isn't known." % above)
+    elif os.path.lexists(os.path.join(docroot, "wp-includes", "version.php")):
+        site["wordpress"] = True
+        site["problem"] = "%s has WordPress's files but no wp-config.php, so its database isn't known." % docroot

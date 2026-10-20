@@ -161,3 +161,28 @@ def test_database_sizes_that_cannot_be_read_give_a_note_not_an_exception():
     server = Server({"information_schema": migrate.CommandFailed("mariadb failed: denied")})
     assert migrate.database_sizes(server, notes) == {}
     assert "denied" in notes[0]
+
+
+def test_a_wp_config_above_the_web_directory_is_a_problem_not_plain_files(tmp_path):
+    shop, plain = tmp_path / "site" / "public", tmp_path / "plain"
+    os.makedirs(str(shop))
+    _wp_config(tmp_path / "site")
+    found = migrate.sites(_server(_conf(tmp_path, shop, plain)))
+    assert found[0]["wordpress"] is True
+    assert "outside its web directory" in found[0]["problem"]
+
+
+def test_a_directory_with_wordpress_files_but_no_wp_config_is_a_problem(tmp_path):
+    shop, plain = tmp_path / "shop", tmp_path / "plain"
+    _write(shop / "wp-includes" / "version.php", "<?php\n")
+    found = migrate.sites(_server(_conf(tmp_path, shop, plain)))
+    assert found[0]["wordpress"] is True
+    assert "no wp-config.php" in found[0]["problem"]
+
+
+def test_a_port_with_one_virtual_host_is_not_dropped(tmp_path):
+    shop, plain = tmp_path / "shop", tmp_path / "plain"
+    conf, (a, b, c) = _conf(tmp_path, shop, plain)
+    output = APACHE_S.format(conf=conf, a=a, b=b, c=c) + "*:8443                 lone.example.nl (%s:%d)\n" % (conf, b)
+    found = migrate.sites(Server({"apache2ctl": output, "information_schema": ""}))
+    assert [site["name"] for site in found] == ["shop.example.nl", "plain.example.nl", "lone.example.nl"]
