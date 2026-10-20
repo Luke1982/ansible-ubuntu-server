@@ -1,8 +1,7 @@
 """Let's Encrypt certificates: reading what one covers, and running certbot to get, renew and delete them."""
 
 import re
-from collections.abc import Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,7 +11,6 @@ from .errors import CtlError
 
 # Certbot renews 30 days before the end, so less than this means renewing fails.
 EXPIRY_WARNING_DAYS = 14
-_FILES = ("fullchain.pem", "privkey.pem")
 
 
 @dataclass(frozen=True)
@@ -28,50 +26,7 @@ def live(letsencrypt_dir: Path, cert_name: str) -> Path:
 
 def exists(letsencrypt_dir: Path, cert_name: str) -> bool:
     directory = live(letsencrypt_dir, cert_name)
-    return all((directory / file).is_file() for file in _FILES)
-
-
-def is_placeholder(letsencrypt_dir: Path, cert_name: str) -> bool:
-    """Whether the certificate is the empty files the mail role puts there, so Dovecot starts before certbot has
-    run. They are plain files, where certbot's are links."""
-    paths = [live(letsencrypt_dir, cert_name) / file for file in _FILES]
-    return all(path.is_file() and not path.is_symlink() and path.stat().st_size == 0 for path in paths)
-
-
-@contextmanager
-def placeholders_aside(letsencrypt_dir: Path, cert_name: str) -> Iterator[None]:
-    """Takes the placeholder files away while certbot makes the first certificate of that name, since it refuses a
-    live directory with anything in it. When it makes none, they are put back, so Dovecot still starts."""
-    if not is_placeholder(letsencrypt_dir, cert_name):
-        yield
-        return
-    paths = [live(letsencrypt_dir, cert_name) / file for file in _FILES]
-    for path in paths:
-        path.unlink()
-    try:
-        yield
-    finally:
-        if not exists(letsencrypt_dir, cert_name):
-            for path in paths:
-                path.touch()
-
-
-def webroots(letsencrypt_dir: Path, cert_name: str) -> dict[str, Path]:
-    """The web root certbot proves each name of the certificate under when it renews it, from its renewal file."""
-    try:
-        text = (letsencrypt_dir / "renewal" / f"{cert_name}.conf").read_text()
-    except FileNotFoundError:
-        return {}
-    found: dict[str, Path] = {}
-    in_map = False
-    for line in text.splitlines():
-        line = line.strip()
-        if line.startswith("["):
-            in_map = line == "[[webroot_map]]"
-        elif in_map and "=" in line:
-            name, _, root = line.partition("=")
-            found[name.strip()] = Path(root.strip())
-    return found
+    return all((directory / file).is_file() for file in ("fullchain.pem", "privkey.pem"))
 
 
 def read(path: Path) -> Certificate:
@@ -130,22 +85,6 @@ def obtain(letsencrypt_dir: Path, email: str, cert_name: str, webroot: Path, nam
     # --cert-name fixes the directory under live/, so it stays the same when the first name changes.
     arguments = ["certonly", "--webroot", "--webroot-path", str(webroot), "--cert-name", cert_name, *domains,
                  "--keep-until-expiring", "--expand"]
-    try:
-        run(letsencrypt_dir, email, *arguments, *(["--dry-run"] if dry_run else []))
-    except CtlError as failure:
-        attempt = "The certificate test run" if dry_run else "No certificate"
-        raise CtlError(f"{attempt} for {', '.join(names)}: {reason(failure.message)}") from None
-
-
-def obtain_each(letsencrypt_dir: Path, email: str, cert_name: str, roots: Mapping[str, Path], key_type: str,
-                dry_run: bool = False) -> None:
-    """Gets a new certificate with these names, each proved with a file under a web root of its own, which certbot
-    keeps for renewing it. A new one even when the names are the same, so certbot takes the web roots over."""
-    names = list(roots)
-    proofs = [argument for name, root in roots.items()
-              for argument in ("--webroot-path", str(root), "--domains", name)]
-    arguments = ["certonly", "--webroot", "--cert-name", cert_name, *proofs, "--key-type", key_type,
-                 "--force-renewal"]
     try:
         run(letsencrypt_dir, email, *arguments, *(["--dry-run"] if dry_run else []))
     except CtlError as failure:
