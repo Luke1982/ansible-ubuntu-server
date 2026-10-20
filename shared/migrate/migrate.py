@@ -32,7 +32,8 @@ _LOCAL_PART = re.compile(r"[a-z0-9_+-]+(?:\.[a-z0-9_+-]+)*")
 _PASSWORD_HASH = re.compile(r"(\{[A-Za-z0-9.-]+\}\S+|\$[0-9a-z]+\$\S+)")
 _FILTER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}")
 _DOMAIN_ARGUMENT = re.compile(r"[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?")
-_USER_ARGUMENT = re.compile(r"[a-z0-9][a-z0-9_-]*")  # domainctl's own rule for a site's Linux user
+# domainctl's own rule for the name of a site's Linux user and of its database, which migratectl checks too.
+_NEW_NAME = re.compile(r"[a-z0-9][a-z0-9_-]*")
 MAX_DOMAIN, MAX_ADDRESS, MAX_LOCAL_PART, MAX_HASH, MAX_VALUE, MAX_SCRIPT = 50, 100, 64, 150, 100, 1 << 20
 SPAM_RENAMED = {"whitelist_from": "welcomelist_from", "blacklist_from": "blocklist_from"}  # SpamAssassin before 4
 DOVEADM_HEADER = "sieve script:\n"
@@ -1747,6 +1748,20 @@ WRONG_CONFIG = (" The site's wp-config.php on the new server now points at "
                 "send the site again.")
 
 
+def _database_problem(name):
+    """Why the new server would not make a database under this name, in
+    plain words; None when it would. It checks the name itself, but the name
+    goes into a command there, and the check that counts is the one in the
+    process that sends it: the resume and --again paths send a name without
+    applying anything first."""
+    if not (isinstance(name, str) and name and len(name) <= MAX_USER_NAME
+            and _NEW_NAME.fullmatch(name)):
+        return ("a database name is lower case letters, digits, - and _, "
+                "starting with a letter or a digit, at most %d characters."
+                % MAX_USER_NAME)
+    return None
+
+
 class MoveFailed(Exception):
     """A site's files or database did not come across. The message says
     what, in words for a person. 'told' says the message itself says how far
@@ -1834,9 +1849,19 @@ def move_site(connection, site, answer, again=False, notes=None, ask=None,
     if not source:
         raise MoveFailed("I don't know where the files of %s are on this "
                          "server." % name)
-    database = site.get("database")
+    database = site.get("database")  # the old wp-config.php's: whether there is a database at all
+    made_database = None  # the database on the NEW server, under the name the new server itself gave it
     settings = None
     if database:
+        made_database = (answer.get("database")
+                         if isinstance(answer, dict) else None) or database
+        reason = _database_problem(made_database)
+        if reason:
+            raise MoveFailed("I can't tell the new server to use %s as the "
+                             "database of %s: %s Nothing was copied. Send "
+                             "the site again, so the new server says which "
+                             "database it made."
+                             % (made_database, name, reason))
         settings = settings_of(os.path.join(source, "wp-config.php"))
         if not settings or not (settings.get("DB_NAME")
                                 and settings.get("DB_USER")):
@@ -1844,10 +1869,9 @@ def move_site(connection, site, answer, again=False, notes=None, ask=None,
                              "its wp-config.php, so nothing was copied."
                              % name)
     if again and database:
-        target_db = answer.get("database") or database
         question = ("The database %s on the new server, for the site %s, "
                     "will be emptied and replaced by the one on this "
-                    "server. Go on?" % (target_db, name))
+                    "server. Go on?" % (made_database, name))
         reply = ask(question) if ask is not None else None
         if not isinstance(reply, str) or reply.strip().lower() != "yes":
             return {"ok": False, "skipped": True,
@@ -1894,7 +1918,8 @@ def move_site(connection, site, answer, again=False, notes=None, ask=None,
         # --yes always: standard input is the dump, so a question could never
         # be answered. --replace: the new server made this database already.
         adopt = connection.command("domainctl", "wp", "adopt", site["user"],
-                                   "--database", database, "--dump", "-",
+                                   "--database", made_database,
+                                   "--dump", "-",
                                    "--replace", "--yes")
         try:
             dumped, adopted = piper(_dump_command(settings), adopt, env=env)
@@ -1918,7 +1943,7 @@ def move_site(connection, site, answer, again=False, notes=None, ask=None,
                              "server did not read the database in (code "
                              "%d).%s" % (name, adopted, after))
         steps.append("Read the database %s in and pointed wp-config.php at "
-                     "it." % database)
+                     "it." % made_database)
     reply = connection.ask({"request": "finish_site", "item": site})
     if not reply.get("ok"):
         # By now the adopt has pointed wp-config.php at the new database, so
@@ -2417,7 +2442,7 @@ def main(argv=None, geteuid=os.geteuid):
                           "with --domain: run me again with --domain "
                           "example.nl --user %s." % args.user)
         if args.user and not (len(args.user) <= MAX_USER_NAME
-                              and _USER_ARGUMENT.fullmatch(args.user)):
+                              and _NEW_NAME.fullmatch(args.user)):
             raise Stopped("'%s' isn't a user name the new server takes: use "
                           "lower case letters, digits, - and _, starting "
                           "with a letter or a digit, at most %d characters."
