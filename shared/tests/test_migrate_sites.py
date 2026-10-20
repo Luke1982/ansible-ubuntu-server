@@ -255,13 +255,16 @@ def test_the_files_go_with_rsync_as_root_on_the_other_side(tmp_path):
     _move(tmp_path, fakes)
     rsync = fakes.rsync[0]
     assert rsync[:2] == ["rsync", "-az"]
-    for flag in ("-s", "--omit-dir-times", "--no-owner", "--no-group"):
-        assert flag in rsync
-    assert "--delete" not in rsync
+    assert rsync[:11] == [
+        "rsync", "-az", "-s", "--info=progress2", "--human-readable",
+        "--omit-dir-times", "--no-owner", "--no-group", "-e", rsync[9],
+        "--rsync-path"]
+    assert len(rsync) == 14 and not [w for w in rsync if "delete" in w]
     assert rsync[rsync.index("--rsync-path") + 1] == "sudo -n rsync"
     assert "-i " + str(tmp_path / "migrate_key") in rsync[rsync.index("-e") + 1]
     # Slashes on both ends: the files land IN the web root.
-    assert rsync[-2:] == ["/var/www/shop/", "ansible@new.example.nl:" + ROOT + "/"]
+    assert rsync[-2:] == ["/var/www/shop/",
+                          "ansible@new.example.nl:" + ROOT + "/"]
 
 
 def test_a_path_with_a_space_is_not_quoted_for_rsync(tmp_path):
@@ -272,7 +275,7 @@ def test_a_path_with_a_space_is_not_quoted_for_rsync(tmp_path):
                                    "ansible@new.example.nl:/home/a b/www/"]
 
 
-def test_the_dump_goes_straight_into_the_adopt_with_the_password_in_the_environment(tmp_path):
+def test_the_dump_goes_into_the_adopt_and_the_password_in_the_env(tmp_path):
     fakes = Fakes()
     _move(tmp_path, fakes)
     dump, adopt, env = fakes.pipes[0]
@@ -298,7 +301,7 @@ def test_run_piped_streams_one_command_into_the_other(tmp_path):
                              ["cat"], env={"A": "1"})[0] == 3
 
 
-def test_run_command_adds_the_environment_to_its_own_for_that_command_only(monkeypatch):
+def test_run_command_adds_to_the_environment_for_one_command(monkeypatch):
     monkeypatch.delenv("MIGRATE_X", raising=False)
     out = migrate.run_command("sh", "-c", "echo $MIGRATE_X:$HOME",
                               env={"MIGRATE_X": "1"})
@@ -339,7 +342,7 @@ def test_a_second_run_offers_a_site_whose_files_did_not_arrive(tmp_path):
     assert state["items"][site["id"]]["status"] == "moved"
 
 
-def test_a_site_remembered_as_made_but_new_on_the_server_is_made_again(tmp_path):
+def test_a_site_made_in_the_notes_but_new_on_the_server_is_remade(tmp_path):
     site = _shop()
     notes = _notes(tmp_path)
     notes.made(site, ANSWER)
@@ -394,15 +397,29 @@ def test_a_failed_dump_or_adopt_leaves_the_site_outstanding_and_says_why(
     fakes = Fakes(*codes)
     with pytest.raises(migrate.MoveFailed) as failed:
         _move(tmp_path, fakes, notes=notes, again=True, ask=lambda t: "yes")
-    assert word in str(failed.value) and "OLD server's database" in str(failed.value)
+    text = str(failed.value)
+    assert word in text and "OLD server's database" in text
     assert notes.entry(_shop())["status"] == "made"
+
+
+def test_a_dying_connection_is_not_blamed_on_the_dump(tmp_path):
+    with pytest.raises(migrate.MoveFailed) as failed:
+        _move(tmp_path, Fakes(0, -13, 255))
+    text = str(failed.value)
+    assert "connection" in text and "mysqldump" not in text
+    assert "OLD server's database" in text
 
 
 def test_a_failed_finish_leaves_the_site_outstanding(tmp_path):
     notes = _notes(tmp_path)
-    connection = NewServer(tmp_path, {"finish_site": {"ok": False, "error": "no"}})
-    with pytest.raises(migrate.MoveFailed):
+    notes.moved(_shop())  # so only this run can turn it back into "made"
+    connection = NewServer(
+        tmp_path, {"finish_site": {"ok": False, "error": "No room."}})
+    with pytest.raises(migrate.MoveFailed) as failed:
         _move(tmp_path, Fakes(), notes=notes, connection=connection)
+    text = str(failed.value)
+    assert "not finished off" in text and "No room." in text
+    assert "OLD server" not in text  # the adopt already put that right
     assert notes.entry(_shop())["status"] == "made"
 
 
@@ -427,7 +444,7 @@ def test_the_no_delete_note_is_given_once(tmp_path):
     assert extra == [migrate.NO_DELETE_NOTE]
 
 
-def test_a_write_that_breaks_halfway_leaves_the_old_file_whole(tmp_path, monkeypatch):
+def test_a_write_that_breaks_halfway_keeps_the_old_file(tmp_path, monkeypatch):
     path = tmp_path / "state.json"
     notes = migrate.State(path=str(path), say=print)
     notes.moved(_shop())
@@ -439,7 +456,8 @@ def test_a_write_that_breaks_halfway_leaves_the_old_file_whole(tmp_path, monkeyp
     monkeypatch.setattr(migrate.json, "dump", broken)
     with pytest.raises(migrate.MoveFailed):
         notes.moved(_shop(id="site:b"))
-    assert path.read_text() == before and os.listdir(str(tmp_path)) == ["state.json"]
+    assert path.read_text() == before
+    assert os.listdir(str(tmp_path)) == ["state.json"]
 
 
 @pytest.mark.parametrize("text", ["{ not json", "[1, 2]", '{"items": 5}'])
@@ -453,9 +471,19 @@ def test_notes_that_cannot_be_read_are_said_and_start_empty(tmp_path, text):
 
 def test_notes_of_an_older_form_keep_what_is_usable(tmp_path):
     path = tmp_path / "state.json"
-    path.write_text('{"items": {"site:a": {"status": "made"}, "x": 5}, "old": 1}')
-    notes = migrate.State(path=str(path), say=print)
-    assert notes.items == {"site:a": {"status": "made"}}
+    path.write_text('{"version": 0, "old": 1, "items": '
+                    '{"site:a": {"status": "made"}, "x": 5}}')
+    said = []
+    notes = migrate.State(path=str(path), say=said.append)
+    assert notes.items == {"site:a": {"status": "made"}} and said == []
+    # An entry without a remembered destination cannot be resumed: the site
+    # is made through the new server again, not copied to a guessed place.
+    site = _shop(id="site:a")
+    connection = NewServer(tmp_path, {"apply": ANSWER})
+    status = {"site:a": {"state": "exists"}}
+    migrate.run(connection, [site], lambda text: None, notes=notes,
+                status=status, move=lambda item, answer: None)
+    assert [r["request"] for r in connection.requests] == ["apply"]
 
 
 def test_item_ids_are_stable_and_the_user_comes_from_the_domain():
@@ -470,14 +498,18 @@ def test_item_ids_are_stable_and_the_user_comes_from_the_domain():
 
 
 def test_cron_ids_are_stable_and_a_jobs_user_is_its_sites_new_user():
-    job = {"user": "wwwdata", "line": "* * * * * /bin/x", "site": "shop.example.nl",
-           "interpreter": "php", "settings": [], "problem": None}
+    job = {"user": "wwwdata", "line": "* * * * * /bin/x",
+           "site": "shop.example.nl", "interpreter": "php", "settings": [],
+           "problem": None}
     first = migrate.cron_items([job, job])
-    assert first[0]["user"] == "shopexample" and first[0]["old_user"] == "wwwdata"
-    assert [i["id"] for i in first] == [i["id"] for i in migrate.cron_items([job, job])]
+    assert first[0]["user"] == "shopexample"
+    assert first[0]["old_user"] == "wwwdata"
+    again = migrate.cron_items([job, job])
+    assert [i["id"] for i in first] == [i["id"] for i in again]
     assert len({i["id"] for i in first}) == 2
     other = migrate.cron_items([dict(job, line="* * * * * /bin/y")])[0]
     assert other["id"] not in {i["id"] for i in first}
     loose = migrate.cron_items([dict(job, site=None)])[0]
-    assert loose["id"] == first[0]["id"] and "belongs to no site" in loose["problem"]
+    assert loose["id"] == first[0]["id"]
+    assert "belongs to no site" in loose["problem"]
     assert migrate.offered([loose], {loose["id"]: {"state": "new"}}) == []

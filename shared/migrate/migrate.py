@@ -1518,7 +1518,7 @@ def move_site(connection, site, answer, again=False, notes=None, ask=None,
                                "not to be replaced." % name}
     if notes is not None:
         notes.made(site, answer)  # not moved until every step is done
-    steps, copied = [], False
+    steps = []
     # Slashes on both ends: rsync then copies what is IN the folder, so the
     # files land in the web root itself and not in a folder inside it.
     # -s: the far side does not split the path, which is right for old and
@@ -1532,7 +1532,8 @@ def move_site(connection, site, answer, again=False, notes=None, ask=None,
         # --progress, which prints a line per file and buries every real
         # message under fifty thousand of them on a WordPress site. It wants
         # rsync 3.1, which every server new enough to run this file has.
-        code = runner("rsync", "-az", "-s", "--info=progress2", "--human-readable", "--omit-dir-times",
+        code = runner("rsync", "-az", "-s", "--info=progress2",
+                      "--human-readable", "--omit-dir-times",
                       "--no-owner", "--no-group", "-e", shell,
                       "--rsync-path", "sudo -n rsync",
                       source.rstrip("/") + "/", target)
@@ -1546,7 +1547,6 @@ def move_site(connection, site, answer, again=False, notes=None, ask=None,
     steps.append("Copied the files of %s to %s." % (name, docroot))
     if code == 24:
         steps.append(VANISHED_NOTE)
-    copied = True
     if extra_notes is not None and NO_DELETE_NOTE not in extra_notes:
         extra_notes.append(NO_DELETE_NOTE)
     after = WRONG_CONFIG if database else ""
@@ -1565,6 +1565,13 @@ def move_site(connection, site, answer, again=False, notes=None, ask=None,
             raise MoveFailed("The files of %s are across, but its database "
                              "was not moved: %s.%s" % (name, problem.message,
                                                        after))
+        if adopted == 255 or (dumped < 0 and adopted != 0):
+            # ssh gives 255 when the connection fails; and when it dies first,
+            # the dump is killed by the broken pipe (a negative code).
+            raise MoveFailed("The files of %s are across, but the connection "
+                             "to the new server was lost while the database "
+                             "was sent (the dump itself did not fail).%s"
+                             % (name, after))
         if dumped != 0:
             raise MoveFailed("The files of %s are across, but mysqldump "
                              "stopped with code %d, so the database may be "
@@ -1577,9 +1584,13 @@ def move_site(connection, site, answer, again=False, notes=None, ask=None,
                      "it." % database)
     reply = connection.ask({"request": "finish_site", "item": site})
     if not reply.get("ok"):
-        raise MoveFailed((reply.get("error")
-                          or "The new server did not finish %s." % name)
-                         + (after if copied else ""))
+        # By now the adopt has pointed wp-config.php at the new database, so
+        # the warning above would be untrue: say what is really left.
+        raise MoveFailed("The files%s of %s are across, but the site was not "
+                         "finished off: %s Send it again to finish it."
+                         % (" and database" if database else "", name,
+                            reply.get("error") or "the new server gave no "
+                            "reason."))
     steps.extend(s for s in reply.get("steps", []) if isinstance(s, str))
     if notes is not None:
         notes.moved(site)
