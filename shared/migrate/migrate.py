@@ -5,6 +5,8 @@ It only reads: it changes nothing on this server. Standard library only and noth
 old server has an old Python and none of our other files.
 """
 
+import copy
+import getpass
 import glob
 import json
 import os
@@ -29,6 +31,10 @@ SPAM_RENAMED = {"whitelist_from": "welcomelist_from", "blacklist_from": "blockli
 DOVEADM_HEADER = "sieve script:\n"
 SITES_ENABLED = "/etc/apache2/sites-enabled"
 APACHE_ROOT = "/etc/apache2"
+PROTOCOL_VERSION = 1  # of the talk with migratectl on the new server; both halves must come from the same release
+KEY_NAME = "migrate_key"
+KNOWN_HOSTS_NAME = "migrate_known_hosts"
+AUTHORIZED_KEYS = "/home/ansible/.ssh/authorized_keys"
 
 
 class CommandFailed(Exception):
@@ -727,3 +733,178 @@ def cron_jobs(run, sites, notes=None, passwd=PASSWD, cron_dir=CRON_DIR):
         notes.append("Left out of %s because cron itself ignores a file with such a name: %s."
                      % (cron_dir, ", ".join(ignored)))
     return jobs
+
+
+class Stopped(Exception):
+    """Something stopped the move. The message says what happened and what to do, in words for a person."""
+
+    def __init__(self, message, refused=False):
+        super().__init__(message)
+        self.message = message
+        self.refused = refused  # the new server doesn't accept our key (yet)
+
+
+def _ssh_directory():
+    return os.path.join(os.path.expanduser("~"), ".ssh")
+
+
+def own_key(directory=None, run=run):
+    """Makes this tool's own key (ed25519, no passphrase, the private half readable by its owner only) when there is
+    none, and returns the public half to paste on the new server. Run again, it gives the same key back."""
+    directory = directory or _ssh_directory()
+    private = os.path.join(directory, KEY_NAME)
+    try:
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        if not os.path.exists(private):
+            run("ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "migrate", "-f", private)
+            os.chmod(private, 0o600)
+        if not os.path.exists(private + ".pub"):
+            with open(private + ".pub", "w") as handle:
+                handle.write(run("ssh-keygen", "-y", "-f", private).strip() + " migrate\n")
+        with open(private + ".pub") as handle:
+            return handle.read().strip()
+    except (OSError, CommandFailed) as problem:
+        raise Stopped("I couldn't make the key this server uses to reach the new one in %s: %s. Check that this "
+                      "account may write there and try again." % (directory, getattr(problem, "message", problem)))
+
+
+_UNREACHABLE = ("could not resolve", "no route to host", "connection refused", "timed out", "network is unreachable",
+                "name or service not known", "temporary failure in name resolution", "connection closed",
+                "connection reset")
+
+
+class Connection(object):
+    """The way to the new server: one ssh process for each request, so nothing can be left hanging between two."""
+
+    def __init__(self, host, user="ansible", key=None):
+        self.host = host
+        self.user = user
+        self.key = key or os.path.join(_ssh_directory(), KEY_NAME)
+        self.known_hosts = os.path.join(os.path.dirname(self.key), KNOWN_HOSTS_NAME)
+        self.old_ssh_said = False
+
+    def _command(self, host_check):
+        # BatchMode: ssh must never wait for a password, a passphrase or a yes/no that nobody would see.
+        return ["ssh", "-i", self.key, "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+                "-o", "ServerAliveInterval=30", "-o", "UserKnownHostsFile=" + self.known_hosts,
+                "-o", "StrictHostKeyChecking=" + host_check, "%s@%s" % (self.user, self.host),
+                "sudo", "-n", "migratectl"]
+
+    def _once(self, host_check, line):
+        try:
+            process = subprocess.Popen(self._command(host_check), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, universal_newlines=True)
+        except FileNotFoundError:
+            raise Stopped("ssh isn't installed on this server, so I can't reach the new one. Install the OpenSSH "
+                          "client (on Debian or Ubuntu: apt install openssh-client) and run me again.")
+        except OSError as problem:
+            raise Stopped("I couldn't start ssh to reach the new server: %s." % problem)
+        out, err = process.communicate(line)
+        return process.returncode, out or "", " ".join((err or "").split())
+
+    def ask(self, request):
+        """The new server's answer to one request, as a dict. Raises Stopped, and nothing else, when it can't."""
+        try:
+            line = json.dumps(request) + "\n"
+        except (TypeError, ValueError):
+            raise Stopped("I made a request that can't be sent. That's a mistake in this tool, not in your servers.")
+        code, out, err = self._once("accept-new", line)
+        if code != 0 and re.search(r"bad configuration option|unsupported option|accept-new", err, re.I):
+            if not self.old_ssh_said:
+                self.old_ssh_said = True
+                print("Note: the ssh on this server is too old to remember the new server's identity, so I accepted "
+                      "it without checking. Make sure %s really is your new server." % self.host)
+            code, out, err = self._once("no", line)
+        return self._answer(code, out, err)
+
+    def _answer(self, code, out, err):
+        said = " The server said: %s" % err if err else ""
+        low = err.lower()
+        if code != 0:
+            if "host key verification failed" in low or "identification has changed" in low:
+                raise Stopped("The new server at %s doesn't look like the one I spoke to before (its identity "
+                              "changed). If you rebuilt it on purpose, delete the line for it in %s and run me again; "
+                              "if not, stop here and find out why.%s" % (self.host, self.known_hosts, said))
+            if "permission denied" in low:
+                raise Stopped("The new server doesn't accept this server's key yet.%s" % said, refused=True)
+            if any(text in low for text in _UNREACHABLE):
+                raise Stopped("I can't reach %s. Check the name or address, that the new server is switched on and "
+                              "that nothing blocks ssh (port 22).%s" % (self.host, said))
+            if code == 127 or "command not found" in low or ("not found" in low and "migratectl" in low):
+                raise Stopped("I reached the new server, but migratectl isn't installed there. Build the new server "
+                              "with this repository's playbook first, then run me again.%s" % said)
+            if "password is required" in low or "not allowed" in low or "sudoers" in low:
+                raise Stopped("I reached the new server, but the %s account may not run migratectl without a "
+                              "password. Build the new server with this repository's playbook, then run me "
+                              "again.%s" % (self.user, said))
+            raise Stopped("The connection to %s stopped with an error (code %d).%s" % (self.host, code, said))
+        if not out.strip():
+            raise Stopped("The new server answered with nothing. Is migratectl on it the right program?%s" % said)
+        try:
+            answer = json.loads(out)
+        except (ValueError, RecursionError):
+            answer = None
+        if not isinstance(answer, dict):
+            raise Stopped("The new server answered with something I can't read, so I stopped. Both servers should "
+                          "come from the same release of this repository.%s" % said)
+        return answer
+
+
+def check(connection):
+    """The new server's answer to hello. Raises Stopped when it can't be reached, doesn't accept our key, or speaks
+    another version than this file."""
+    try:
+        answer = connection.ask({"request": "hello"})
+    except Stopped as problem:
+        if not problem.refused:
+            raise
+        try:
+            key = own_key(os.path.dirname(connection.key))
+        except Stopped:
+            key = "(I couldn't read the key; run me again to make it)"
+        raise Stopped("%s Add this key, as one line, to %s on the new server (%s@%s), then run me again:\n\n%s\n"
+                      % (problem.message.strip(), AUTHORIZED_KEYS, connection.user, connection.host, key))
+    if not answer.get("ok"):
+        raise Stopped("The new server wouldn't say hello: %s" % (answer.get("error") or "no reason given"))
+    if answer.get("version") != PROTOCOL_VERSION:
+        raise Stopped("This file speaks version %s of the talk with the new server, but the new server speaks "
+                      "version %s. Both halves must come from the same release of this repository: copy this file "
+                      "again from the release the new server was built with."
+                      % (PROTOCOL_VERSION, answer.get("version")))
+    return answer
+
+
+def apply_item(connection, item, ask_password=None, say=print):
+    """Sends one item to the new server to be made. Returns (answer, skipped). When the answer says some mail
+    accounts need a password the new server can't get from the stored one, each is asked for here (nothing shows on
+    screen), and the same item is sent again with it. Enter skips an account: it is left out and named in 'skipped'.
+    A password goes nowhere but the one request: not into the state file, a command line or a message."""
+    ask_password = ask_password or getpass.getpass
+    item = copy.deepcopy(item)
+    skipped, asked = [], set()
+    answer = connection.ask({"request": "apply", "item": item})
+    while not answer.get("ok") and answer.get("needs_password"):
+        wanted = [name for name in answer["needs_password"] if isinstance(name, str)]
+        if not wanted or asked.intersection(wanted):
+            return answer, skipped  # asked for the same account twice: asking again would not help
+        say("The new server can't use the stored password of %d account(s). Type each one's password "
+            "(nothing shows while you type), or press Enter to leave that account out." % len(wanted))
+        data = item.get("data") if isinstance(item.get("data"), dict) else {}
+        for address in wanted:
+            asked.add(address)
+            password = ask_password("Password for %s: " % address)
+            accounts = data.get("addresses", [])
+            if password:
+                for account in accounts:
+                    if isinstance(account, dict) and str(account.get("address", "")).lower() == address.lower():
+                        account["password"] = password
+                        account.pop("password_hash", None)
+            else:
+                skipped.append(address)
+                data["addresses"] = [account for account in accounts if not (
+                    isinstance(account, dict) and str(account.get("address", "")).lower() == address.lower())]
+                data["sieve"] = [entry for entry in data.get("sieve", []) if not (
+                    isinstance(entry, dict) and str(entry.get("address", "")).lower() == address.lower())]
+            password = None
+        answer = connection.ask({"request": "apply", "item": item})
+    return answer, skipped
