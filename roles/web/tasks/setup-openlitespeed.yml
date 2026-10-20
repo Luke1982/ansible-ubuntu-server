@@ -22,3 +22,57 @@
       - lsphp83-intl
     state: present
   
+# OpenLiteSpeed comes with one listener, on port 8088. Everything on these servers expects the usual two: Let's
+# Encrypt checks a name over plain HTTP on 80, and every site is served on 443. They are added here rather than
+# by hand in WebAdmin, so a new server doesn't fail halfway through the playbook on a step nobody remembers.
+#
+# A site brings its own certificate (vhssl), so the one on the listener is only served to a name that matches no
+# site; a self-signed one is enough for that, and a browser never sees it in normal use.
+- name: Look at the listeners OpenLiteSpeed has
+  slurp:
+    src: "{{ ols_root }}/conf/httpd_config.conf"
+  register: ols_listeners
+
+- name: Make a certificate for the HTTPS listener
+  command: >-
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650
+    -keyout {{ ols_root }}/conf/listener.key -out {{ ols_root }}/conf/listener.crt
+    -subj "/CN={{ hostname }}"
+  args:
+    creates: "{{ ols_root }}/conf/listener.crt"
+  when: "'*:443' not in (ols_listeners.content | b64decode)"
+
+- name: Keep the listener's key to OpenLiteSpeed
+  file:
+    path: "{{ ols_root }}/conf/listener.key"
+    owner: lsadm
+    group: lsadm
+    mode: 0600
+  when: "'*:443' not in (ols_listeners.content | b64decode)"
+
+- name: Add the listener for port 80
+  blockinfile:
+    path: "{{ ols_root }}/conf/httpd_config.conf"
+    marker: "# {mark} ANSIBLE MANAGED: listener on port 80"
+    block: |
+      listener HTTP{
+        address                 *:80
+        secure                  0
+      }
+  when: "'*:80' not in (ols_listeners.content | b64decode)"
+  notify: restart openlitespeed
+
+- name: Add the listener for port 443
+  blockinfile:
+    path: "{{ ols_root }}/conf/httpd_config.conf"
+    marker: "# {mark} ANSIBLE MANAGED: listener on port 443"
+    block: |
+      listener HTTPS{
+        address                 *:443
+        secure                  1
+        keyFile                 {{ ols_root }}/conf/listener.key
+        certFile                {{ ols_root }}/conf/listener.crt
+        certChain               0
+      }
+  when: "'*:443' not in (ols_listeners.content | b64decode)"
+  notify: restart openlitespeed
