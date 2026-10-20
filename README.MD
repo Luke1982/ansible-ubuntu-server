@@ -109,7 +109,9 @@ mailctl webmail sync        # webmail per mail domain, with a certificate of its
 mailctl certificate sync    # the hostname and every mail.DOMAIN in one certificate
 ```
 
-Until `mailctl certificate sync` has run, a new mail server has only the empty
+`domainctl hostname` gets the certificate of the server's own name on its own, also on a server without mail.
+
+Until `domainctl hostname` or `mailctl certificate sync` has run, a new mail server has only the empty
 certificate files the playbook puts there for Dovecot to start with.
 
 ---
@@ -259,6 +261,7 @@ Web servers get `domainctl`, a command-line tool for the sites on the server. Ru
 | `domainctl list` | The sites with their domain, user and certificate |
 | `domainctl check [USER]` | Whether a site's names, permissions and certificate are in order |
 | `domainctl delete SITE` | Removes a site, by its name or its domain; `--purge` takes the user and its files too. A site that stopped before it had a virtual host is only its user and files, so those go without `--purge` |
+| `domainctl hostname` | Gives the server's own name a Let's Encrypt certificate, through a site of its own that only answers Let's Encrypt (the virtual host `Server`). Postfix and Dovecot present it |
 | `domainctl sync` | Brings the template block and every site's permissions up to date. Run it by hand; the playbook only says to |
 | `domainctl dns credentials` | The TransIP login, shared with mailctl |
 | `domainctl wp install USER` | Installs WordPress on a site with wp-cli: its own database and MariaDB user, and the WP fail2ban plugin |
@@ -377,6 +380,8 @@ Every address record it publishes is the server's IPv4 address. A name is publis
 Postfix and Dovecot present one certificate to everyone, so it has to hold every name mail programs connect to: the server's hostname and `mail.DOMAIN` of each domain. `mailctl certificate sync` keeps it that way. It asks certbot for a certificate with those names under the hostname's name, and afterwards Postfix and Dovecot read it again, without a restart. A name is only taken along once `mail.DOMAIN` points to this server; the others are named in the output, so publish their records first (`mailctl dns publish example.nl`).
 
 Let's Encrypt checks each name over HTTP. Answering that is all an OpenLiteSpeed template of mailctl's does: the playbook installs it, its web root (`/var/www/mailcert`) holds nothing but the challenges, and each name is a member, so they show up in WebAdmin under Virtual Host Templates. A name another site in OpenLiteSpeed already answers for is left to that site, with a warning.
+
+Once `domainctl hostname` has made the site of the server's own name, the virtual host `Server`, that site answers Let's Encrypt for the hostname and mailctl's template doesn't. Both commands keep the names the other one put in the certificate. Whichever runs first on a new server takes the empty placeholder files away, which certbot would otherwise refuse.
 
 Run `mailctl certificate sync` on the server after adding or removing a mail domain. It only asks certbot when a name is missing or the certificate is about to expire. Certbot renews it by itself after that, and its deploy hook reloads Postfix and Dovecot, so mail programs never get an expired certificate. A playbook run doesn't do it: a certificate that is refused, or a name that no longer points here, is something to see while you are looking.
 

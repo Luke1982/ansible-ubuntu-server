@@ -41,9 +41,10 @@ def test_sync_answers_lets_encrypt_for_the_names_and_asks_for_the_certificate(se
 
     assert members(db_config) == ["server.hosting.example", "mail.example.nl"]
     assert ols.calls == [["restart"]]
-    assert certbot.calls[0][:7] == ["certonly", "--webroot", "--webroot-path", str(db_config.mailcert_root),
-                                    "--cert-name", "server.hosting.example", "--expand"]
-    assert certbot.calls[0][7:11] == ["-d", "server.hosting.example", "-d", "mail.example.nl"]
+    root = str(db_config.mailcert_root)
+    assert certbot.calls[0][:13] == ["certonly", "--webroot", "--cert-name", "server.hosting.example", "--expand",
+                                     "--webroot-path", root, "-d", "server.hosting.example",
+                                     "--webroot-path", root, "-d", "mail.example.nl"]
     assert doveadm.calls == [["reload"]]
     assert "The certificate doesn't include mail.example.nl." in output
     assert "Postfix and Dovecot serve a certificate for 2 names." in output

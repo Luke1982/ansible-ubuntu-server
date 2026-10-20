@@ -38,6 +38,7 @@ app.command()(site.repair)
 app.command(name="list")(site.list_sites)
 app.command()(site.delete)
 app.command()(site.doctor)
+app.command()(site.hostname)
 # The name it had before both tools used the same words for the same thing.
 app.command(name="check", hidden=True)(site.doctor)
 app.command()(site.sync)

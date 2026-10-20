@@ -3,10 +3,16 @@
 They serve one certificate to everyone, so it has to hold every name mail programs connect to. Let's Encrypt proves
 each name over HTTP, so each one needs a site answering its challenges: mailctl keeps them as members of one
 OpenLiteSpeed template, whose web root holds nothing but those challenges.
+
+The hostname is the exception once "domainctl hostname" has made the site of the server's own name, the virtual host
+Server: that site answers for it, so it gets no member here and certbot proves it under that site's web root.
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from . import certificate, openlitespeed, system
 from .config import Config
@@ -15,6 +21,8 @@ from .errors import MailctlError
 from .openlitespeed import Member, Template
 
 TEMPLATE = "mailnames"
+# domainctl's site of the server's own name (domainctl hostname), which answers for the hostname when it is there.
+HOSTNAME_SITE = "Server"
 NOTE = "Managed by mailctl: Let's Encrypt challenges for the mail names"
 # Certbot renews 30 days before the end; mailctl asks for a new certificate when a name is missing, not by age.
 RENEW_BEFORE = timedelta(days=30)
@@ -78,13 +86,26 @@ def planned_config(config: Config, names: list[str]) -> tuple[list[str], list[st
         raise MailctlError("OpenLiteSpeed has no HTTP listener on port 80, where Let's Encrypt checks a name.",
                            hint="Add one in WebAdmin.")
     template = Template(TEMPLATE, f"conf/templates/{TEMPLATE}.conf", tuple(http), NOTE)
+    ours = [name for name in names if name not in _left_to_hostname_site(config, lines)]
     updated = lines
     for name in openlitespeed.members(lines, TEMPLATE):
-        if name not in names:
+        if name not in ours:
             updated = openlitespeed.without_member(updated, name, TEMPLATE)
-    for name in names:
+    for name in ours:
         updated = openlitespeed.with_member(updated, Member(name, name), template)
     return lines, updated
+
+
+def _left_to_hostname_site(config: Config, lines: list[str]) -> set[str]:
+    """The hostname, when domainctl's site of it answers for it on port 80; else nothing."""
+    http, _ = openlitespeed.listeners(lines)
+    mapped = any(config.hostname in openlitespeed.maps(lines, listener).get(HOSTNAME_SITE, []) for listener in http)
+    return {config.hostname} if mapped else set()
+
+
+def hostname_root(config: Config) -> Path:
+    """The web root of domainctl's site of the hostname."""
+    return config.ols_root / HOSTNAME_SITE / "html"
 
 
 def served_elsewhere(config: Config, names: list[str]) -> list[str]:
@@ -94,18 +115,43 @@ def served_elsewhere(config: Config, names: list[str]) -> list[str]:
     hosts = set(openlitespeed.virtual_hosts(lines))
     mapped = {name: host for listener in sum(openlitespeed.listeners(lines), [])
               for host, host_names in openlitespeed.maps(lines, listener).items() for name in host_names}
-    return [name for name in names
-            if name not in ours and (name in hosts or (name in mapped and mapped[name] not in ours))]
+    left = _left_to_hostname_site(config, lines)
+    return [name for name in names if name not in ours and name not in left
+            and (name in hosts or (name in mapped and mapped[name] not in ours))]
 
 
 def request(config: Config, names: list[str]) -> None:
-    """Asks certbot for a certificate with exactly these names, under the hostname's name."""
-    domains = [argument for name in names for argument in ("-d", name)]
+    """Asks certbot for a certificate with exactly these names, under the hostname's name. Each is proved under the
+    web root of the site that answers for it: mailctl's, or for the hostname domainctl's site of it."""
+    left = _left_to_hostname_site(config, openlitespeed.read(config.ols_root))
+    proofs = [argument for name in names for argument in
+              ("--webroot-path", str(hostname_root(config) if name in left else config.mailcert_root), "-d", name)]
     try:
-        certificate.run_certbot(config, "certonly", "--webroot", "--webroot-path", str(config.mailcert_root),
-                                "--cert-name", config.hostname, "--expand", *domains)
+        with _placeholders_aside(config):
+            certificate.run_certbot(config, "certonly", "--webroot", "--cert-name", config.hostname, "--expand",
+                                    *proofs)
     except MailctlError as problem:
         raise MailctlError(f"No certificate for the mail names: {certificate.reason(problem.message)}") from None
+
+
+@contextmanager
+def _placeholders_aside(config: Config) -> Iterator[None]:
+    """Takes the empty files the playbook puts in the hostname's live directory, so Dovecot starts before certbot
+    has run, away while certbot makes the first certificate: it refuses a live directory with anything in it. When
+    it makes none, they are put back."""
+    live = config.letsencrypt_dir / "live" / config.hostname
+    paths = [live / "fullchain.pem", live / "privkey.pem"]
+    if not all(path.is_file() and not path.is_symlink() and path.stat().st_size == 0 for path in paths):
+        yield
+        return
+    for path in paths:
+        path.unlink()
+    try:
+        yield
+    finally:
+        if not all(path.is_file() for path in paths):
+            for path in paths:
+                path.touch()
 
 
 def reload_mail_services() -> None:

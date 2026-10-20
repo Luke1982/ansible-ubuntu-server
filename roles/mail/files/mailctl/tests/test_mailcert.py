@@ -107,11 +107,49 @@ def test_request_asks_certbot_for_every_name_under_the_hostname(server, fake_com
 
     mailcert.request(server, ["server.hosting.example", "mail.example.nl"])
 
-    assert certbot.calls[0][:8] == [
-        "certonly", "--webroot", "--webroot-path", str(server.mailcert_root),
-        "--cert-name", "server.hosting.example", "--expand", "-d",
+    assert certbot.calls[0][:13] == [
+        "certonly", "--webroot", "--cert-name", "server.hosting.example", "--expand",
+        "--webroot-path", str(server.mailcert_root), "-d", "server.hosting.example",
+        "--webroot-path", str(server.mailcert_root), "-d", "mail.example.nl",
     ]
-    assert certbot.calls[0][8:11] == ["server.hosting.example", "-d", "mail.example.nl"]
+
+
+def _with_hostname_site(config):
+    """domainctl hostname's site of the server's own name, on the HTTP listener."""
+    path = openlitespeed.config_file(config.ols_root)
+    text = path.read_text().replace("listener HTTP {\n", "listener HTTP {\n  map                     Server server.hosting.example\n", 1)
+    path.write_text(text + "\nvirtualhost Server {\n  vhRoot                  /usr/local/lsws/Server/\n}\n")
+
+
+def test_the_hostname_is_left_to_domainctls_site_of_it(server, fake_command):
+    _with_hostname_site(server)
+    certbot = fake_command("certbot")
+
+    _, after = mailcert.planned_config(server, ["server.hosting.example", "mail.example.nl"])
+    mailcert.request(server, ["server.hosting.example", "mail.example.nl"])
+
+    assert openlitespeed.members(after, mailcert.TEMPLATE) == ["mail.example.nl"]
+    assert mailcert.served_elsewhere(server, ["server.hosting.example"]) == []
+    assert certbot.calls[0][5:13] == [
+        "--webroot-path", str(server.ols_root / "Server" / "html"), "-d", "server.hosting.example",
+        "--webroot-path", str(server.mailcert_root), "-d", "mail.example.nl",
+    ]
+
+
+def test_the_playbooks_empty_files_make_way_for_the_first_certificate(server, fake_command):
+    """Certbot refuses a live directory with anything in it; Dovecot needs the files when certbot fails."""
+    live = server.letsencrypt_dir / "live" / server.hostname
+    live.mkdir(parents=True, exist_ok=True)
+    (live / "fullchain.pem").touch()
+    (live / "privkey.pem").touch()
+    listing = live.parent / "listing"
+    fake_command("certbot", f"ls -A '{live}' > '{listing}'; exit 1")
+
+    with pytest.raises(MailctlError):
+        mailcert.request(server, ["server.hosting.example"])
+
+    assert listing.read_text() == ""
+    assert sorted(path.name for path in live.iterdir()) == ["fullchain.pem", "privkey.pem"]
 
 
 def test_request_says_what_lets_encrypt_refused(server, fake_command):

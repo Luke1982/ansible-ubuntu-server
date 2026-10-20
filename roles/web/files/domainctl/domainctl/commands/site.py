@@ -7,7 +7,7 @@ from serverctl.dns import Check, Status
 from serverctl.errors import CtlError
 from serverctl.transip import NotInAccount
 
-from ..core import certificates, dnsnames, layout, serving, sites, template, users
+from ..core import certificates, dnsnames, hostsite, layout, serving, sites, template, users
 from ..core.dnsnames import NameCheck, State
 from ..core.sites import Site
 from ..session import Session, open_session
@@ -164,6 +164,46 @@ def _delete_leftover(config, name: str, yes: bool) -> None:
     ui.confirm_by_typing(name, f"Delete the Linux user {name} and all its files?", yes)
     users.delete(name, remove_home=True)
     ui.success(f"Removed the user {name} and {config.home(name)}.")
+
+
+def hostname(no_dns: NoDns = False, yes: Yes = False) -> None:
+    """Give this server's own name a certificate, the one Postfix and Dovecot present.
+
+    Makes a site for the hostname that serves nothing but Let's Encrypt's challenges, the virtual host Server, and
+    gets the certificate through it, at /etc/letsencrypt/live/HOSTNAME where Postfix and Dovecot look for it. They
+    read it again straight away, and certbot renews it by itself after that. On a mail server the certificate keeps
+    the mail.DOMAIN names mailctl put in it.
+
+    Run it again whenever you like: it only asks for a certificate when there is none, the hostname is missing from
+    it, or it is about to expire.
+
+    [dim]Example:[/] domainctl hostname
+    """
+    with open_session() as session:
+        config = session.config
+        name = config.hostname
+        found = _resolve(session, name, no_dns, yes)
+        if not found.ready:
+            raise CtlError(f"{found.detail} Let's Encrypt checks the same thing, so there is no certificate.",
+                           hint=f"Point {name} at {_addresses(session)} and run this again.")
+        ui.success(f"{name} points to this server.")
+        if hostsite.publish(config, hostsite.certified(config)):
+            openlitespeed.restart(config.ols_root)
+            ui.success(f"The site {hostsite.NAME} answers for {name}.")
+        reason = hostsite.needs_certificate(config, datetime.now(UTC))
+        if not reason:
+            ui.success(f"{name} has its certificate already.")
+            return
+        ui.note(reason)
+        with ui.console.status("Checking that OpenLiteSpeed serves the site…"):
+            serving.wait_until_served(hostsite.webroot(config), name, set(found.addresses))
+        with ui.console.status("Asking Let's Encrypt for a certificate…"):
+            hostsite.obtain(config)
+        if hostsite.publish(config, True):
+            openlitespeed.restart(config.ols_root)
+        ui.success(f"{name} has a Let's Encrypt certificate.")
+        for program in hostsite.reload_mail():
+            ui.success(f"{program} presents it now.")
 
 
 def doctor(user: UserFilter = None) -> None:
