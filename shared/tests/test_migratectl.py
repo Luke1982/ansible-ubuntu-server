@@ -722,3 +722,20 @@ def test_an_import_that_was_stopped_halfway_says_the_domain_may_be_half_there(se
 def test_the_import_gets_longer_than_a_list_or_an_add(server):
     assert migratectl.IMPORT_TIMEOUT > migratectl.COMMAND_TIMEOUT
     assert migratectl.IMPORT_TIMEOUT < 1800  # the old server stops waiting for an apply at half an hour
+
+
+def test_hello_says_where_wp_cli_is(monkeypatch, tmp_path):
+    """A WordPress site's own cron jobs run wp-cli, and domainctl runs it from a place of its own."""
+    monkeypatch.setattr(migratectl.shutil, "which", lambda name: None)
+    wp = tmp_path / "wp"
+    wp.write_text("")
+    monkeypatch.setattr(migratectl, "WP_CLI", str(wp))
+    assert migratectl.answer({"request": "hello"})["wp"] == str(wp)
+
+
+def test_hello_falls_back_to_the_wp_on_the_path_and_says_none_without_one(monkeypatch):
+    monkeypatch.setattr(migratectl, "WP_CLI", "/nowhere/wp")
+    monkeypatch.setattr(migratectl.shutil, "which", lambda name: "/opt/bin/wp" if name == "wp" else None)
+    assert migratectl.answer({"request": "hello"})["wp"] == "/opt/bin/wp"
+    monkeypatch.setattr(migratectl.shutil, "which", lambda name: None)
+    assert migratectl.answer({"request": "hello"})["wp"] is None

@@ -23,6 +23,8 @@ TOOLS = ("mailctl", "domainctl")
 LIST_TIMEOUT = 60
 # OpenLiteSpeed's own PHP, where the web role installs it, for a server that has no php on the path at all.
 OLS_PHP = "/usr/local/lsws/lsphp*/bin/lsphp"
+# Where domainctl's own wordpress module runs wp-cli from, so a job that runs wp has somewhere to point here.
+WP_CLI = "/usr/local/bin/wp"
 
 
 def _php():
@@ -30,6 +32,12 @@ def _php():
     OpenLiteSpeed's lsphp. The old server says which PHP its jobs ran, never where a PHP is here."""
     found = shutil.which("php")
     return found or max(glob.glob(OLS_PHP), default=None)
+
+
+def _wp():
+    """Where wp-cli is on this server, for a cron job that runs it: the place domainctl itself runs it from, when
+    it is really there, or else what the path says. None when this server has no wp-cli at all."""
+    return WP_CLI if os.path.exists(WP_CLI) else shutil.which("wp")
 
 
 # Addresses on the internet, to ask which route the kernel takes; nothing is sent to them.
@@ -63,6 +71,7 @@ def hello(request):
         "server": socket.gethostname(),
         "tools": {name: shutil.which(name) is not None for name in TOOLS},
         "php": _php(),
+        "wp": _wp(),
         "addresses": _addresses(),
     }
 

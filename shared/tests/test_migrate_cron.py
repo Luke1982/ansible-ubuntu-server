@@ -155,8 +155,9 @@ def test_a_note_says_etc_crontab_was_not_read(tmp_path):
 # ---- What a job looks like on the new server --------------------------------
 
 SITE_ITEMS = migrate.site_items(
-    [{"name": "shop.example.nl", "aliases": [], "docroot": "/var/www/shop", "database": "shopdb",
-      "db_user": "u", "db_host": "localhost", "size": 1, "problem": None}], owner_of=lambda path: "www")
+    [{"name": "shop.example.nl", "aliases": [], "docroot": "/var/www/shop", "wordpress": True,
+      "database": "shopdb", "db_user": "u", "db_host": "localhost", "size": 1, "problem": None}],
+    owner_of=lambda path: "www")
 NEW_ROOT = "/home/shopexample/public_html/www"
 PLESK = ("PATH=/opt/plesk/php/8.1/bin:/usr/bin\n"
          "*/15 * * * * /opt/plesk/php/8.1/bin/php -q /var/www/shop/wp-cron.php >> /dev/null 2>&1\n")
@@ -181,20 +182,21 @@ def test_a_plesk_job_gets_the_new_servers_php_and_web_root(tmp_path):
 
 
 def test_a_job_that_uses_something_outside_the_site_is_shown_and_not_offered(tmp_path):
-    item = _item(tmp_path, "0 3 * * * /usr/local/bin/wp cron event run --path=/var/www/shop\n")
-    assert "/usr/local/bin/wp" in item["problem"] and "by hand" in item["problem"]
+    item = _item(tmp_path, "0 3 * * * /usr/bin/php /opt/tools/clean.php --root=/var/www/shop\n")
+    assert "/opt/tools/clean.php" in item["problem"] and "by hand" in item["problem"]
     assert migrate.offered([item], {item["id"]: {"state": "new"}}) == []
 
 
 def test_a_job_of_a_site_whose_folder_is_unknown_is_not_offered(tmp_path):
-    sites = migrate.site_items([{"name": "shop.example.nl", "aliases": [], "docroot": None, "problem": None}])
+    sites = migrate.site_items([{"name": "shop.example.nl", "aliases": [], "docroot": None, "wordpress": True,
+                                 "problem": None}])
     item = _item(tmp_path, "*/5 * * * * php /var/www/shop/cron.php\n", sites)
     assert item["problem"] and "don't know where" in item["problem"]
 
 
 def test_a_job_whose_site_needs_a_look_first_is_not_offered_either(tmp_path):
     sites = migrate.site_items([{"name": "shop.example.nl", "aliases": [], "docroot": "/var/www/shop",
-                                 "problem": "Its wp-config.php can't be read."}])
+                                 "wordpress": True, "problem": "Its wp-config.php can't be read."}])
     item = _item(tmp_path, "*/5 * * * * php /var/www/shop/cron.php\n", sites)
     assert item["problem"] == migrate.SITE_FIRST % "shop.example.nl"
 
@@ -274,3 +276,49 @@ def test_a_job_the_new_server_already_had_is_not_reported_as_moved(tmp_path):
     text = migrate.report(report)
     assert "Was already there" in text and "Moved:" not in text
     assert "BOTH servers" in text  # both servers still run it until the DNS moves
+
+
+WP_JOB = "*/5 * * * * cd /var/www/shop && /usr/local/bin/wp cron event run --due-now --path=/var/www/shop\n"
+
+
+def test_a_wp_cli_job_gets_the_new_servers_wp_and_web_root(tmp_path):
+    """Most of a WordPress site's own jobs run wp-cli, and the new server says where its own wp is."""
+    item = _item(tmp_path, WP_JOB)
+    assert item["problem"] is None
+
+    sent, said = migrate.cron_for_new_server(item, NEW_ROOT, "/usr/bin/php", "/usr/local/bin/wp")
+
+    assert sent["line"] == ("*/5 * * * * cd %s && /usr/local/bin/wp cron event run --due-now --path=%s"
+                            % (NEW_ROOT, NEW_ROOT))
+    assert "/var/www/shop" not in sent["line"]
+    assert any(NEW_ROOT in line for line in said)
+
+
+def test_a_wp_cli_job_follows_the_new_servers_own_place_for_wp(tmp_path):
+    item = _item(tmp_path, WP_JOB)
+    sent, _ = migrate.cron_for_new_server(item, NEW_ROOT, "/usr/bin/php", "/opt/bin/wp")
+    assert "/opt/bin/wp cron event run" in sent["line"]
+
+
+def test_without_wp_cli_on_the_new_server_the_job_is_not_sent(tmp_path):
+    item = _item(tmp_path, WP_JOB)
+    with pytest.raises(migrate.MoveFailed) as failed:
+        migrate.cron_for_new_server(item, NEW_ROOT, "/usr/bin/php", None)
+    assert "where its wp-cli is" in str(failed.value) and "Install wp-cli there" in str(failed.value)
+
+
+def test_the_run_sends_a_wp_job_rewritten_with_what_the_new_server_said(tmp_path):
+    item = _item(tmp_path, WP_JOB)
+    notes = migrate.State(path=str(tmp_path / "state.json"), say=lambda text: None)
+    notes.items[SITE_ITEMS[0]["id"]] = {"status": "moved", "docroot": NEW_ROOT}
+    sent = []
+
+    class Connection(object):
+        def ask(self, request):
+            sent.append(request)
+            return {"ok": True, "already": False}
+
+    report = migrate.run(Connection(), [item], lambda text: None, notes=notes, php="/usr/bin/php",
+                         wp="/usr/local/bin/wp", status={item["id"]: {"state": "new"}})
+    assert [i["id"] for i, _ in report.moved] == [item["id"]]
+    assert NEW_ROOT in sent[0]["item"]["line"] and "/usr/local/bin/wp" in sent[0]["item"]["line"]

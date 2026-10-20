@@ -503,8 +503,8 @@ def test_notes_of_an_older_form_keep_what_is_usable(tmp_path):
 
 def test_item_ids_are_stable_and_the_user_comes_from_the_domain():
     found = [{"name": "Shop.Example.nl", "aliases": [], "docroot": "/nowhere",
-              "database": "d", "db_user": "u", "db_host": "localhost",
-              "size": 5, "problem": None}]
+              "wordpress": True, "database": "d", "db_user": "u",
+              "db_host": "localhost", "size": 5, "problem": None}]
     first = migrate.site_items(found, owner_of=lambda p: "www")
     second = migrate.site_items(found)
     assert first[0]["id"] == second[0]["id"] == "site:shop.example.nl"
@@ -531,8 +531,8 @@ def test_cron_ids_are_stable_and_a_jobs_user_is_its_sites_new_user():
 
 
 def _found(*names):
-    return [{"name": name, "aliases": [], "docroot": "/var/www/" + name, "database": None, "problem": None}
-            for name in names]
+    return [{"name": name, "aliases": [], "docroot": "/var/www/" + name, "wordpress": True, "database": "db",
+             "problem": None} for name in names]
 
 
 def test_two_domains_that_give_one_user_name_do_not_share_it():
@@ -654,3 +654,29 @@ def test_a_server_without_rsync_makes_no_site_at_all(tmp_path, monkeypatch):
     assert migrate._missing_programs(_shop(database=None)) == []
     assert migrate._missing_programs(_shop()) == ["mysqldump"]
     assert migrate._missing_programs({"kind": "cron"}) == []
+
+
+def test_a_site_that_is_not_wordpress_is_listed_and_left_alone():
+    """The design has these listed with what was found, not moved: the report said both before."""
+    found = [{"name": "static.nl", "aliases": [], "docroot": "/var/www/static", "wordpress": False,
+              "database": None, "problem": None}] + _found("shop.nl")
+    items = migrate.site_items(found, owner_of=lambda path: None)
+    status = {i["id"]: {"state": "new", "detail": ""} for i in items}
+
+    assert "not a WordPress site" in items[0]["problem"] and "/var/www/static" in items[0]["problem"]
+    assert migrate.offered(items, status) == [items[1]]
+    assert items[0]["problem"] in " ".join(migrate.dashboard(items, status).split())
+
+    # It is named once in the report, under the hand work, and never as moved.
+    result = migrate.Report()
+    result.moved = [(items[1], {"ok": True, "docroot": "/home/shop/public_html/www"})]
+    text = migrate.report(result, found_sites=found, items=items)
+    assert text.count("static.nl") == 1
+    assert "static.nl (files in /var/www/static)" in text
+
+
+def test_a_site_that_is_not_moved_does_not_hold_a_user_name_another_site_needs():
+    found = [{"name": "example.com", "aliases": [], "docroot": "/var/www/com", "wordpress": False,
+              "database": None, "problem": None}] + _found("example.nl")
+    items = migrate.site_items(found, owner_of=lambda path: None)
+    assert items[1]["user"] == "example" and items[1]["problem"] is None
