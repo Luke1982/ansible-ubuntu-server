@@ -496,30 +496,36 @@ For moving a hand-built server onto one built with this repository. Run it from 
 
 1. Copy [`shared/migrate/migrate.py`](shared/migrate/migrate.py) to the old server.
 2. On the old server, as root: `python3 migrate.py key`. It prints a key. Paste that line into `/home/ansible/.ssh/authorized_keys` on the new server (once).
-3. On the old server, as root: `python3 migrate.py`. That is the tool. It asks for the new server's name the first time and writes it down, looks around, and shows what it found, grouped into mail, mailboxes, websites and cron jobs, with what the new server already has next to each. Only what can be moved has a number.
-4. It then stays up and asks what to do: the numbers to move (ranges like `2-5`, commas and `all` work), `r` to look around again, `q` or Ctrl-D to leave. It says what each pick is and asks to go ahead before it starts; after a move it prints the report of that move, looks again and asks again. One run moves as much as you like.
-5. Each report says what moved, how many messages arrived in each mailbox, the DNS records for it, and what you still have to do by hand.
+3. On the old server, as root: `python3 migrate.py`. That is the tool. It asks for the new server's name the first time and writes it down, looks around, and shows **one row for each customer**: where its mail, its website and its cron jobs stand (`to do`, `part`, `done` or `-`) and, at the end of the row, the next step for it in plain words.
+4. It then stays up and asks what to do. A number does that customer's next step and nothing more; `a` does the next step of every customer in turn; `3 all` does every step customer 3 has left; `i 3` says in sentences what customer 3 holds and why a part is not moved; `p 3` gives customer 3's mail accounts new passwords; `r` looks around again, `q` or Ctrl-D leaves. After each step it prints the report of it and draws the screen again, so what is on it is what the new server really has.
+5. Each report says what moved, the DNS records for it, and what you still have to do by hand.
 
-The commands do one thing each and stop, which is what a script wants: `migrate.py list --host <new-server>` shows the list and changes nothing; `migrate.py move 1-3 --host <new-server>` moves what the numbers name; `migrate.py check --host <new-server>` says which server answered, whether `mailctl` and `domainctl` are there and where it keeps mail; `migrate.py report` prints the report for what has been done so far, from its notes, and `migrate.py report --all` adds the lists about the whole server (sites that are not WordPress, databases and cron jobs that belong to no site, what could not be read), which `list` also shows. `migrate.py forget` forgets the new server's name, so it is asked for again; `--host` on any command replaces it. `--no-colour` leaves the colour off, as `NO_COLOR` and a pipe do.
+Everything the tool never moves — names with nothing to move, sites that are not WordPress, the server's own cron jobs, its webmail names, databases that belong to no site — is counted in one sentence under the table, never as a row of its own. `migrate.py list` shows all of those, item by item.
+
+The commands do one thing each and stop, which is what a script wants: `migrate.py list --host <new-server>` shows every item there is and changes nothing; `migrate.py move 1-3 --host <new-server>` does the next step of those customers, and `migrate.py move all` the next step of every customer, exactly as `a` does at the prompt; `migrate.py check --host <new-server>` says which server answered and whether `mailctl` and `domainctl` are there; `migrate.py report` prints the report for what has been done so far, from its notes, and `migrate.py report --all` adds the lists about the whole server (sites that are not WordPress, databases and cron jobs that belong to no site, what could not be read), which `list` also shows. `migrate.py forget` forgets the new server's name, so it is asked for again; `--host` on any command replaces it. `--no-colour` leaves the colour off, as `NO_COLOR` and a pipe do.
 
 The old server's own webmail, autodiscover and autoconfig addresses are not listed as sites: the new server has its own. Cron jobs that belong to no site, like the system's own, are counted in one line.
 
 It moves:
 
 - Mail domains, with their accounts and passwords, forwards, filters, and the spam settings of the domain and of each account.
-- The mail messages themselves, mailbox by mailbox: the maildir is copied over the connection it already has, with no password anywhere. It checks where the old server really keeps that account's mail (`doveconf`, then `/var/vmail/<domain>/<user>/Maildir` and the home folder itself) instead of assuming; mail kept as mdbox or mbox is named and not copied. Where it goes comes from what the new server answers, never from a path in the file. Afterwards the new server gives the maildir to the user Dovecot reads it as, runs `doveadm force-resync` and counts the messages, and that count is what the report says. One mailbox is one pick: a 67 GB mailbox is not something to start by accident. A mailbox can only go once its domain has: until then it says "move its domain first".
 - WordPress sites, with their files and database.
 - The cron jobs that belong to a site, with their paths and their PHP rewritten for the new server. A job that uses something outside the site is shown and skipped.
 
+`p 3` at the prompt gives every mail account of customer 3 a new password: one strong password per account, made on the old server and set with `mailctl address password --password-stdin` on the new one, so it is never an argument of a command and never in the notes. The addresses and their new passwords are printed once and go into the report of that run, under a heading saying they are written down nowhere else. It is never automatic: an account whose password the customer already knows keeps working until somebody asks for this.
+
 It does not move:
 
+- **The mail messages themselves.** The accounts, filters and spam settings move; what is in the mailboxes does not. Move that with the tool of your choice once the accounts are there.
 - Sites that are not WordPress.
 - DNS. The report prints the records each mail domain needs, and the addresses a site's A and AAAA records must point at.
 - The server's own spam settings. The new server keeps its own; the report lists the old server's.
 
 The report ends with what is still yours to do by hand: catch-all addresses and send-as permissions that could not move, sites that are not WordPress, databases and cron jobs that belong to no site, and anything the tool could not read.
 
-`--domain example.nl` (for `list` and `move`) looks at one mail domain and its sites only. `--user name`, with `--domain`, gives that site another Linux user on the new server: two domains of one company, like `example.nl` and `example.com`, would otherwise come down to the same user, and the second is shown and not offered. `migrate.py again example.nl` is for a site that has already moved: it copies the files once more and replaces the new server's database, after asking. `migrate.py again info@example.nl` does the same for one mailbox, and that is the only way to a copy that also removes what the new server has and the old one hasn't; the question says so before it happens. Copying a mailbox the ordinary way only ever adds and replaces. Pick what has moved again as often as you like.
+`--domain example.nl` (for `list` and `move`) looks at one mail domain and its sites only. `--user name`, with `--domain`, gives that site another Linux user on the new server: two domains of one company, like `example.nl` and `example.com`, would otherwise come down to the same user, and the second is shown and not offered. `migrate.py again example.nl` is for a site that has already moved: it copies the files once more and replaces the new server's database, after asking.
+
+Starting up stays cheap on a server with a lot on it: the mail database, Apache's virtual hosts, the crontabs and the database sizes here, and on the new server only the two lists it reads once (`mailctl domain list` and `domainctl list`), which is enough for every row. What a cron job costs there is a crontab read each, so jobs are asked about one customer at a time — when that customer is looked into or moved.
 
 Once the DNS of a site points at the new server, run `domainctl add <domain>` on the new server to get its certificate. Until the DNS moves, both servers run the same cron jobs.
 
