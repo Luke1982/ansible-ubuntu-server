@@ -1450,8 +1450,8 @@ def dashboard(inventory, status, remembered=None, colour=False, old_server=None,
                 out.extend(_loose_job(item, colour) for item in loose)
     if asides:
         out.extend([""] + textwrap.wrap(
-            "Not sites: %s of this server's own webmail, autodiscover and autoconfig are left out; the new "
-            "server has its own." % _plural(len(asides), "address", "addresses"), _WIDTH))
+            "Not sites: %s (vhosts) of this server's own webmail, autodiscover and autoconfig are left out; the new "
+            "server has its own." % _plural(len(asides), "name", "names"), _WIDTH))
     out.append("")
     if not count:
         out.append("None of the %d can be moved." % total if total > 1
@@ -2065,6 +2065,7 @@ class State(object):
 
     def __init__(self, path=STATE_PATH, say=print):
         self.path, self.say, self.items = path, say, {}
+        self.server = None  # the new server's name, kept for `report`
         try:
             with open(path, encoding="utf-8") as handle:
                 data = json.load(handle)
@@ -2075,6 +2076,8 @@ class State(object):
                 "site made earlier but never filled will show as already on "
                 "the new server." % path)
             return
+        if isinstance(data, dict) and isinstance(data.get("server"), str):
+            self.server = data["server"]
         if isinstance(data, dict) and isinstance(data.get("items"), dict):
             self.items = {k: v for k, v in data["items"].items()
                           if isinstance(v, dict)}
@@ -2128,7 +2131,7 @@ class State(object):
         try:
             os.makedirs(folder, exist_ok=True)
             with open(temporary, "w", encoding="utf-8") as handle:
-                json.dump({"version": 1, "items": self.items}, handle,
+                json.dump({"version": 1, "server": self.server, "items": self.items}, handle,
                           indent=1, sort_keys=True)
                 handle.write("\n")
                 handle.flush()
@@ -2442,7 +2445,7 @@ def _wrap(text, indent="  "):
 
 def _section(out, title, lines):
     if lines:
-        out.extend(["", title] + lines)
+        out.extend([""] + textwrap.wrap(title, 79) + lines)
 
 
 def _bullets(texts):
@@ -2523,7 +2526,7 @@ def _inventory_lists(found_sites, databases, mail_database, jobs, notes):
 def report(result, connection=None, old_server=None, found_sites=None,
            mail=None, databases=None, items=None, notes=None,
            extra_notes=None, mail_database=None, addresses=None,
-           everything=False):
+           everything=False, new_server=None):
     """What a run did and what is still to do by hand, as text of at most
     79 columns. 'connection' is asked for the DNS records; 'found_sites' is
     sites(), 'databases' is database_sizes(), 'items' everything the
@@ -2533,7 +2536,9 @@ def report(result, connection=None, old_server=None, found_sites=None,
     just happened; only with 'everything' does it go on to the lists about
     the whole server (what is not WordPress, loose databases, jobs of no
     site, what could not be read), which 'list' shows too."""
-    new_name = getattr(connection, "host", None) or "the new server"
+    new_name = getattr(connection, "host", None) or new_server
+    known_host = bool(new_name) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.:-]*", str(new_name)) is not None
+    new_name = new_name if known_host else "the new server"  # a phrase, for sentences only; never in a command
     old_name = old_server or socket.gethostname()
     moved = list(result.moved)
     undone = [item for item in result.files_to_copy
@@ -2582,7 +2587,12 @@ def report(result, connection=None, old_server=None, found_sites=None,
                 else None
             if address and address not in result.left_out:
                 accounts.append(address)
-    if accounts:
+    if accounts and not known_host:
+        out.extend([""] + textwrap.wrap(
+            "The imapsync lines for the mail accounts are left out, because "
+            "the name of the new server is not known here. Run migrate.py "
+            "report --host NEW-SERVER to get them.", 79))
+    elif accounts:
         out.extend([""] + textwrap.wrap(
             "Mail messages are not moved by this tool. Run one of these for "
             "each account, with the password filled in (it is the same on "
@@ -2730,6 +2740,7 @@ def _parser():
     commands.add_parser("key", help=helps["key"], description=helps["key"])
     every = commands.add_parser("report", help=helps["report"],
                                 description=helps["report"])
+    _options(every, domain=False, user=False)
     every.add_argument("--all", action="store_true", dest="everything",
                        help="also look around this server and add the lists "
                        "about all of it: what is not WordPress, databases and "
@@ -3135,6 +3146,19 @@ def _result_from_notes(state):
     return result
 
 
+def _try_connecting(host):
+    """A Connection to the new server when it can be reached, else None: the
+    report then says what to run by hand."""
+    if not host:
+        return None
+    try:
+        connection = Connection(host)
+        check(connection)
+        return connection
+    except Exception:
+        return None
+
+
 def _check_arguments(args):
     if args.domain and not _DOMAIN_ARGUMENT.fullmatch(args.domain):
         raise Stopped("'%s' isn't a domain name." % args.domain)
@@ -3166,15 +3190,19 @@ def main(argv=None, geteuid=os.geteuid):
     try:
         _check_arguments(args)
         if args.command == "report":
+            state = State()
+            host = args.host or getattr(state, "server", None)
+            connection = _try_connecting(host)
+            result = _result_from_notes(state)
             if not args.everything:
-                print(report(_result_from_notes(State())))
+                print(report(result, connection=connection, new_server=host))
                 return 0
             notes = []
             _, database, found, sizes, items = _look_around(args, notes)
             print()
-            print(report(_result_from_notes(State()), found_sites=found,
-                         databases=sizes, items=items, notes=notes,
-                         mail_database=database, everything=True))
+            print(report(result, connection=connection, new_server=host,
+                         found_sites=found, databases=sizes, items=items,
+                         notes=notes, mail_database=database, everything=True))
             return 0
         doing[0] = "making the key"
         if args.command == "key":
@@ -3195,6 +3223,7 @@ def main(argv=None, geteuid=os.geteuid):
             _show_check(hello, host, colour)
             return 0
         state = State()
+        state.server = host
         if args.command == "list":
             _list(args, connection, state, [], doing, hello)
             return 0

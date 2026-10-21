@@ -1,3 +1,5 @@
+import types
+
 import pytest
 
 from migrate import migrate
@@ -116,7 +118,7 @@ def test_the_old_servers_own_webmail_is_one_counted_line_and_never_a_site():
                                     for s in plumbing]
     status = _status(**{"site:shop.a.nl": "new"})
     text = migrate.dashboard(items, status)
-    assert "webmail.a.nl" not in text and "5 addresses" in text and "1 of 1 can be moved" in text
+    assert "webmail.a.nl" not in text and "5 names" in text and "1 of 1 can be moved" in text
     assert migrate.offered(items, status) == [items[0]]
 
 
@@ -228,7 +230,7 @@ def test_each_subcommand_reaches_its_own_work_and_nothing_else(monkeypatch, caps
     monkeypatch.setattr(migrate, "Connection", lambda host: object())
     monkeypatch.setattr(migrate, "check", lambda connection, show_key=True: calls.append("check") or
                         {"server": "web03", "tools": {"mailctl": True, "domainctl": True}, "version": 2})
-    monkeypatch.setattr(migrate, "State", lambda: calls.append("state") or None)
+    monkeypatch.setattr(migrate, "State", lambda: calls.append("state") or types.SimpleNamespace())
     monkeypatch.setattr(migrate, "_list", lambda *a, **k: calls.append("list"))
     result = migrate.Report()
     monkeypatch.setattr(migrate, "_work", lambda args, *a, **k: calls.append(
@@ -626,7 +628,7 @@ def test_an_interrupted_run_prints_its_report_and_exits_non_zero(monkeypatch, ca
     monkeypatch.setattr(migrate, "own_key", lambda *a: "ssh-ed25519 AAAA migrate")
     monkeypatch.setattr(migrate, "Connection", lambda host: object())
     monkeypatch.setattr(migrate, "check", lambda connection, show_key=True: {})
-    monkeypatch.setattr(migrate, "State", lambda: None)
+    monkeypatch.setattr(migrate, "State", lambda: types.SimpleNamespace())
     monkeypatch.setattr(migrate, "_work", lambda *a: result)
     assert migrate.main(["move", "--host", "new"], geteuid=lambda: 0) == 1
     assert "You stopped the run" in capsys.readouterr().out
@@ -644,3 +646,51 @@ def test_a_mail_domain_that_is_half_there_can_be_sent_again_with_the_counts_in_s
     assert "adds the accounts" in " ".join(text.split())
     # The site is a different matter: sending it again would empty its database, so it is not offered.
     assert "The site example.nl is already here." in " ".join(text.split())
+
+def test_no_phrase_ever_ends_up_in_an_imapsync_line_and_the_dns_is_fetched_when_it_can_be():
+    mail = dict(_mail("a.nl"), data={"addresses": [{"address": "x@a.nl"}], "forwards": []})
+    result = migrate.Report()
+    result.moved = [(mail, {})]
+    text = migrate.report(result)
+    assert "imapsync \\" not in text and "'the new server'" not in text
+    assert "name of the new server is not known" in " ".join(text.split())
+    named = migrate.report(result, new_server="web03.example.nl")
+    assert "--host2 web03.example.nl" in named
+    assert "--host2 web03.example.nl" not in migrate.report(result, new_server="the new server")
+
+    class Asked(object):
+        host = "web03.example.nl"
+
+        def ask(self, request):
+            return {"ok": True, "text": "A  a.nl  1.2.3.4"}
+
+    assert "A  a.nl  1.2.3.4" in migrate.report(result, connection=Asked())
+
+
+def test_the_new_servers_name_is_kept_in_the_notes(tmp_path):
+    path = str(tmp_path / "state.json")
+    state = migrate.State(path=path, say=lambda t: None)
+    state.server = "web03.example.nl"
+    state.moved({"id": "mail:a.nl"})
+    assert migrate.State(path=path, say=lambda t: None).server == "web03.example.nl"
+
+
+def test_report_connects_with_the_remembered_host_and_falls_back_when_it_cannot(monkeypatch, capsys):
+    seen = []
+    state = types.SimpleNamespace(server="web03.example.nl", items={})
+    monkeypatch.setattr(migrate, "State", lambda: state)
+    monkeypatch.setattr(migrate, "Connection", lambda host: seen.append(host) or object())
+
+    def unreachable(connection, show_key=True):
+        raise migrate.Stopped("no")
+
+    monkeypatch.setattr(migrate, "check", unreachable)
+    assert migrate.main(["report"], geteuid=lambda: 0) == 0
+    assert seen == ["web03.example.nl"] and "Nothing was moved" in capsys.readouterr().out
+
+
+def test_a_section_title_in_the_report_is_wrapped_to_the_width():
+    out = []
+    migrate._section(out, "Catch-all addresses and aliases that could not be moved. Set them up on the new "
+                     "server by hand:", ["  - x"])
+    assert all(len(line) <= 79 for line in out) and len(out) > 3
