@@ -430,16 +430,59 @@ def test_the_prompt_is_one_sentence(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(migrate, "_typed_line", lambda prompt: prompts.append(prompt) or "q")
     migrate._live(migrate._arguments([]), connection, state, [])
     assert " ".join(prompts[0].split()) == (
-        'Type a number to do its next step, a for all of them, "i 3" to look inside one, '
-        '"p 3" to give one new mail passwords, q to leave:')
+        "Type a customer's number to open it, a to do the next step of every customer, "
+        "q to leave:")
     assert all(len(line) <= 80 for line in prompts[0].splitlines())
 
 
 def test_p_at_the_prompt_sets_the_passwords_and_the_report_says_them(monkeypatch, capsys, tmp_path):
     items = [_mail("a.nl", accounts=2)]
-    connection, state = _wired(monkeypatch, items, _status(**{"mail:a.nl": "new"}), ["p 1", "1", "q"], tmp_path)
+    connection, state = _wired(monkeypatch, items, _status(**{"mail:a.nl": "new"}), ["p 1", "1 all", "q"],
+                               tmp_path)
+    monkeypatch.setattr(migrate, "_question", lambda *a, **k: True)
+    here = []
+    monkeypatch.setattr(migrate, "password_here",
+                        lambda address, password, database, run=None: here.append((address, password)))
     migrate._live(migrate._arguments([]), connection, state, [])
     text = capsys.readouterr().out
     assert [r["request"] for r in connection.requests].count("password") == 2
     assert "New mail passwords for a.nl:" in text
     assert "New mail passwords, set in this run:" in text  # and again in the report of the move
+    assert len(here) == 2  # and the same password is set on this server too, or no copy can log in here
+    assert [address for address, _ in here] == [address for address, _ in
+                                                sorted(here, key=lambda pair: pair[0])]
+
+
+def test_a_new_password_is_hashed_the_way_this_server_keeps_it():
+    """Dovecot reads the {SCHEME} in front of the hash, so the label has to match what was made."""
+    for scheme, start in (("SHA512-CRYPT", "$6$"), ("SHA256-CRYPT", "$5$"), ("BLF-CRYPT", "$6$")):
+        hashed = migrate.hash_here("Pr0efW8woord", scheme)
+        label = "SHA512-CRYPT" if scheme == "BLF-CRYPT" else scheme  # one it cannot make falls back
+        assert hashed.startswith("{%s}%s" % (label, start)), hashed
+
+
+def test_without_the_crypt_module_openssl_does_the_hashing(monkeypatch):
+    """Python 3.13 took crypt out, and an old server may well be newer than this tool."""
+    monkeypatch.setattr(migrate, "crypt", None)
+    seen = {}
+
+    def fake_run(*words, **kwargs):
+        seen["words"], seen["stdin"] = words, kwargs.get("stdin")
+        return "$6$Zout$Hasj\n"
+    assert migrate.hash_here("Pr0efW8woord", "SHA512-CRYPT", run=fake_run) == "{SHA512-CRYPT}$6$Zout$Hasj"
+    assert seen["words"] == ("openssl", "passwd", "-6", "-stdin")
+    assert seen["stdin"] == "Pr0efW8woord\n"  # on standard input, never in the words of a command
+
+
+def test_the_password_on_this_server_goes_in_over_standard_input():
+    """ps shows every argument to every user, so neither the password nor its hash may be one."""
+    runs = []
+
+    def fake_run(*words, **kwargs):
+        runs.append((words, kwargs.get("stdin")))
+        return "{SHA256-CRYPT}$5$oud$hasj\n" if "SELECT" in (kwargs.get("stdin") or "") else ""
+    migrate.password_here("info@a.nl", "Pr0efW8woord", "mailserver", run=fake_run)
+    assert all("Pr0efW8woord" not in " ".join(words) for words, _ in runs)
+    assert any("UPDATE virtual_users SET password=" in (stdin or "") for _, stdin in runs)
+    assert runs[-1][0][:2] == ("mysql", "--batch") and "info@a.nl" in runs[-1][1]
+    assert "{SHA256-CRYPT}" in runs[-1][1]  # kept in the scheme this server already uses

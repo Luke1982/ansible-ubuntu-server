@@ -732,16 +732,19 @@ def test_the_bare_command_stays_up_a_move_a_look_again_and_then_quit(monkeypatch
     """One process: it moves what was picked, prints that move's report, draws the list again and asks again."""
     items = [_mail("a.nl"), _mail("b.nl")]
     connection, state = _wired(monkeypatch, ["yes"] * 4, state=_live_state(tmp_path), items=items)
-    prompts, typed = [], ["1", "r", "q"]
+    prompts, typed = [], ["1", "4", "b", "r", "q"]
     monkeypatch.setattr(migrate, "_typed_line", lambda prompt: prompts.append(prompt) or typed.pop(0))
     result = migrate._live(migrate._arguments([]), connection, state, [])
     text = capsys.readouterr().out
-    assert len(prompts) == 3 and not typed  # it did not leave after the move
-    assert text.count("Old server") == 3  # the first screen, the one after the move, and the one r asked for
+    assert len(prompts) == 5 and not typed  # it did not leave after the move
+    # "1" opens a.nl, "4" moves what it has left, "b" goes back to the list, "r" looks again.
+    assert text.count("Old server") == 3  # the first screen, the one b came back to, and the one r asked for
+    # The customer's own screen asked, twice: when it was opened and again after the move.
+    assert sum("What shall I do for a.nl?" in prompt for prompt in prompts) == 2
     assert "Report" in text and [item["name"] for item, _ in result.moved] == ["a.nl"]
     asked = " ".join(prompts[0].split())  # the prompt is wrapped, so it is read as one line
-    assert asked == ('Type a number to do its next step, a for all of them, "i 3" to look '
-                     'inside one, "p 3" to give one new mail passwords, q to leave:')
+    assert asked == ("Type a customer's number to open it, a to do the next step of every "
+                     "customer, q to leave:")
     assert state.entry(items[0]).get("status") == "moved"
 
 
@@ -874,7 +877,7 @@ def test_the_colour_is_really_there_on_a_terminal(tmp_path):
     assert "\x1b[1m#" in text and "\x1b[1mCustomer" in text  # the heads of the table
     assert "\x1b[1m  1" in text  # and the number of a customer
     assert "\x1b[32mdone" in text  # and the green of a part that is done
-    assert "\x1b[1mType a number" in text  # the live prompt itself
+    assert "\x1b[1mType a customer" in text  # the live prompt itself
 
 
 @pytest.mark.parametrize("words, env", [((), {"NO_COLOR": "1"}), (("--no-colour",), {})])

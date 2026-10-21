@@ -23,6 +23,11 @@ import secrets
 import textwrap
 import threading
 
+try:
+    import crypt  # gone in Python 3.13, so the hashing falls back to openssl
+except ImportError:  # pragma: no cover - depends on the version this server has
+    crypt = None
+
 MAIL_TABLES = ("virtual_domains", "virtual_users", "virtual_aliases", "virtual_sender_aliases")
 SPAM_DATABASE = "spamassassin"
 VERSION = 1  # of the mail file; the one mailctl import reads
@@ -1915,6 +1920,48 @@ def inside(row, status, remembered=None, colour=False, new_server=None):
     return "\n".join(_fit_line(line) for line in out)
 
 
+CUSTOMER_PROMPT = "What shall I do for %s?"
+CUSTOMER_ACTIONS = ((1, "mail", "move the mail"), (2, "site", "copy the website and its database"),
+                    (3, "cron", "install the cron jobs"))
+
+
+def customer_screen(row, status, remembered=None, colour=False, new_server=None):
+    """What a number opens: where each part of one customer stands, and then what can be done for it. Nothing
+    on it happens by itself; the numbers on it are things to do, not things to pick from a list."""
+    short = _fit(_short_name(new_server), 16)
+    out = [_paint(_fit(row.name, _WIDTH, True), "bold", colour), ""]
+    for label, text in (("Mail", _mail_sentence(row, status, short)),
+                        ("Website", _site_sentence(row, status, short)),
+                        ("Cron", _cron_sentence(row, status, short))):
+        head = "  " + _paint(label, "bold", colour) + " " * (_LABEL - len(label))
+        lines = textwrap.wrap(text, _WIDTH - 2 - _LABEL) or [""]
+        out.append(head + lines[0])
+        out.extend(" " * (2 + _LABEL) + piece for piece in lines[1:])
+    out.append("")
+    for number, part, what in CUSTOMER_ACTIONS:
+        out.append("  %s  %s%s" % (_paint(str(number), "bold", colour), what,
+                                   "" if row.to_move(part) else "   nothing to do"))
+    out.append("  %s  everything that is left%s"
+               % (_paint("4", "bold", colour), "" if row.to_move() else "   nothing to do"))
+    out.append("  %s  set new mail passwords on both servers and show them" % _paint("5", "bold", colour))
+    out.append("  %s  back to the list          %s  leave"
+               % (_paint("b", "bold", colour), _paint("q", "bold", colour)))
+    return "\n".join(_fit_line(line) for line in out)
+
+
+def customer_action(row, word):
+    """What was typed on a customer's own screen: (what to move, what it is called), or (None, None) when it
+    means nothing."""
+    for number, part, what in CUSTOMER_ACTIONS:
+        if word == str(number):
+            return row.to_move(part), what
+    if word == "4":
+        return row.to_move(), "everything that is left"
+    if word == "5":
+        return [], "passwords"
+    return None, None
+
+
 # ---- New passwords for a customer's accounts ---------------------------------
 
 # No l, 1, I, O or 0: a password gets read out over the telephone, so nothing in it may read two ways.
@@ -1930,7 +1977,67 @@ def new_password(length=PASSWORD_LENGTH, pick=None):
     return "".join(pick(PASSWORD_LETTERS) for _ in range(length))
 
 
-def set_passwords(connection, row, say=print, make=new_password):
+BOTH_SERVERS = ("This sets the same password on BOTH servers, so you can log in to the account on either of "
+                "them and copy the mail across. The password the customer has now stops working. Nothing else "
+                "about the account changes.")
+
+# The schemes the standard library can make. Dovecot reads the {SCHEME} in front of the hash, so one it cannot
+# make is simply stored as SHA512-CRYPT, which every Dovecot checks.
+_CRYPT_METHODS = (("SHA512-CRYPT", "METHOD_SHA512"), ("SHA256-CRYPT", "METHOD_SHA256"), ("MD5-CRYPT", "METHOD_MD5"))
+
+
+def _sql_text(value):
+    """One value for the mysql client, which has no way to send them separately."""
+    return "'" + str(value).replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+_OPENSSL_KINDS = (("SHA512-CRYPT", "-6"), ("SHA256-CRYPT", "-5"), ("MD5-CRYPT", "-1"))
+
+
+def hash_here(password, scheme, run=None):
+    """The password hashed the way this server stores it, labelled so Dovecot knows what it is. The password
+    goes in over standard input or stays inside this process: never an argument of a command, where ps would
+    show it to everybody logged in."""
+    wanted = (scheme or "").upper()
+    if crypt is not None:
+        for name, method in _CRYPT_METHODS:
+            if name == wanted and hasattr(crypt, method):
+                return "{%s}%s" % (name, crypt.crypt(password, crypt.mksalt(getattr(crypt, method))))
+        return "{SHA512-CRYPT}%s" % crypt.crypt(password, crypt.mksalt(crypt.METHOD_SHA512))
+    # Python 3.13 took the crypt module out, so openssl does the hashing instead.
+    run = run or run_command
+    for name, flag in _OPENSSL_KINDS:
+        if name == wanted:
+            return "{%s}%s" % (name, run("openssl", "passwd", flag, "-stdin", stdin=password + "\n").strip())
+    return "{SHA512-CRYPT}%s" % run("openssl", "passwd", "-6", "-stdin", stdin=password + "\n").strip()
+
+
+def scheme_here(address, database, run=None):
+    """The scheme this server keeps that account's password in, so the new one is stored the same way."""
+    run = run or run_command
+    found = run("mysql", "--batch", "--skip-column-names", database,
+                stdin="SELECT password FROM virtual_users WHERE email=%s;\n" % _sql_text(address))
+    value = (found or "").strip()
+    if value.startswith("{") and "}" in value:
+        return value[1:value.index("}")].upper()
+    return "SHA512-CRYPT"
+
+
+def password_here(address, password, database, run=None):
+    """Sets that account's password on THIS server too. The one thing migrate changes on the old server, and
+    only when somebody asks for new passwords: without it the account can be opened on the new server and not
+    on this one, so the mail cannot be copied across. The hash goes in over standard input."""
+    run = run or run_command
+    if not database:
+        raise CommandFailed("I can't find the mail database on this server")
+    hashed = hash_here(password, scheme_here(address, database, run))
+    run("mysql", "--batch", database,
+        stdin="UPDATE virtual_users SET password=%s WHERE email=%s;\n"
+              % (_sql_text(hashed), _sql_text(address)))
+
+
+def set_passwords(connection, row, say=print, make=new_password, database=None, ask=None, old_server=None,
+                  new_server=None):
     """Gives every mail account of one customer a new password, with the new server's own mailctl. Returns
     [(address, password)] of the ones that were set. The password travels inside the request and goes into
     mailctl's standard input there: it is never an argument of a command, never in the notes and never in a
@@ -1939,14 +2046,23 @@ def set_passwords(connection, row, say=print, make=new_password):
     if not row.accounts():
         _say("%s has no mail accounts on this server, so there is no password to set." % row.name, say)
         return []
-    done, failed = [], []
+    _say(BOTH_SERVERS, say)
+    if ask is not None and not ask("Set new passwords for the %d account(s) of %s? [y/N] "
+                                   % (len(row.accounts()), row.name)):
+        _say("Nothing was changed.", say)
+        return []
+    done, failed, here_failed = [], [], []
     for address in row.accounts():
         password = make()
         answer = connection.ask({"request": "password", "address": address, "password": password})
-        if answer.get("ok"):
-            done.append((address, password))
-        else:
+        if not answer.get("ok"):
             failed.append((address, answer.get("error") or "the new server gave no reason"))
+            continue
+        try:
+            password_here(address, password, database)
+        except CommandFailed as problem:
+            here_failed.append((address, problem.message))
+        done.append((address, password))
     if done:
         width = max(len(address) for address, _ in done)
         _say("New mail passwords for %s:" % row.name, say)
@@ -1955,9 +2071,27 @@ def set_passwords(connection, row, say=print, make=new_password):
             say("  %s  %s" % (address.ljust(width), password))
         say("")
         _say(PASSWORDS_ONLY_NOW, say)
+        if old_server and new_server:
+            say("")
+            _say("To copy the mail of an account across, with this password at both ends:", say)
+            for address, password in done:
+                say("")
+                for line in _imapsync_line(old_server, new_server, address, password):
+                    say(line)
+    for address, why in here_failed:
+        _say("%s has the new password on the new server, but NOT on this one (%s), so a copy can still not log "
+             "in here. Set it by hand on this server." % (address, why), say)
     for address, why in failed:
-        _say("The password of %s was not changed: %s" % (address, why), say)
+        _say("The password of %s was not changed on either server: %s" % (address, why), say)
     return done
+
+
+def _imapsync_line(old, new, address, password):
+    """The command to copy one account's mail across, ready to paste, with the password that was just set."""
+    return "\n".join(["imapsync \\"] + [
+        "  --host%s %s --user%s %s \\" % (n, shlex.quote(host), n, shlex.quote(address))
+        + "\n  --password%s %s --ssl%s%s" % (n, shlex.quote(password), n, end)
+        for n, host, end in ((1, old, " \\"), (2, new, ""))]).splitlines()
 
 
 # ---- What was typed ----------------------------------------------------------
@@ -3593,6 +3727,56 @@ def _look_inside(connection, row, status, state, hello, done, colour=False):
                  new_server=_new_name(connection, hello)))
 
 
+def _open_customer(name, args, connection, state, notes, doing, hello, colour, asked, looked):
+    """A number opens that customer: its mail, its website and its cron jobs, where each stands, and a short
+    list of what can be done for it. Nothing moves until one of those is typed. Returns (looked, result,
+    leave): 'looked' is None when something moved and the new server must be asked again, and 'leave' says q
+    was typed."""
+    result = None
+    while True:
+        if looked is None:
+            del notes[:]
+            looked = _inspect(args, connection, notes, doing, hello)
+        items, status = looked[4], looked[5]
+        row = next((one for one in customers(items, status, state) if one.name == name), None)
+        if row is None:
+            _say("%s has nothing left for me to do." % name)
+            return looked, result, False
+        _ask_about(connection, row, status, hello, asked)
+        print()
+        print(customer_screen(row, status, state, colour=colour,
+                              new_server=_new_name(connection, hello)))
+        print()
+        doing[0] = "waiting for you to say what to do for %s" % name
+        typed = _typed_line(_paint(CUSTOMER_PROMPT % _fit(name, 40), "bold", colour) + " ")
+        word = (typed or "").strip().lower()
+        if typed is None or word in ("q", "quit"):
+            return looked, result, True
+        if word in ("", "b", "back"):
+            return looked, result, False
+        chosen, what = customer_action(row, word)
+        if what is None:
+            _say("I don't know '%s'. Type one of the numbers above, b to go back to the list, or q to leave."
+                 % word)
+            continue
+        if what == "passwords":
+            doing[0] = "setting new mail passwords"
+            set_passwords(connection, row, database=looked[1], ask=_question,
+                          old_server=socket.gethostname(),
+                          new_server=_new_name(connection, hello))
+            continue
+        if not chosen:
+            _say("There is nothing to do for that.")
+            continue
+        if not _confirmed(chosen, _typed, state, _domain_numbers([row])):
+            _say("Nothing will be moved.")
+            continue
+        result = _move_and_report(connection, state, notes, looked, hello, chosen, doing)
+        if result.interrupted:
+            return looked, result, True
+        looked = None  # what the new server has has changed
+
+
 def _lay_of_the_land(found, sizes, database, items, notes):
     """The lists about the whole server that a move does not print: what is
     not WordPress, databases of no site, and what could not be read."""
@@ -3671,12 +3855,12 @@ def _confirmed(chosen, ask, state=None, numbers=None):
 
 
 PICK_PROMPT = 'Numbers to do their next step (a for all of them; Enter for none): '
-LIVE_PROMPT = ('Type a number to do its next step, a for all of them, "i 3" to look '
-               'inside one, "p 3" to give one new mail passwords, q to leave: ')
-LIVE_HELP = ('A number does the next step of that customer, a does the next step of every '
-             'customer, "i 3" shows what one holds, "p 3" gives its accounts new '
-             'passwords, r looks around again and q leaves. "3 all" does every step one '
-             'customer has left.')
+LIVE_PROMPT = ("Type a customer's number to open it, a to do the next step of every "
+               "customer, q to leave: ")
+LIVE_HELP = ('A number opens that customer and asks what to do for it: its mail, its '
+             'website, its cron jobs, everything that is left, or new mail passwords. '
+             'a does the next step of every customer, r looks around again, q leaves. '
+             '"3 all" does everything one customer has left without opening it.')
 
 
 def _live_prompt(colour):
@@ -3763,7 +3947,10 @@ def _work(args, connection, state, notes, doing=None, hello=None):
         _look_inside(connection, row, status, state, hello, done, colour)
     passwords = []
     for row in chosen.passwords:
-        passwords.extend(set_passwords(connection, row))
+        passwords.extend(set_passwords(
+                connection, row, database=looked[1], ask=_question,
+                old_server=socket.gethostname(),
+                new_server=_new_name(connection, hello)))
     moving = set(id(item) for item in chosen.move)
     for row in rows:
         if any(id(item) in moving for item in row.every()):
@@ -3814,12 +4001,28 @@ def _live(args, connection, state, notes, doing=None, hello=None):
             _say(LIVE_HELP)
             draw = False
             continue
+        if re.fullmatch(r"[0-9]+", word):
+            # A number opens that customer and asks what to do for it. It never starts moving by itself.
+            one = next((row for row in rows if row.number == int(word)), None)
+            if one is None:
+                _say("There is no customer %s on the list." % word)
+                draw = False
+                continue
+            looked, opened, leave = _open_customer(
+                one.name, args, connection, state, notes, doing, hello, colour, asked, looked)
+            result = opened or result
+            if leave:
+                return result
+            continue
         chosen = picked(rows, typed)
         for row in chosen.look:
             _look_inside(connection, row, status, state, hello, asked, colour)
         for row in chosen.passwords:
             doing[0] = "setting new mail passwords"
-            passwords.extend(set_passwords(connection, row))
+            passwords.extend(set_passwords(
+                connection, row, database=looked[1], ask=_question,
+                old_server=socket.gethostname(),
+                new_server=_new_name(connection, hello)))
         if not chosen.move:
             draw = False  # the screen says the same as it did: it stays where it is
             continue
