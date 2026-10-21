@@ -42,7 +42,7 @@ def test_the_report_says_how_many_messages_arrived_and_never_mentions_imapsync()
     text = migrate.report(result, Connection(), old_server="old.example.nl")
     assert "imapsync" not in text and "TYPE-THE-PASSWORD-HERE" not in text
     assert "Mailbox ann@example.nl" in text  # it is in the list of what moved
-    assert "ann@example.nl: 51234 messages on the new server now" in text
+    assert "ann@example.nl: 51234 messages on the new server" in text
     assert "bob@example.nl: copied, but the new server could not say how many" in text
     assert "Mail messages copied to new.example.nl" in text
     assert "nothing to do by hand for the mail" in " ".join(text.split())
@@ -176,3 +176,13 @@ def test_migratectl_leaves_an_address_out_rather_than_guessing(monkeypatch):
         raise OSError("no ip command here")
     monkeypatch.setattr(migratectl.subprocess, "run", broken)
     assert migratectl.answer({"request": "hello"})["addresses"] == []
+
+
+def test_the_report_from_the_notes_alone_says_what_each_mailbox_got(tmp_path, monkeypatch):
+    notes = migrate.State(path=str(tmp_path / "state.json"), say=lambda text: None)
+    notes.moved(BOX, {"messages": 51234})
+    notes.moved(MAIL)
+    text = migrate.report(migrate._result_from_notes(
+        migrate.State(path=str(tmp_path / "state.json"), say=lambda text: None)))
+    assert "Mailbox ann@example.nl" in text and "51234 messages on the new server" in text
+    assert "Mail example.nl" in text

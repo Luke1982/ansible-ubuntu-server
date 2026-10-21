@@ -421,7 +421,7 @@ def test_only_again_removes_what_the_new_server_has_and_this_one_has_not(tmp_pat
 def test_a_copied_mailbox_is_written_down_as_moved_and_finished_off(tmp_path):
     notes = migrate.State(path=str(tmp_path / "state.json"), say=lambda text: None)
     _copy(tmp_path, notes=notes)
-    assert notes.entry(_box()) == {"status": "moved"}
+    assert notes.entry(_box()) == {"status": "moved", "messages": 1234}  # kept for a later report
     broken = NewServer(tmp_path, {"finish_mailbox": {"ok": False, "error": "Dovecot said no."}})
     notes = migrate.State(path=str(tmp_path / "other.json"), say=lambda text: None)
     with pytest.raises(migrate.MoveFailed) as stopped:

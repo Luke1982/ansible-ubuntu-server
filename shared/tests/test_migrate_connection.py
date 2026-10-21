@@ -234,9 +234,13 @@ def test_ssh_runs_in_the_c_locale_and_a_stall_is_stopped(monkeypatch, tmp_path):
     # 1800 to make something, then 10 to reap the killed ssh rather than wait on it for good.
     assert seen["env"]["LC_ALL"] == "C" and seen["timeouts"] == [1800, 10] and process.killed
     assert "part of the work" in stopped.value.message and "status" in stopped.value.message
+    # The status of a whole server counts the messages of every mailbox there, so it gets ten minutes.
     with pytest.raises(migrate.Stopped):
         _connection(tmp_path).ask({"request": "status"})
-    assert seen["timeouts"] == [1800, 10, 120, 10]
+    assert seen["timeouts"] == [1800, 10, 600, 10]
+    with pytest.raises(migrate.Stopped):
+        _connection(tmp_path).ask({"request": "hello"})
+    assert seen["timeouts"] == [1800, 10, 600, 10, 120, 10]
 
 
 def test_the_public_key_is_rebuilt_when_only_it_is_missing(tmp_path):

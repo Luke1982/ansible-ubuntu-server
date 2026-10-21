@@ -946,6 +946,11 @@ _UNREACHABLE = ("could not resolve", "no route to host", "connection refused", "
                 "connection reset")
 
 
+# How long each request may take, in seconds. The status of a whole server counts the messages in every mailbox
+# there, which is many little commands; making something gets half an hour, as before.
+ASK_TIMEOUTS = {"apply": 1800, "finish_site": 1800, "finish_mailbox": 1800, "status": 600}
+
+
 class Connection(object):
     """The way to the new server: one ssh process for each request, so nothing can be left hanging between two."""
 
@@ -999,10 +1004,11 @@ class Connection(object):
 
     def ask(self, request, timeout=None):
         """The new server's answer to one request, as a dict. Raises Stopped, and nothing else, when it can't.
-        It waits 2 minutes for a quick request and 30 for one that makes something."""
+        It waits 2 minutes for a quick request, 10 for the status of everything (it counts the messages of every
+        mailbox) and 30 for one that makes something."""
         kind = request.get("request") if isinstance(request, dict) else None
         slow = kind in ("apply", "finish_site", "finish_mailbox")
-        timeout = timeout or (1800 if slow else 120)
+        timeout = timeout or ASK_TIMEOUTS.get(kind, 120)
         what = "making this" if slow else "answering the request '%s'" % kind
         try:
             line = json.dumps(request) + "\n"
@@ -2310,8 +2316,13 @@ class State(object):
         self.items[item["id"]] = entry
         self.save()
 
-    def moved(self, item):
-        self.items[item["id"]] = dict(self.entry(item), status="moved")
+    def moved(self, item, detail=None):
+        """Writes down that this item is completely moved. 'detail' is what is worth keeping about it for a
+        later report: how many messages a mailbox had on the new server."""
+        entry = dict(self.entry(item), status="moved")
+        if isinstance(detail, dict):
+            entry.update(detail)
+        self.items[item["id"]] = entry
         self.save()
 
     def unwritable(self):
@@ -2675,7 +2686,8 @@ def move_mailbox(connection, item, hello=None, again=False, notes=None,
     steps.extend(step for step in reply.get("steps", []) if isinstance(step, str))
     count = reply.get("messages")
     if notes is not None:
-        notes.moved(item)
+        notes.moved(item, {"messages": count} if isinstance(count, int)
+                    and not isinstance(count, bool) else None)
     return {"ok": True, "steps": steps,
             "messages": count if isinstance(count, int) and not isinstance(count, bool) else None}
 
@@ -2820,8 +2832,8 @@ def _messages_said(answer):
     honest proof the mail arrived, so when it is missing this says so and does not make one up."""
     count = answer.get("messages") if isinstance(answer, dict) else None
     if isinstance(count, int) and not isinstance(count, bool):
-        return "%s on the new server now" % _plural(count, "message", "messages")
-    return "copied, but the new server could not say how many messages it has now"
+        return "%s on the new server" % _plural(count, "message", "messages")
+    return "copied, but the new server could not say how many messages it has"
 
 
 def _same_item(one, other):
@@ -3430,7 +3442,7 @@ LIVE_HELP = ("Type the numbers of what to move (like 1 3, 2-5 or all), r to "
              "look around again, or q to leave.")
 
 
-def _move_and_report(args, connection, state, notes, looked, hello, chosen,
+def _move_and_report(connection, state, notes, looked, hello, chosen,
                      doing=None):
     """Moves what was picked and prints the report of that move alone.
     'looked' is what _inspect found. Returns the Report."""
@@ -3509,8 +3521,8 @@ def _work(args, connection, state, notes, doing=None, hello=None):
     if chosen and not _confirmed(lines, chosen, _typed, state):
         print("Nothing will be moved.")
         chosen = []
-    return _move_and_report(args, connection, state, notes, looked, hello,
-                            chosen, doing)
+    return _move_and_report(connection, state, notes, looked, hello, chosen,
+                            doing)
 
 
 def _live(args, connection, state, notes, doing=None, hello=None):
@@ -3550,8 +3562,8 @@ def _live(args, connection, state, notes, doing=None, hello=None):
         if not _confirmed(lines, chosen, _typed, state):
             print("Nothing will be moved.")
             continue
-        result = _move_and_report(args, connection, state, notes, looked,
-                                  hello, chosen, doing)
+        result = _move_and_report(connection, state, notes, looked, hello,
+                                  chosen, doing)
         if result.interrupted:
             return result
         looked = None  # what the new server has has changed: look again
@@ -3583,7 +3595,7 @@ def _show_check(hello, host, colour):
 def _result_from_notes(state):
     """A Report of what the notes say was done: no looking around, no new
     server. A site that was made and not filled is files still to copy."""
-    kinds = {"mail": "mail_domain", "site": "site", "cron": "cron"}
+    kinds = {"mail": "mail_domain", "mailbox": "mailbox", "site": "site", "cron": "cron"}
     result = Report()
     for key in sorted(state.items):
         word, _, name = key.partition(":")
@@ -3593,7 +3605,8 @@ def _result_from_notes(state):
                 "name": name if word != "cron" else "job " + name}
         status = state.items[key].get("status")
         if status == "moved":
-            result.moved.append((item, {"docroot": state.items[key].get("docroot")}))
+            result.moved.append((item, {"docroot": state.items[key].get("docroot"),
+                                        "messages": state.items[key].get("messages")}))
         elif status == "made":
             result.files_to_copy.append(item)
     return result
