@@ -92,15 +92,24 @@ def list_sites(user: UserFilter = None) -> None:
     with open_session() as session:
         config = session.config
         found = [site for site in sites.list_sites(config) if user is None or site.user == user]
+        waiting = [name for name in sites.waiting_for_dns(config) if user is None or name == user]
         _warn_about_twins(config)
-        if not found:
+        if not found and not waiting:
             ui.note("There are no sites on this server yet." if user is None else f"There is no site {user}.")
             return
         now = datetime.now(UTC)
         table = ui.table("Site", "Domain", "Also", "Certificate")
         for site in found:
             ui.add_row(table, site.user, site.domain, ", ".join(site.aliases) or "–", _certificate(config, site, now))
+        # A site whose files are here while its domain still points elsewhere has no virtual host yet, so it
+        # would otherwise be invisible: it is here, half made, and saying so is the whole point of this line.
+        for name in waiting:
+            ui.add_row(table, name, "–", "–", "waiting for the DNS")
         ui.console.print(table)
+        if waiting:
+            ui.note(f"{ui.plural(len(waiting), 'site')} here with no virtual host yet: the files are in place "
+                    f"and the domain still points somewhere else. Once it points here, finish it with: "
+                    f"domainctl add DOMAIN")
 
 
 def state(user: User = None) -> None:

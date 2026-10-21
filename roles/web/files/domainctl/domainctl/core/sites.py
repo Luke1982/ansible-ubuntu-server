@@ -19,6 +19,8 @@ from serverctl import openlitespeed
 from serverctl.errors import CtlError
 from serverctl.openlitespeed import Member, Template
 
+from . import layout
+
 from ..config import TOOL, Config
 
 NOTE = "Managed by domainctl"
@@ -132,3 +134,14 @@ def _write(config: Config, lines: list[str], updated: list[str]) -> bool:
         return False
     openlitespeed.write(config.ols_root, updated, TOOL)
     return True
+
+def waiting_for_dns(config: Config, lines: list[str] | None = None) -> list[str]:
+    """The sites domainctl made whose virtual host is still waiting for the domain to point here: their Linux
+    user and directories are there, but they are in no template, so list_sites() does not see them. A site
+    whose files were uploaded before the DNS moved sits here until "domainctl add" is run again."""
+    served = {site.user for site in list_sites(config, lines)}
+    try:
+        homes = sorted(path.name for path in config.home_root.iterdir() if path.is_dir())
+    except OSError:
+        return []
+    return [name for name in homes if name not in served and layout.made_by_domainctl(config, name)]

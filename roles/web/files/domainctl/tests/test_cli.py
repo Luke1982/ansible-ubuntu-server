@@ -426,3 +426,17 @@ def test_dns_publish_points_a_domain_here_without_setting_the_site_up(server, mo
     assert moved == ["example.nl", "www.example.nl"]
     assert "Finish the site with: domainctl repair example.nl" in result.output
     assert sites.list_sites(server) == [], "it only touches the DNS"
+
+
+def test_list_shows_a_site_whose_domain_does_not_point_here_yet(server, monkeypatch):
+    """Its files are here and its virtual host is not, so without this line it is invisible: on the server and
+    in no list."""
+    monkeypatch.setattr(_Resolver, "answers", {"example.nl": {ip_address("45.87.2.9")}})
+    run("add", "example.nl", "--no-dns")
+    assert sites.list_sites(server) == [], "the virtual host waits for the domain"
+
+    result = run("list")
+
+    assert result.exit_code == 0, result.output
+    assert "example" in result.output and "waiting for the DNS" in result.output
+    assert "domainctl add DOMAIN" in result.output
