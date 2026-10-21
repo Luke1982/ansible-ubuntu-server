@@ -487,3 +487,30 @@ def test_p_at_the_prompt_sets_the_passwords_and_the_report_says_them(monkeypatch
     # test_the_customers_accounts_are_asked_for_one_by_one.
 
 
+
+
+def test_the_stored_hash_is_really_read_from_this_servers_database():
+    """Every other test fakes this away, which is how a missing helper got as far as the old server."""
+    seen = {}
+
+    def fake_run(*words, **kwargs):
+        seen["words"], seen["stdin"] = words, kwargs.get("stdin")
+        return "{SHA256-CRYPT}$5$zout$hasj\n"
+    assert migrate._stored_hash("o'brien@a.nl", "mailserver", run=fake_run) == "{SHA256-CRYPT}$5$zout$hasj"
+    assert seen["words"] == ("mysql", "--batch", "--skip-column-names", "mailserver")
+    assert seen["stdin"] == "SELECT password FROM virtual_users WHERE email='o\\'brien@a.nl';\n"
+    assert migrate._stored_hash("a@a.nl", "mailserver", run=lambda *w, **k: "  \n") is None
+
+
+def test_giving_a_password_works_with_nothing_faked_but_the_two_servers(monkeypatch, capsys):
+    """The whole of option 5 for one account, with only the database and the new server stood in for."""
+    import crypt as c
+    real = "{SHA512-CRYPT}" + c.crypt("W8woord!", c.mksalt(c.METHOD_SHA512))
+    row = migrate.customers([_mail("a.nl")], _status(**{"mail:a.nl": "exists"}))[0]
+    connection = Connection()
+    monkeypatch.setattr(migrate, "run_command", lambda *w, **k: real)
+    monkeypatch.setattr(migrate, "_typed_password", lambda prompt: "W8woord!")
+    done = migrate.set_passwords(connection, row, database="mailserver",
+                                 old_server="old.nl", new_server="new.nl")
+    assert done == ["a0@a.nl"]
+    assert connection.requests[-1]["password"] == "W8woord!"

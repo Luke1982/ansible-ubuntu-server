@@ -2054,6 +2054,11 @@ WRONG_PASSWORD = ("That is not the password this server has for %s. Nothing was 
                   "Enter to leave it.")
 
 
+def _sql_text(value):
+    """One value for the mysql client, which has no way to take them separately."""
+    return "'" + str(value).replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
 def _stored_hash(address, database, run=None):
     """The hash this server keeps for that account, label and all, or None when it has none."""
     run = run or run_command
