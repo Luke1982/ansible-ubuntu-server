@@ -50,8 +50,8 @@ def test_the_two_halves_speak_the_same_version():
     """A new migrate.py meeting an older migratectl is caught at the handshake, not halfway through a site."""
     from migrate import migrate
     assert migrate.PROTOCOL_VERSION == migratectl.PROTOCOL_VERSION
-    # It went up when finish_site, dns, php, wp and the addresses were added; it never goes back.
-    assert migratectl.PROTOCOL_VERSION >= 2
+    # It went up when finish_site, dns, php, wp, the addresses and finish_mailbox were added; never back.
+    assert migratectl.PROTOCOL_VERSION >= 3
 
 
 def test_a_request_it_doesnt_know_is_an_error_not_a_crash():
@@ -779,3 +779,118 @@ def test_hello_falls_back_to_the_wp_on_the_path_and_says_none_without_one(monkey
     assert migratectl.answer({"request": "hello"})["wp"] == "/opt/bin/wp"
     monkeypatch.setattr(migratectl.shutil, "which", lambda name: None)
     assert migratectl.answer({"request": "hello"})["wp"] is None
+
+
+# ---- the mail messages of one account ---------------------------------------
+
+ADDRESS_TABLE = (
+    " Address                 Filters   Disk usage \n"
+    f" {BAR} \n"
+    " info@boersma-advocaten.nl      0        1.2 GB \n"
+)
+MAIL_PATH = "/var/vmail/%{user | domain}/%{user | username}/Maildir"
+DOVECONF = f"mail_driver = maildir\nmail_path = {MAIL_PATH}\nmail_home =\n"
+
+
+@pytest.fixture
+def mail_server(monkeypatch, tmp_path):
+    """A server with Dovecot, mailctl and the maildirs of one domain, so a mailbox can be judged and finished."""
+    installed = {"mailctl": "/usr/local/bin/mailctl", "doveconf": "/usr/bin/doveconf",
+                 "doveadm": "/usr/bin/doveadm", "domainctl": "/usr/local/bin/domainctl"}
+    monkeypatch.setattr(migratectl.shutil, "which", installed.get)
+    root = tmp_path / "vmail"
+    home = root / "boersma-advocaten.nl" / "info"
+    (home / "Maildir" / "cur").mkdir(parents=True)
+    (home / "Maildir" / "cur" / "1.mail").write_text("Subject: hello\n")
+    home.chmod(0o700)
+    output = {"doveconf": DOVECONF.replace("/var/vmail", str(root)),
+              "mailctl domain": MAIL_TABLE, "mailctl address": ADDRESS_TABLE,
+              "doveadm mailbox": "INBOX messages=40\nSent messages=2\n", "doveadm force-resync": "",
+              "ip": '[{"prefsrc": "187.126.5.65"}]'}
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(list(command))
+        key = " ".join(command[:2])
+        out = output.get(key, output.get(command[0]))
+        if out is None:
+            raise AssertionError("no answer for " + key)
+        if isinstance(out, int):
+            return types.SimpleNamespace(returncode=out, stdout="", stderr="it stopped")
+        return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
+
+    monkeypatch.setattr(migratectl.subprocess, "run", run)
+    return types.SimpleNamespace(root=root, home=home, output=output, commands=commands,
+                                 maildir=home / "Maildir")
+
+
+def _mailbox(address="info@boersma-advocaten.nl"):
+    return {"id": "mailbox:" + address, "kind": "mailbox", "name": address}
+
+
+def test_hello_says_where_this_server_keeps_mail_and_who_owns_it(mail_server):
+    said = migratectl.answer({"request": "hello"})["mail"]
+    assert said["path"] == str(mail_server.root) + "/%{user | domain}/%{user | username}/Maildir"
+    assert said["driver"] == "maildir"
+    # The owner, the group and the mode are read off a maildir that is really here, not written in the file.
+    assert said["uid"] == os.getuid() and said["mode"] == "0%o" % (mail_server.maildir.stat().st_mode & 0o7777)
+    assert said["owner"] and said["group"]
+
+
+def test_a_mailbox_says_how_many_messages_this_server_has(mail_server):
+    said = status(_mailbox()["id"], "mailbox", name="info@boersma-advocaten.nl")
+    assert said["state"] == "new" and "42 messages" in said["detail"]
+    mail_server.output["doveadm mailbox"] = "INBOX messages=0\n"
+    assert "no messages yet" in status(_mailbox()["id"], "mailbox", name="info@boersma-advocaten.nl")["detail"]
+
+
+def test_a_mailbox_whose_account_is_not_here_says_to_move_its_domain_first(mail_server):
+    said = status("mailbox:x@other.nl", "mailbox", name="x@other.nl")
+    assert said["state"] == "refused" and migratectl.MOVE_DOMAIN_FIRST in said["detail"]
+    said = status("mailbox:nobody@boersma-advocaten.nl", "mailbox", name="nobody@boersma-advocaten.nl")
+    assert said["state"] == "refused" and migratectl.MOVE_DOMAIN_FIRST in said["detail"]
+    assert "not an account" in said["detail"]
+
+
+def test_a_mailbox_with_an_address_that_is_no_address_is_refused(mail_server):
+    said = status("mailbox:x", "mailbox", name="not-an-address")
+    assert said["state"] == "refused" and "valid mail address" in said["detail"]
+
+
+def test_finish_mailbox_gives_the_mail_to_the_owner_of_the_folder_above_it(mail_server):
+    loose = mail_server.maildir / "cur" / "1.mail"
+    loose.chmod(0o666)
+    mail_server.maildir.chmod(0o777)
+    answer = migratectl.answer({"request": "finish_mailbox", "address": "info@boersma-advocaten.nl"})
+    assert answer["ok"] is True, answer
+    assert answer["messages"] == 42  # what doveadm counted, which is the proof the mail is there
+    # The modes come from the folder above the maildir (0700), not from a number in migratectl.
+    assert mail_server.maildir.stat().st_mode & 0o777 == 0o700
+    assert loose.stat().st_mode & 0o777 == 0o600
+    assert mail_server.maildir.stat().st_uid == mail_server.home.stat().st_uid
+    resync = [c for c in mail_server.commands if c[:2] == ["doveadm", "force-resync"]]
+    assert resync == [["doveadm", "force-resync", "-u", "info@boersma-advocaten.nl", "*"]]
+    assert mail_server.commands[-1][:3] == ["doveadm", "mailbox", "status"]
+    assert any("Had Dovecot read the mail" in step for step in answer["steps"])
+
+
+def test_finish_mailbox_says_so_when_there_is_nothing_to_finish(mail_server):
+    answer = migratectl.answer({"request": "finish_mailbox", "address": "nobody@boersma-advocaten.nl"})
+    assert answer["ok"] is False and "no mail folder at" in answer["error"]
+    assert migratectl.answer({"request": "finish_mailbox", "address": "nonsense"})["ok"] is False
+    mail_server.output["doveconf"] = ""
+    answer = migratectl.answer({"request": "finish_mailbox", "address": "info@boersma-advocaten.nl"})
+    assert answer["ok"] is False and "can't say where this server keeps the mail" in answer["error"]
+
+
+def test_a_resync_that_fails_is_an_answer_and_not_a_crash(mail_server):
+    mail_server.output["doveadm force-resync"] = 1
+    answer = migratectl.answer({"request": "finish_mailbox", "address": "info@boersma-advocaten.nl"})
+    assert answer["ok"] is False and "read the mail" in answer["error"]
+
+
+def test_the_resync_gets_longer_than_an_ordinary_command(mail_server):
+    assert migratectl.RESYNC_TIMEOUT > migratectl.COMMAND_TIMEOUT
+    migratectl.answer({"request": "finish_mailbox", "address": "info@boersma-advocaten.nl"})
+    assert all("input" in kw or kw.get("stdin") == migratectl.subprocess.DEVNULL
+               for kw in [{"stdin": migratectl.subprocess.DEVNULL}])

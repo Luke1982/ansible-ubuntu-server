@@ -575,7 +575,7 @@ def test_the_report_gets_everything_it_needs(monkeypatch, capsys):
     monkeypatch.setattr(migrate.socket, "gethostname", lambda: "old.example")
     migrate._work(_Args(), connection, state, ["a note from looking around"])
     text = capsys.readouterr().out
-    assert "DNS-TABLE-FOR-a.nl" in text and "--host1 old.example" in text and "--host2 new.example" in text
+    assert "DNS-TABLE-FOR-a.nl" in text
     assert "You picked:" in text and "Go ahead?" not in text  # the question is the prompt, not output
     assert "The forward from @a.nl" in text and "The forward from @b.nl" not in text
     # The lists about the whole server are not part of the report of a move.
@@ -677,16 +677,17 @@ def test_a_mail_domain_that_is_half_there_can_be_sent_again_with_the_counts_in_s
     # The site is a different matter: sending it again would empty its database, so it is not offered.
     assert "The site example.nl is already here." in " ".join(text.split())
 
-def test_no_phrase_ever_ends_up_in_an_imapsync_line_and_the_dns_is_fetched_when_it_can_be():
+def test_no_phrase_ever_ends_up_in_a_command_and_the_dns_is_fetched_when_it_can_be():
     mail = dict(_mail("a.nl"), data={"addresses": [{"address": "x@a.nl"}], "forwards": []})
+    box = {"id": "mailbox:x@a.nl", "kind": "mailbox", "name": "x@a.nl", "maildir": "/var/vmail/a.nl/x/Maildir"}
     result = migrate.Report()
-    result.moved = [(mail, {})]
+    result.moved = [(mail, {}), (box, {"ok": True, "messages": 3})]
     text = migrate.report(result)
-    assert "imapsync \\" not in text and "'the new server'" not in text
-    assert "name of the new server is not known" in " ".join(text.split())
+    assert "'the new server'" not in text  # a phrase goes in a sentence, never in a command
+    assert "Mail messages copied to the new server" in text
     named = migrate.report(result, new_server="web03.example.nl")
-    assert "--host2 web03.example.nl" in named
-    assert "--host2 web03.example.nl" not in migrate.report(result, new_server="the new server")
+    assert "Mail messages copied to web03.example.nl" in named
+    assert "copied to the new server" in migrate.report(result, new_server="not a name at all")
 
     class Asked(object):
         host = "web03.example.nl"
@@ -882,3 +883,98 @@ def test_the_colour_goes_away_when_it_is_turned_off(tmp_path, words, env):
 def test_nothing_is_painted_when_the_output_is_piped(tmp_path):
     text = _piped(_driver(tmp_path))
     assert "MAIL" in text and not _SGR.search(text)
+
+
+# ---- the mailboxes on the list ----------------------------------------------
+
+def _box(address, size=None, **more):
+    return dict({"id": "mailbox:" + address, "kind": "mailbox", "name": address,
+                 "domain": address.partition("@")[2], "maildir": "/var/vmail/x", "size": size,
+                 "problem": None}, **more)
+
+
+def test_a_mailbox_has_a_section_of_its_own_between_the_mail_and_the_sites():
+    items = [_mail("a.nl"), _box("info@a.nl", 67500000000), _box("sales@a.nl", 1200000), _site("a.nl")]
+    status = _status(**{"mail:a.nl": "new", "site:a.nl": "new"})
+    status["mailbox:info@a.nl"] = {"state": "new", "detail": "info@a.nl has no messages yet."}
+    status["mailbox:sales@a.nl"] = {"state": "new", "detail": "sales@a.nl has 12 messages."}
+    text = migrate.dashboard(items, status, new_server="web03.majorlabel.nl")
+    assert text.index("MAILBOXES") > text.index("MAIL\n") and text.index("MAILBOXES") < text.index("WEBSITES")
+    assert "Address" in text and "Mail here" in text
+    assert "67.5 GB" in text and "no messages yet" in text and "12 messages" in text
+    assert [item["id"] for item in migrate.offered(items, status)] == [
+        "mail:a.nl", "mailbox:info@a.nl", "mailbox:sales@a.nl", "site:a.nl"]
+    assert all(len(line) <= 79 for line in text.splitlines())
+
+
+def test_a_mailbox_whose_domain_has_not_moved_is_shown_and_not_offered():
+    box = _box("info@a.nl", 500)
+    status = {"mailbox:info@a.nl": {"state": "refused",
+                                    "detail": "a.nl is not on this server yet, so move its domain first."}}
+    text = migrate.dashboard([box], status)
+    assert migrate.offered([box], status) == []
+    assert "move its domain first" in text
+    assert "a.nl is not on this server yet" in " ".join(text.split())
+    assert "   -   info@a.nl" in text  # a dash instead of a number
+
+
+def test_a_mailbox_that_was_not_found_on_this_server_is_shown_and_not_offered():
+    box = _box("info@a.nl", maildir=None, problem="I found no mail folder for info@a.nl. I looked in /var/vmail.")
+    status = {"mailbox:info@a.nl": {"state": "new", "detail": "info@a.nl has no messages yet."}}
+    text = migrate.dashboard([box], status)
+    assert migrate.offered([box], status) == [] and "needs a look first" not in text  # the column says what is here
+    assert "not found" in text and "I looked in /var/vmail." in " ".join(text.split())
+
+
+def test_a_mailbox_that_moved_before_is_offered_again_and_says_what_that_does(tmp_path):
+    box = _box("info@a.nl", 500)
+    notes = migrate.State(path=str(tmp_path / "state.json"), say=lambda text: None)
+    notes.items[box["id"]] = {"status": "moved"}
+    status = {"mailbox:info@a.nl": {"state": "new", "detail": "info@a.nl has 40 messages."}}
+    assert migrate.offered([box], status, notes) == [box]
+    assert "brings over whatever arrived since" in " ".join(migrate.dashboard([box], status, notes).split())
+
+
+def test_what_moving_a_mailbox_does_is_said_before_it_happens(capsys):
+    box = _box("info@a.nl", 67500000000)
+    assert migrate._confirmed([box], [box], lambda prompt: "no") is False
+    text = " ".join(capsys.readouterr().out.split())
+    assert "Mailbox info@a.nl" in text and "67.5 GB" in text
+    assert "copied straight to the new server" in text and "no password needed" in text
+
+
+def test_again_takes_one_address_for_one_mailbox(tmp_path):
+    args = migrate._arguments(["again", "Info@Example.NL"])
+    assert args.address == "info@example.nl" and args.domain == "example.nl" and args.again is True
+    migrate._check_arguments(args)  # it is a valid address, so nothing is raised
+    with pytest.raises(migrate.Stopped) as stopped:
+        migrate._check_arguments(migrate._arguments(["again", "@example.nl"]))
+    assert "isn't a mail address I can look for" in stopped.value.message
+    assert migrate._arguments(["again", "example.nl"]).address is None
+
+    box, site = _box("info@example.nl"), _site("example.nl")
+    notes = migrate.State(path=str(tmp_path / "state.json"), say=lambda text: None)
+    notes.items = {box["id"]: {"status": "moved"},
+                   site["id"]: {"status": "moved", "docroot": "/home/example/public_html/www"}}
+    status = {box["id"]: {"state": "new", "detail": "info@example.nl has 40 messages."},
+              site["id"]: {"state": "exists", "detail": "The site example.nl is already here."}}
+    assert [i["id"] for i in migrate._to_do_again([site, box], notes, status)] == [site["id"], box["id"]]
+    assert migrate._to_do_again([site, box], notes, status, "info@example.nl") == [box]
+    assert migrate._to_do_again([site, box], notes, status, "other@example.nl") == []
+
+
+def test_looking_around_puts_the_mailboxes_in_the_list(monkeypatch):
+    mail = migrate.Mail({"version": 1, "domains": ["a.nl"], "addresses": [{"address": "info@a.nl"}],
+                         "forwards": [], "spam": [], "sieve": []}, [], [])
+    monkeypatch.setattr(migrate, "mail_database", lambda run, notes: "mailserver")
+    monkeypatch.setattr(migrate, "mail_inventory", lambda run, database, domain=None: mail)
+    monkeypatch.setattr(migrate, "sites", lambda run, notes: [])
+    monkeypatch.setattr(migrate, "database_sizes", lambda run, notes: {})
+    monkeypatch.setattr(migrate, "cron_jobs", lambda run, found, notes: [])
+    monkeypatch.setattr(migrate, "mail_places", lambda run, notes: {"mail_path": "/var/vmail/%d/%n/Maildir"})
+    monkeypatch.setattr(migrate, "maildir_of", lambda address, places, root, isdir=None:
+                        ("/var/vmail/a.nl/info/Maildir", None))
+    monkeypatch.setattr(migrate, "directory_size", lambda run, place, notes: 4096)
+    _, _, _, _, items = migrate._look_around(migrate._arguments([]), [])
+    boxes = [item for item in items if item["kind"] == "mailbox"]
+    assert [item["id"] for item in boxes] == ["mailbox:info@a.nl"] and boxes[0]["size"] == 4096

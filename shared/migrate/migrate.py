@@ -43,7 +43,7 @@ SITES_ENABLED = "/etc/apache2/sites-enabled"
 APACHE_ROOT = "/etc/apache2"
 # Of the talk with migratectl on the new server; both halves must come from the same release. It goes up whenever
 # the requests or the answers change, so a mismatch is found at the handshake and not in the middle of a site.
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 KEY_NAME = "migrate_key"
 KNOWN_HOSTS_NAME = "migrate_known_hosts"
 AUTHORIZED_KEYS = "/home/ansible/.ssh/authorized_keys"
@@ -434,6 +434,127 @@ _QUOTED = r"""(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")"""
 _WP_DEFINE = r"""^[ \t]*define[ \t]*\([ \t]*['"]%s['"][ \t]*,[ \t]*""" + _QUOTED + r"""[ \t]*\)[ \t]*;"""
 _WP_PREFIX = re.compile(r"^[ \t]*\$table_prefix[ \t]*=[ \t]*" + _QUOTED + r"[ \t]*;", re.MULTILINE)
 WP_SETTINGS = ("DB_NAME", "DB_USER", "DB_PASSWORD", "DB_HOST")
+
+
+# ---- Where the mail messages are kept on this server ------------------------
+
+# What Dovecot's own settings call the place where mail is kept: mail_path is 2.4's, mail_location 2.3's.
+MAIL_SETTINGS = ("mail_path", "mail_location", "mail_home", "mail_driver")
+# The index files Dovecot builds again by itself, and the filters, which came across with the mail domain and
+# must not land in the maildir. dovecot-uidlist is NOT in here: with it, a mail client keeps the message numbers
+# it already knows and does not download every message again.
+MAILDIR_EXCLUDES = ("dovecot.index*", "dovecot.list.index*", "sieve", ".dovecot.sieve", ".dovecot.svbin")
+_MAIL_VARIABLES = ((r"%\{user\s*\|\s*domain\}", "domain"), (r"%\{user\s*\|\s*username\}", "local"),
+                   (r"%\{user\}", "address"), (r"%d", "domain"), (r"%n", "local"), (r"%u", "address"))
+
+
+def mail_places(run, notes=None):
+    """What `doveconf -n` says about where this server keeps mail, of the settings in MAIL_SETTINGS. Empty when
+    doveconf isn't here or says nothing about them: the usual places are then looked at instead, and nothing is
+    assumed about either."""
+    notes = notes if notes is not None else []
+    try:
+        text = run("doveconf", "-n")
+    except CommandFailed as problem:
+        notes.append("Couldn't ask Dovecot where it keeps the mail (%s), so I looked in %s itself."
+                     % (problem.message, VMAIL))
+        return {}
+    found = {}
+    for line in text.splitlines():
+        match = re.match(r"\s*(%s)\s*=\s*(\S.*)$" % "|".join(MAIL_SETTINGS), line)
+        if match and match.group(1) not in found:
+            found[match.group(1)] = match.group(2).strip()
+    return found
+
+
+def _place_setting(value):
+    """(the path a mail_path or mail_location setting names, the driver it names or None). mail_location is
+    'driver:path' and may have options after the path; mail_path is the path on its own."""
+    text = str(value or "").strip()
+    if not text:
+        return None, None
+    driver = None
+    head, found, rest = text.partition(":")
+    if found and not head.startswith(("/", "~", "%")):
+        driver, text = head.strip().lower(), rest.strip()
+    text = text.split(":")[0].strip()  # an option behind the path, like :LAYOUT=fs
+    return (text or None), driver
+
+
+def expand_mail_path(template, address, home=None):
+    """A Dovecot path with one account filled in: %{user | domain} and %d are the domain, %{user | username}
+    and %n the part before the @, %{user} and %u the address itself, %h and ~ the account's home. None when
+    something is left in it that this doesn't know, so no path is ever guessed."""
+    address = str(address or "").strip().lower()
+    local, _, domain = address.partition("@")
+    if not local or not domain or not _LOCAL_PART.fullmatch(local) or not _valid_domain(domain):
+        return None
+    parts = {"domain": domain, "local": local, "address": address}
+    text = str(template or "").strip()
+    if not text:
+        return None
+    if "%h" in text or text.startswith("~"):
+        if not home:
+            return None
+        filled = expand_mail_path(home, address)
+        if not filled:
+            return None
+        text = text.replace("%h", filled)
+        if text.startswith("~"):
+            text = filled + text[1:]
+    for pattern, part in _MAIL_VARIABLES:
+        text = re.sub(pattern, parts[part], text)
+    return None if "%" in text else text
+
+
+def maildir_of(address, places=None, mail_root=VMAIL, isdir=os.path.isdir):
+    """(where this account's mail really is on this server, why not). It checks, never assumes: Dovecot's own
+    settings first, then /var/vmail/<domain>/<user>/Maildir and the home folder itself. A folder without a 'cur'
+    in it is not a maildir, and that is said plainly instead of copying something this doesn't understand."""
+    places = places or {}
+    address = str(address or "").strip().lower()
+    local, _, domain = address.partition("@")
+    driver = (places.get("mail_driver") or "").strip().lower()
+    candidates = []
+    for name in ("mail_path", "mail_location"):
+        path, said = _place_setting(places.get(name))
+        driver = driver or (said or "")
+        filled = expand_mail_path(path, address, places.get("mail_home")) if path else None
+        filled = filled.rstrip("/") if filled else None
+        if filled and filled.startswith("/") and filled not in candidates:
+            candidates.append(filled)
+    if driver and driver != "maildir":
+        return None, ("Dovecot on this server keeps the mail of %s as %s and not as a maildir, which is not "
+                      "something I copy. Move this one by hand, with doveadm or dsync." % (address, driver))
+    if local and domain:
+        for place in (os.path.join(mail_root, domain, local, "Maildir"), os.path.join(mail_root, domain, local)):
+            if place not in candidates:
+                candidates.append(place)
+    if not candidates:
+        return None, "%s isn't an address I can find a mailbox for on this server." % address
+    there = []
+    for candidate in candidates:
+        for place in (candidate, os.path.join(candidate, "Maildir")):
+            if isdir(os.path.join(place, "cur")):
+                return place, None
+        if isdir(candidate):
+            there.append(candidate)
+    if there:
+        return None, ("%s is there, but it has no 'cur' folder in it, so it is not a maildir. Mail kept as mdbox "
+                      "or mbox is not something I copy: move this one by hand, with doveadm or dsync." % there[0])
+    return None, ("I found no mail folder for %s. I looked in %s." % (address, " and in ".join(candidates)))
+
+
+def directory_size(run, path, notes=None):
+    """How many bytes a folder holds, as du says; None when du can't say, with a note about why."""
+    try:
+        output = run("du", "-s", "-b", path)
+    except CommandFailed as problem:
+        if notes is not None:
+            notes.append("Couldn't measure %s: %s." % (path, problem.message))
+        return None
+    first = output.replace("\t", " ").split(" ")[0].strip()
+    return int(first) if first.isdigit() else None
 
 
 def _php_text(found):
@@ -880,7 +1001,7 @@ class Connection(object):
         """The new server's answer to one request, as a dict. Raises Stopped, and nothing else, when it can't.
         It waits 2 minutes for a quick request and 30 for one that makes something."""
         kind = request.get("request") if isinstance(request, dict) else None
-        slow = kind in ("apply", "finish_site")
+        slow = kind in ("apply", "finish_site", "finish_mailbox")
         timeout = timeout or (1800 if slow else 120)
         what = "making this" if slow else "answering the request '%s'" % kind
         try:
@@ -1035,7 +1156,7 @@ def apply_item(connection, item, ask_password=None, say=print, answers=None):
     return answer, skipped
 
 
-KIND_NAMES = {"mail_domain": "Mail", "site": "Website", "cron": "Cron job"}
+KIND_NAMES = {"mail_domain": "Mail", "mailbox": "Mailbox", "site": "Website", "cron": "Cron job"}
 _WIDTH = 79  # one less than a terminal's 80, so no line wraps by itself
 
 
@@ -1067,6 +1188,9 @@ def cost(item):
             return "the site's files"
         size = _size(item.get("size"))
         return "files and a database of %s" % size if size else "files and a database"
+    if kind == "mailbox":
+        size = _size(item.get("size"))
+        return "%s of mail" % size if size else "its mail"
     if kind == "mail_domain":
         data = item.get("data") if isinstance(item.get("data"), dict) else {}
         accounts, forwards = data.get("addresses"), data.get("forwards")
@@ -1086,6 +1210,9 @@ MAIL_MERGES = ("Sending it again adds the accounts, forwards, filters and "
                "there alone.")
 GONE_THERE = ("This moved from here before, but the new server doesn't have "
               "it any more. Moving it again puts it back.")
+MAILBOX_AGAIN = ("This mailbox moved from here before. Copying it again "
+                 "brings over whatever arrived since; nothing the new server "
+                 "has is removed.")
 
 
 def _verdict(item, status, notes=None):
@@ -1098,6 +1225,16 @@ def _verdict(item, status, notes=None):
     state = said.get("state") if isinstance(said, dict) else None
     detail = said.get("detail") if isinstance(said, dict) else None
     moved_before = notes is not None and notes.entry(item).get("status") == "moved"
+    if item.get("kind") == "mailbox":
+        # The account has to be there before its messages can go anywhere, and that is what the new server
+        # answers about. Copying a mailbox again only adds, so one that moved before is offered again.
+        if state == "refused":
+            return "can't be moved", False, detail
+        if state != "new":
+            return "the new server didn't say", False, "The new server gave no answer about this."
+        if item.get("problem"):
+            return "needs a look first", False, item["problem"]
+        return cost(item), True, MAILBOX_AGAIN if moved_before else None
     if moved_before and state in ("exists", "refused"):
         return "already moved from here", False, None
     if state == "exists" and notes is not None and notes.outstanding(item):
@@ -1197,7 +1334,8 @@ def _step(label, work, summary=None, out=None):
 
 # ---- The dashboard -----------------------------------------------------------
 
-SECTIONS = (("mail_domain", "MAIL"), ("site", "WEBSITES"), ("cron", "CRON JOBS"))
+# The mailboxes come straight after the mail domains, because a mailbox can only go once its domain has.
+SECTIONS = (("mail_domain", "MAIL"), ("mailbox", "MAILBOXES"), ("site", "WEBSITES"), ("cron", "CRON JOBS"))
 _INDENT = 7  # the width of the number column and the gap after it
 _DAYS = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
 _AT_WORDS = {"@hourly": "every hour", "@daily": "daily at 00:00", "@midnight": "daily at 00:00",
@@ -1279,14 +1417,26 @@ def _cron_parts_of(item):
     return words[:count], " ".join(words[count:])
 
 
+MOVE_DOMAIN_FIRST = "move its domain first"
+
+
 def _there_text(item, info, reason, said, short):
     """(what the new server has, in a few words, its colour) for the column that is headed with its name."""
     state = said.get("state") if isinstance(said, dict) else None
+    detail = said.get("detail") if isinstance(said, dict) else None
     if state == "exists" and item.get("kind") == "mail_domain" and info == "already there, can be sent again":
         counts = re.search(r"with ([0-9]+) accounts and ([0-9]+) forwards", str(said.get("detail") or ""))
         text = (_counts(int(counts.group(1)), int(counts.group(2))).replace(" and ", ", ")
                 if counts else "already there")
         return text + " - can be topped up", "green"
+    if item.get("kind") == "mailbox":
+        if state == "refused":
+            return (MOVE_DOMAIN_FIRST if MOVE_DOMAIN_FIRST in str(detail or "")
+                    else "can't be moved"), "yellow"
+        counted = re.search(r"(no messages yet|[0-9]+ messages?)", str(detail or ""))
+        if counted:
+            return counted.group(1), ("dim" if counted.group(1) == "no messages yet" else "green")
+        return "the new server didn't say", "yellow"
     if state == "new":
         if reason == GONE_THERE:
             return "not there any more", "dim"
@@ -1305,6 +1455,8 @@ TROUBLE = ("needs a look first", "can't be moved", "the new server didn't say")
 
 def _here_text(item):
     kind = item.get("kind")
+    if kind == "mailbox":
+        return _size(item.get("size")) or ("size unknown" if item.get("maildir") else "not found")
     if kind == "mail_domain":
         data = item.get("data") if isinstance(item.get("data"), dict) else {}
         accounts = data.get("addresses")
@@ -1327,6 +1479,8 @@ def _table(kind, group, numbers, status, remembered, short, colour):
     """The lines of one section. 'group' is [(item, verdict)], 'numbers' {id(item): its number or None}."""
     if kind == "cron":
         heads = ["For", "Runs", "On " + short]
+    elif kind == "mailbox":
+        heads = ["Address", "Mail here", "On " + short]
     elif kind == "site":
         heads = ["Domain", "Here", "On " + short, "To copy"]
     else:
@@ -1561,13 +1715,16 @@ NEEDS_PROGRAM = ("%s isn't installed on this server, and a site's files and "
 
 
 def _missing_programs(item, which=None):
-    """The programs this server needs to bring a site over that aren't here.
-    Looked for before the site is made on the new server: finding out
-    afterwards leaves a site made there with nothing in it."""
-    if item.get("kind") != "site":
-        return []
+    """The programs this server needs to bring a site or a mailbox over that
+    aren't here. Looked for before the site is made on the new server:
+    finding out afterwards leaves a site made there with nothing in it."""
     which = which or shutil.which
-    wanted = ["rsync"] + (["mysqldump"] if item.get("database") else [])
+    if item.get("kind") == "mailbox":
+        wanted = ["rsync"]
+    elif item.get("kind") == "site":
+        wanted = ["rsync"] + (["mysqldump"] if item.get("database") else [])
+    else:
+        return []
     return [name for name in wanted if not which(name)]
 
 
@@ -1587,12 +1744,18 @@ def _new_web_root(item, docroots, notes):
     return None
 
 
+NO_COPIER = ("I wasn't told how to copy mail in this run, so nothing was "
+             "copied for %s.")
+
+
 def run(connection, items, ask, move=None, notes=None, status=None, php=None,
-        extra_notes=None, wp=None):
+        extra_notes=None, wp=None, copy=None):
     """Moves the items one by one and returns a Report. 'ask' is called with
     the new server's question and gives "yes" or "no". 'move' is called with
     a site and the new server's answer to its apply, after it was made, to
-    bring its files and database. One item going wrong stops that item only;
+    bring its files and database. 'copy' is called with a mailbox, which the
+    new server makes nothing for: its messages are copied straight into the
+    place the new server named. One item going wrong stops that item only;
     the new server not answering ends the run. A site that was made but not
     filled is in files_to_copy, whatever went wrong after it was made.
 
@@ -1634,6 +1797,22 @@ def run(connection, items, ask, move=None, notes=None, status=None, php=None,
                                        " ".join(missing))
                 report.skipped.append((item, why))
                 _say(why)
+                continue
+            if item.get("kind") == "mailbox":
+                # Nothing is made on the new server for a mailbox: the
+                # account is already there (that is what makes it offered),
+                # so this is the copy and the finish, and no password.
+                if copy is None:
+                    report.skipped.append((item, NO_COPIER % _title(item)))
+                    _say(NO_COPIER % _title(item))
+                    continue
+                answer = copy(item)
+                if answer.get("skipped"):
+                    report.skipped.append((item, answer.get("message")
+                                           or "Left alone, as you asked."))
+                    _say(answer.get("message") or "")
+                else:
+                    report.moved.append((item, answer))
                 continue
             left = notes.entry(item) if notes is not None else {}
             said = (status or {}).get(item.get("id")) or {}
@@ -1791,6 +1970,25 @@ def site_items(found, owner_of=_owner_of, users=None):
             "size": site.get("size"), "problem": problem,
             "wordpress": bool(site.get("wordpress"))})
     _one_user_per_site(items, given)
+    return items
+
+
+def mailbox_items(mail, places=None, mail_root=VMAIL, size_of=None, isdir=os.path.isdir):
+    """One mailbox item for each account of the mail that was found: where its messages are on this server and
+    how much there is of them. An account whose mail folder can't be found gets a problem, so it is shown and
+    not offered. It is one item per account on purpose: a mailbox of 67 GB is something a person picks."""
+    items = []
+    for account in ((mail.file.get("addresses") if mail is not None else None) or []):
+        address = str(account.get("address") or "").strip().lower() if isinstance(account, dict) else ""
+        if not address or "@" not in address:
+            continue
+        place, problem = maildir_of(address, places, mail_root, isdir)
+        item = {"id": "mailbox:" + address, "kind": "mailbox", "name": address,
+                "domain": address.partition("@")[2], "maildir": place, "size": None,
+                "problem": problem}
+        if place and size_of is not None:
+            item["size"] = size_of(place)
+        items.append(item)
     return items
 
 
@@ -2385,6 +2583,111 @@ def move_site(connection, site, answer, again=False, notes=None, ask=None,
     return {"ok": True, "steps": steps}
 
 
+MAILBOX_DELETE_QUESTION = (
+    "Copying the mail of %s again also REMOVES from the new server anything "
+    "in that mailbox which is not on this server any more. Go on?")
+NOT_COPIED = ("Nothing was copied for %s: the mail already on the new server "
+              "was not to be removed.")
+MAIL_NO_DELETE_NOTE = ("Copying a mailbox only adds and replaces: a message "
+                       "that is gone here was not removed from the new "
+                       "server. To have that too, run migrate.py again "
+                       "ADDRESS, which says so before it does it.")
+MAIL_VANISHED_NOTE = ("Some messages were moved or deleted on this server "
+                      "while they were being copied, which happens on a "
+                      "mailbox that is in use. The rest came across.")
+
+
+def _new_maildir(hello, address):
+    """Where this account's mail goes on the new server: the path the new
+    server itself gave when it said hello, with the account filled in.
+    Nothing about the new server's layout is worked out here."""
+    said = (hello or {}).get("mail") if isinstance(hello, dict) else None
+    said = said if isinstance(said, dict) else {}
+    template, driver = said.get("path"), said.get("driver")
+    if not template:
+        raise MoveFailed("The new server didn't say where it keeps mail, so "
+                         "nothing was copied. Both servers must come from "
+                         "the same release of this repository.")
+    if driver and str(driver).strip().lower() != "maildir":
+        raise MoveFailed("The new server keeps mail as %s and not as a "
+                         "maildir, so I can't copy a maildir into it."
+                         % driver)
+    filled = expand_mail_path(template, address)
+    if not filled or not filled.startswith("/"):
+        raise MoveFailed("I can't work out from what the new server said "
+                         "(%s) where the mail of %s goes there, so nothing "
+                         "was copied." % (template, address))
+    return filled
+
+
+def move_mailbox(connection, item, hello=None, again=False, notes=None,
+                 ask=None, extra_notes=None, runner=run_visible):
+    """Copies one account's mail to the new server, over the connection this
+    tool already has, and then has the new server finish the mailbox off. No
+    password is needed anywhere: the messages are files. The folder it copies
+    is the one that was found on this server, and the place it goes is the
+    one the new server gave in hello; neither is made up here. Returns a
+    dict with 'ok', 'steps' and 'messages' (what the new server counted), or
+    'skipped' and 'message'. Raises MoveFailed, or Stopped when the new
+    server can't be reached. With again=True anything the new server has and
+    this one hasn't is removed, after 'ask' was told so and said yes."""
+    address = str(item.get("name") or "")
+    source = item.get("maildir")
+    if not source:
+        raise MoveFailed(item.get("problem") or "I don't know where the mail "
+                         "of %s is on this server, so nothing was copied."
+                         % address)
+    target = _new_maildir(hello, address)
+    if again:
+        reply = ask(MAILBOX_DELETE_QUESTION % address) if ask is not None else None
+        if not _is_yes(reply):
+            return {"ok": False, "skipped": True, "message": NOT_COPIED % address}
+    shell = " ".join(shlex.quote(word) for word in ["ssh"] + connection.options())
+    # -a: the messages, their times and their flags as they are. No -z: mail is small files, and the time goes
+    # into reading them, not into the wire. Slashes on both ends, so the messages land IN the maildir.
+    words = ["rsync", "-a", "-s", "--info=progress2", "-e", shell,
+             "--rsync-path", "sudo -n rsync"]
+    for name in MAILDIR_EXCLUDES:
+        words += ["--exclude", name]
+    if again:
+        words.append("--delete")
+    words += [source.rstrip("/") + "/", "%s@%s:%s/" % (connection.user, connection.host, target.rstrip("/"))]
+    try:
+        code = runner(*words)
+    except CommandFailed as problem:
+        raise MoveFailed("Copying the mail of %s did not work: %s"
+                         % (address, problem.message))
+    if code not in (0, 24):
+        raise MoveFailed("Copying the mail of %s did not work: rsync stopped "
+                         "with code %d (its own message is above)."
+                         % (address, code))
+    steps = ["Copied the mail of %s to %s on the new server." % (address, target)]
+    if code == 24:
+        steps.append(MAIL_VANISHED_NOTE)
+    if not again and extra_notes is not None and MAIL_NO_DELETE_NOTE not in extra_notes:
+        extra_notes.append(MAIL_NO_DELETE_NOTE)
+    reply = connection.ask({"request": "finish_mailbox", "address": address})
+    if not reply.get("ok"):
+        raise MoveFailed("The mail of %s is across, but the new server could "
+                         "not finish the mailbox off: %s Copy it again to "
+                         "finish it." % (address, reply.get("error")
+                                         or "it gave no reason."))
+    steps.extend(step for step in reply.get("steps", []) if isinstance(step, str))
+    count = reply.get("messages")
+    if notes is not None:
+        notes.moved(item)
+    return {"ok": True, "steps": steps,
+            "messages": count if isinstance(count, int) and not isinstance(count, bool) else None}
+
+
+def copier(connection, notes, hello, ask=None, extra_notes=None, **fakes):
+    """The 'copy' that run() and do_again() call with a mailbox."""
+    def copy(item, again=False):
+        return move_mailbox(connection, item, hello, again=again, notes=notes,
+                            ask=ask, extra_notes=extra_notes, **fakes)
+    return copy
+
+
 def mover(connection, notes, ask, extra_notes=None, **fakes):
     """The 'move' that run() calls with a site and the answer to its apply."""
     def move(item, answer):
@@ -2393,22 +2696,31 @@ def mover(connection, notes, ask, extra_notes=None, **fakes):
     return move
 
 
-def do_again(connection, items, notes, ask, extra_notes=None, **fakes):
+def do_again(connection, items, notes, ask, extra_notes=None, copy=None,
+             **fakes):
     """Copies the files of sites already moved once and replaces their
-    database, each only after the question for it got a yes. Returns a
-    Report: moved, skipped (said no) and failed. The new server's place for
-    the files is the one remembered from the run that made the site."""
+    database, and copies the mail of a mailbox again, each only after the
+    question for it got a yes. Returns a Report: moved, skipped (said no)
+    and failed. The new server's place for a site's files is the one
+    remembered from the run that made it. For a mailbox this is the one way
+    to a copy that also removes what the new server has and this one hasn't,
+    which is why the question says so."""
     report = Report()
     for index, item in enumerate(items):
         entry = notes.entry(item)
         try:
-            if not entry.get("docroot"):
+            if item.get("kind") == "mailbox":
+                if copy is None:
+                    raise MoveFailed(NO_COPIER % item.get("name"))
+                result = copy(item, again=True)
+            elif not entry.get("docroot"):
                 raise MoveFailed("I don't know where %s's files go on the "
                                  "new server: it was not made by this tool "
                                  "here." % item["name"])
-            result = move_site(connection, item, entry, again=True,
-                               notes=notes, ask=ask, extra_notes=extra_notes,
-                               **fakes)
+            else:
+                result = move_site(connection, item, entry, again=True,
+                                   notes=notes, ask=ask,
+                                   extra_notes=extra_notes, **fakes)
         except Stopped as problem:
             report.failed.append((item, problem.message))
             report.stopped = problem.message
@@ -2497,13 +2809,19 @@ def _ask_dns(connection, domain):
     return None, str(answer.get("error") or "the new server gave no records")
 
 
-def _imapsync(old, new, address):
-    secret = "'TYPE-THE-PASSWORD-HERE'"
-    return "\n".join(["imapsync \\"] + [
-        "  --host%s %s --user%s %s \\" % (n, shlex.quote(host), n,
-                                           shlex.quote(address))
-        + "\n  --password%s %s --ssl%s%s" % (n, secret, n, end)
-        for n, host, end in ((1, old, " \\"), (2, new, ""))]).splitlines()
+MAIL_COPIED = ("The messages were copied straight from this server to the "
+               "new one over ssh, so there is nothing to do by hand for the "
+               "mail. A mailbox can be copied again later, to pick up what "
+               "came in since: migrate.py again ADDRESS.")
+
+
+def _messages_said(answer):
+    """How many messages the new server counted in a mailbox after the copy, in words. That count is the one
+    honest proof the mail arrived, so when it is missing this says so and does not make one up."""
+    count = answer.get("messages") if isinstance(answer, dict) else None
+    if isinstance(count, int) and not isinstance(count, bool):
+        return "%s on the new server now" % _plural(count, "message", "messages")
+    return "copied, but the new server could not say how many messages it has now"
 
 
 def _same_item(one, other):
@@ -2547,7 +2865,6 @@ def report(result, connection=None, old_server=None, found_sites=None,
     new_name = getattr(connection, "host", None) or new_server
     known_host = bool(new_name) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.:-]*", str(new_name)) is not None
     new_name = new_name if known_host else "the new server"  # a phrase, for sentences only; never in a command
-    old_name = old_server or socket.gethostname()
     moved = list(result.moved)
     undone = [item for item in result.files_to_copy
               if not any(_same_item(item, f[0]) for f in result.failed)]
@@ -2584,32 +2901,16 @@ def report(result, connection=None, old_server=None, found_sites=None,
              _bullets(result.left_out))
     _section(out, "Good to know:", _bullets(extra_notes or []))
 
-    domains, accounts = [], []
-    for item, _ in moved:
-        if item.get("kind") != "mail_domain":
-            continue
-        domains.append(item.get("name") or "")
-        data = item.get("data") if isinstance(item.get("data"), dict) else {}
-        for account in data.get("addresses") or []:
-            address = account.get("address") if isinstance(account, dict) \
-                else None
-            if address and address not in result.left_out:
-                accounts.append(address)
-    if accounts and not known_host:
-        out.extend([""] + textwrap.wrap(
-            "The imapsync lines for the mail accounts are left out, because "
-            "the name of the new server is not known here. Run migrate.py "
-            "report --host NEW-SERVER to get them.", 79))
-    elif accounts:
-        out.extend([""] + textwrap.wrap(
-            "Mail messages are not moved by this tool. Run one of these for "
-            "each account, with the password filled in (it is the same on "
-            "both servers). Run them from any machine that can reach both "
-            "servers; imapsync is on neither of them, so install it where "
-            "you run it (on Debian or Ubuntu: apt install imapsync):", 79))
-        for address in accounts:
-            out.append("")
-            out.extend(_imapsync(old_name, new_name, address))
+    domains = [item.get("name") or "" for item, _ in moved
+               if item.get("kind") == "mail_domain"]
+    boxes = [(item, answer) for item, answer in moved
+             if item.get("kind") == "mailbox"]
+    if boxes:
+        _section(out, "Mail messages copied to %s, and what it counted "
+                 "afterwards:" % new_name,
+                 _bullets("%s: %s" % (_title(item), _messages_said(answer))
+                          for item, answer in boxes))
+        out.extend([""] + textwrap.wrap(MAIL_COPIED, 79))
     dns_said = False
     for domain in domains:
         text, why = _ask_dns(connection, domain) if connection else (None, None)
@@ -2724,7 +3025,8 @@ COMMANDS = (
     ("check", "connect, and say which server answered and what it has"),
     ("list", "look around and show what can be moved (changes nothing)"),
     ("move", "move what the numbers name (asks which, with none given)"),
-    ("again", "catch up a site that already moved: files and database"),
+    ("again", "catch up what already moved: a site's files and database, "
+     "or one mailbox's mail"),
     ("report", "print the report of what has been done so far"),
 )
 
@@ -2789,7 +3091,8 @@ def _parser():
                                 "files again and replaces its database, after "
                                 "asking.")
     again.add_argument("domain", metavar="DOMAIN",
-                       help="the site that already moved")
+                       help="the site that already moved, or one mail "
+                       "address, for its mailbox")
     _options(again, domain=False)
     return parser
 
@@ -2797,6 +3100,11 @@ def _parser():
 def _arguments(argv):
     args = _parser().parse_args(argv)
     args.again = args.command == "again"
+    args.address = None
+    if args.again and "@" in (getattr(args, "domain", None) or ""):
+        # `again ADDRESS` is the catch-up of one mailbox; the domain part is what to look at while finding it.
+        args.address = args.domain.strip().lower()
+        args.domain = args.address.partition("@")[2]
     if not hasattr(args, "numbers"):
         args.numbers = []
     for name, value in (("host", None), ("domain", None), ("user", None),
@@ -2933,6 +3241,19 @@ def _look_around(args, notes, run=run_command):
         return text
 
     database, mail = _step("Looking at the mail", look_at_mail, mail_summary)
+
+    def look_at_mailboxes():
+        return mailbox_items(mail, mail_places(run, notes),
+                             size_of=lambda place: directory_size(run, place, notes))
+
+    def mailbox_summary(found):
+        total = sum(item["size"] for item in found if item.get("size"))
+        missing = len([item for item in found if item.get("problem")])
+        return "%s, %s%s" % (_plural(len(found), "mailbox", "mailboxes"), _size(total),
+                             ", %d not found" % missing if missing else "")
+
+    boxes = _step("Looking at the mail messages", look_at_mailboxes,
+                  mailbox_summary) if mail is not None else []
     every, sizes, plumbing = _step("Looking at the websites", look_at_sites,
                                    site_summary)
 
@@ -2949,6 +3270,7 @@ def _look_around(args, notes, run=run_command):
         jobs = [j for j in jobs if j.get("site") in names]
         plumbing = [s for s in plumbing if _in_domain(s["name"], domain)]
     items = _domain_items(mail) if mail else []
+    items += boxes
     minted = site_items(found, users=_user_for(found, domain, wanted_user))
     items += minted + cron_items(jobs, minted)
     items += [{"id": "aside:" + s["name"], "kind": "aside", "name": s["name"]}
@@ -2985,14 +3307,21 @@ def _choose(lines, prompt):
     return pick(lines, typed)
 
 
-def _to_do_again(items, state, status):
-    """The sites a catch-up can be done for: this tool moved them, it knows where their files went on the new
-    server, and the new server still has them. Before the DNS is flipped the new server reports a site it made
-    itself as 'exists', which is what lets this be the catch-up before the flip that the design asks for."""
-    return [item for item in items if item.get("kind") == "site"
-            and state.entry(item).get("status") == "moved"
-            and state.entry(item).get("docroot")
-            and (status.get(item["id"]) or {}).get("state") == "exists"]
+def _to_do_again(items, state, status, address=None):
+    """What a catch-up can be done for: a site this tool moved, whose place on the new server it knows and which
+    the new server still has, and a mailbox it copied whose account is still there. Before the DNS is flipped the
+    new server reports a site it made itself as 'exists', which is what lets this be the catch-up before the
+    flip that the design asks for. With an address, only that one mailbox."""
+    sites = [item for item in items if item.get("kind") == "site"
+             and state.entry(item).get("status") == "moved"
+             and state.entry(item).get("docroot")
+             and (status.get(item["id"]) or {}).get("state") == "exists"]
+    boxes = [item for item in items if item.get("kind") == "mailbox"
+             and state.entry(item).get("status") == "moved"
+             and (status.get(item["id"]) or {}).get("state") == "new"]
+    if address:
+        return [item for item in boxes if item.get("name") == address]
+    return sites + boxes
 
 
 def _new_name(connection, hello):
@@ -3071,6 +3400,10 @@ def _will_happen(item, state=None):
         return ("its files%s are copied to the new server, as the user %s"
                 % (" and its database of %s" % size if size else " and its database"
                    if item.get("database") else "", item.get("user") or site_user(item["name"])))
+    if kind == "mailbox":
+        size = _size(item.get("size"))
+        return ("its messages%s are copied straight to the new server, with "
+                "no password needed" % (" (%s)" % size if size else ""))
     if kind == "cron":
         command = _cron_parts_of(item)[1]
         return "%s: %s, goes into the crontab of %s on the new server" % (
@@ -3106,8 +3439,9 @@ def _move_and_report(args, connection, state, notes, looked, hello, chosen,
     extra = []
     doing[0] = "moving what you picked"
     move = mover(connection, state, _question, extra)
-    result = run(connection, chosen, _question, move=move, notes=state,
-                 status=status, php=(hello or {}).get("php"),
+    copy = copier(connection, state, hello, _question, extra)
+    result = run(connection, chosen, _question, move=move, copy=copy,
+                 notes=state, status=status, php=(hello or {}).get("php"),
                  wp=(hello or {}).get("wp"), extra_notes=extra)
     moved_domains = [i["name"] for i, _ in result.moved
                      if i.get("kind") == "mail_domain"]
@@ -3127,18 +3461,19 @@ def _again(args, connection, state, notes, looked, doing, hello):
     its database, each after a question."""
     mail, database, found, sizes, items, status = looked
     extra = []
-    chosen = _to_do_again(items, state, status)
+    chosen = _to_do_again(items, state, status, getattr(args, "address", None))
     if not chosen:
-        _say("No site that moved is still on the new server, so there is "
-             "nothing to copy again. A site the new server no longer has "
-             "is offered on the ordinary list instead.")
+        _say("Nothing that moved from here is still on the new server, so "
+             "there is nothing to copy again. A site the new server no "
+             "longer has is offered on the ordinary list instead.")
     else:
-        print("Sites that already moved:")
+        print("What already moved from here:")
         for number, item in enumerate(chosen, 1):
-            print("%3d  %s" % (number, _title(item)))
+            print("%3d  %s %s" % (number, KIND_NAMES.get(item.get("kind"), "Item"), _title(item)))
         chosen = _choose(chosen, "Numbers to copy again (like 1 3, 2-5, "
                          "all; Enter for none): ")
-    result = do_again(connection, chosen, state, _question, extra)
+    result = do_again(connection, chosen, state, _question, extra,
+                      copy=copier(connection, state, hello, _question, extra))
     print()
     doing[0] = "writing the report"
     print(report(result, connection=connection,
@@ -3238,6 +3573,11 @@ def _show_check(hello, host, colour):
                              + " (the new server is not built with this repository)"))
     for name, what in (("php", "PHP"), ("wp", "wp-cli")):
         print("%-10s  %s" % (what, hello.get(name) or "not found"))
+    mail = hello.get("mail") if isinstance(hello.get("mail"), dict) else {}
+    print("%-10s  %s" % ("mail", "%s, owned by %s:%s" % (
+        mail["path"], mail.get("owner") or "?", mail.get("group") or "?") if mail.get("path")
+        else _paint("it didn't say where it keeps mail", "yellow", colour)
+        + ", so mail messages can't be copied there"))
 
 
 def _result_from_notes(state):
@@ -3273,6 +3613,11 @@ def _try_connecting(host):
 
 
 def _check_arguments(args):
+    if getattr(args, "address", None):
+        reason = _address_problem(args.address)
+        if reason:
+            raise Stopped("'%s' isn't a mail address I can look for: %s"
+                          % (args.address, reason))
     if args.domain and not _DOMAIN_ARGUMENT.fullmatch(args.domain):
         raise Stopped("'%s' isn't a domain name." % args.domain)
     if args.user and not args.domain:
