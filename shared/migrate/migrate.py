@@ -1943,7 +1943,7 @@ def customer_screen(row, status, remembered=None, colour=False, new_server=None)
                                    "" if row.to_move(part) else "   nothing to do"))
     out.append("  %s  everything that is left%s"
                % (_paint("4", "bold", colour), "" if row.to_move() else "   nothing to do"))
-    out.append("  %s  set new mail passwords on both servers and show them" % _paint("5", "bold", colour))
+    out.append("  %s  give an account its own password on the new server" % _paint("5", "bold", colour))
     out.append("  %s  back to the list          %s  leave"
                % (_paint("b", "bold", colour), _paint("q", "bold", colour)))
     return "\n".join(_fit_line(line) for line in out)
@@ -1962,135 +1962,103 @@ def customer_action(row, word):
     return None, None
 
 
-# ---- New passwords for a customer's accounts ---------------------------------
+# ---- The password of an account that already exists --------------------------
 
-# No l, 1, I, O or 0: a password gets read out over the telephone, so nothing in it may read two ways.
-PASSWORD_LETTERS = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
-PASSWORD_LENGTH = 16
-PASSWORDS_ONLY_NOW = ("These are shown only now and are written down nowhere: not in my notes, not on this "
-                      "server and not in plain on the new one. Give them to the customer before you go on.")
-
-
-def new_password(length=PASSWORD_LENGTH, pick=None):
-    """A password to hand to a customer, made here on the old server."""
-    pick = pick or secrets.choice
-    return "".join(pick(PASSWORD_LETTERS) for _ in range(length))
+CHECKED_HERE = ("The account's own password is asked for here, checked against what this server has stored for "
+                "it, and then stored on the new server the way that server stores its own. Nothing changes on "
+                "this server, and no new password is made up: the customer keeps the one they have.")
+WRONG_PASSWORD = ("That is not the password this server has for %s. Nothing was changed. Try again, or press "
+                  "Enter to leave it.")
 
 
-BOTH_SERVERS = ("This sets the same password on BOTH servers, so you can log in to the account on either of "
-                "them and copy the mail across. The password the customer has now stops working. Nothing else "
-                "about the account changes.")
-
-# The schemes the standard library can make. Dovecot reads the {SCHEME} in front of the hash, so one it cannot
-# make is simply stored as SHA512-CRYPT, which every Dovecot checks.
-_CRYPT_METHODS = (("SHA512-CRYPT", "METHOD_SHA512"), ("SHA256-CRYPT", "METHOD_SHA256"), ("MD5-CRYPT", "METHOD_MD5"))
-
-
-def _sql_text(value):
-    """One value for the mysql client, which has no way to send them separately."""
-    return "'" + str(value).replace("\\", "\\\\").replace("'", "\\'") + "'"
-
-
-_OPENSSL_KINDS = (("SHA512-CRYPT", "-6"), ("SHA256-CRYPT", "-5"), ("MD5-CRYPT", "-1"))
-
-
-def hash_here(password, scheme, run=None):
-    """The password hashed the way this server stores it, labelled so Dovecot knows what it is. The password
-    goes in over standard input or stays inside this process: never an argument of a command, where ps would
-    show it to everybody logged in."""
-    wanted = (scheme or "").upper()
-    if crypt is not None:
-        for name, method in _CRYPT_METHODS:
-            if name == wanted and hasattr(crypt, method):
-                return "{%s}%s" % (name, crypt.crypt(password, crypt.mksalt(getattr(crypt, method))))
-        return "{SHA512-CRYPT}%s" % crypt.crypt(password, crypt.mksalt(crypt.METHOD_SHA512))
-    # Python 3.13 took the crypt module out, so openssl does the hashing instead.
-    run = run or run_command
-    for name, flag in _OPENSSL_KINDS:
-        if name == wanted:
-            return "{%s}%s" % (name, run("openssl", "passwd", flag, "-stdin", stdin=password + "\n").strip())
-    return "{SHA512-CRYPT}%s" % run("openssl", "passwd", "-6", "-stdin", stdin=password + "\n").strip()
-
-
-def scheme_here(address, database, run=None):
-    """The scheme this server keeps that account's password in, so the new one is stored the same way."""
+def _stored_hash(address, database, run=None):
+    """The hash this server keeps for that account, label and all, or None when it has none."""
     run = run or run_command
     found = run("mysql", "--batch", "--skip-column-names", database,
                 stdin="SELECT password FROM virtual_users WHERE email=%s;\n" % _sql_text(address))
     value = (found or "").strip()
-    if value.startswith("{") and "}" in value:
-        return value[1:value.index("}")].upper()
-    return "SHA512-CRYPT"
+    return value or None
 
 
-def password_here(address, password, database, run=None):
-    """Sets that account's password on THIS server too. The one thing migrate changes on the old server, and
-    only when somebody asks for new passwords: without it the account can be opened on the new server and not
-    on this one, so the mail cannot be copied across. The hash goes in over standard input."""
-    run = run or run_command
-    if not database:
-        raise CommandFailed("I can't find the mail database on this server")
-    hashed = hash_here(password, scheme_here(address, database, run))
-    run("mysql", "--batch", database,
-        stdin="UPDATE virtual_users SET password=%s WHERE email=%s;\n"
-              % (_sql_text(hashed), _sql_text(address)))
-
-
-def set_passwords(connection, row, say=print, make=new_password, database=None, ask=None, old_server=None,
-                  new_server=None):
-    """Gives every mail account of one customer a new password, with the new server's own mailctl. Returns
-    [(address, password)] of the ones that were set. The password travels inside the request and goes into
-    mailctl's standard input there: it is never an argument of a command, never in the notes and never in a
-    log. Nothing is automatic about this: an account whose password the customer knows keeps working until
-    somebody asks for this."""
-    if not row.accounts():
-        _say("%s has no mail accounts on this server, so there is no password to set." % row.name, say)
-        return []
-    _say(BOTH_SERVERS, say)
-    if ask is not None and not ask("Set new passwords for the %d account(s) of %s? [y/N] "
-                                   % (len(row.accounts()), row.name)):
-        _say("Nothing was changed.", say)
-        return []
-    done, failed, here_failed = [], [], []
-    for address in row.accounts():
-        password = make()
-        answer = connection.ask({"request": "password", "address": address, "password": password})
-        if not answer.get("ok"):
-            failed.append((address, answer.get("error") or "the new server gave no reason"))
-            continue
+def password_fits(password, stored, run=None):
+    """Whether that really is the account's password, checked against the hash this server already has: the
+    hash carries its own salt, so hashing the password with it again has to give the same hash back."""
+    if not stored:
+        return False
+    bare = stored[stored.index("}") + 1:] if stored.startswith("{") and "}" in stored else stored
+    if crypt is not None:
         try:
-            password_here(address, password, database)
+            return crypt.crypt(password, bare) == bare
+        except (ValueError, OSError):
+            return False
+    run = run or run_command
+    try:
+        # doveadm reads the password to check on its standard input, so it is in no command line.
+        run("doveadm", "pw", "-t", stored, stdin=password + "\n")
+        return True
+    except CommandFailed:
+        return False
+
+
+def give_password(connection, address, stored, say=print, ask=None):
+    """Asks for one account's own password, checks it here, and has the new server store it. True when the new
+    server took it. Enter leaves the account alone."""
+    ask = ask or _typed_password
+    while True:
+        password = ask("Password of %s (Enter to leave it): " % address)
+        if not password:
+            return False
+        if not password_fits(password, stored):
+            _say(WRONG_PASSWORD % address, say)
+            continue
+        answer = connection.ask({"request": "password", "address": address, "password": password})
+        if answer.get("ok"):
+            _say("%s opens with that password on the new server now." % address, say)
+            return True
+        _say("The new server would not take the password of %s: %s"
+             % (address, answer.get("error") or "it gave no reason"), say)
+        return False
+
+
+def set_passwords(connection, row, say=print, database=None, ask=None, old_server=None, new_server=None):
+    """Goes through one customer's accounts, asking for each one's own password, checking it against what this
+    server has stored, and giving it to the new server. The password is the customer's own, so it is never
+    printed back and never written down. Returns the addresses that now open on both servers."""
+    if not row.accounts():
+        _say("%s has no mail accounts on this server, so there is no password to give." % row.name, say)
+        return []
+    _say(CHECKED_HERE, say)
+    done = []
+    for address in row.accounts():
+        try:
+            stored = _stored_hash(address, database) if database else None
         except CommandFailed as problem:
-            here_failed.append((address, problem.message))
-        done.append((address, password))
-    if done:
-        width = max(len(address) for address, _ in done)
-        _say("New mail passwords for %s:" % row.name, say)
+            _say("I can't read what this server has for %s (%s), so I can't check a password for it."
+                 % (address, problem.message), say)
+            continue
+        if not stored:
+            _say("This server has no password stored for %s, so there is nothing to check against." % address,
+                 say)
+            continue
+        if give_password(connection, address, stored, say=say):
+            done.append(address)
+    if done and old_server and new_server:
         say("")
-        for address, password in done:
-            say("  %s  %s" % (address.ljust(width), password))
-        say("")
-        _say(PASSWORDS_ONLY_NOW, say)
-        if old_server and new_server:
+        _say("These open with the same password on both servers now, so their mail can be copied:", say)
+        for address in done:
             say("")
-            _say("To copy the mail of an account across, with this password at both ends:", say)
-            for address, password in done:
-                say("")
-                for line in _imapsync_line(old_server, new_server, address, password):
-                    say(line)
-    for address, why in here_failed:
-        _say("%s has the new password on the new server, but NOT on this one (%s), so a copy can still not log "
-             "in here. Set it by hand on this server." % (address, why), say)
-    for address, why in failed:
-        _say("The password of %s was not changed on either server: %s" % (address, why), say)
+            for line in _imapsync_line(old_server, new_server, address):
+                say(line)
     return done
 
 
-def _imapsync_line(old, new, address, password):
-    """The command to copy one account's mail across, ready to paste, with the password that was just set."""
+def _imapsync_line(old, new, address, password=None):
+    """The command to copy one account's mail across, ready to paste. The password is the account's own, which
+    the customer has and this tool never keeps, so it is left to fill in."""
+    secret = shlex.quote(password) if password else "'THE-PASSWORD-OF-THIS-ACCOUNT'"
     return "\n".join(["imapsync \\"] + [
         "  --host%s %s --user%s %s \\" % (n, shlex.quote(host), n, shlex.quote(address))
-        + "\n  --password%s %s --ssl%s%s" % (n, shlex.quote(password), n, end)
+        + "\n  --password%s %s --ssl%s%s" % (n, secret, n, end)
         for n, host, end in ((1, old, " \\"), (2, new, ""))]).splitlines()
 
 
@@ -3267,9 +3235,8 @@ def report(result, connection=None, old_server=None, found_sites=None,
     domains = [item.get("name") or "" for item, _ in moved
                if item.get("kind") == "mail_domain"]
     if passwords:
-        _section(out, "New mail passwords, set in this run:",
-                 _bullets("%s  %s" % (address, password) for address, password in passwords))
-        out.extend([""] + textwrap.wrap(PASSWORDS_ONLY_NOW, _WIDTH))
+        _section(out, "Accounts that now open with the same password on both servers:",
+                 _bullets(passwords))
     dns_said = False
     for domain in domains:
         text, why = _ask_dns(connection, domain) if connection else (None, None)
@@ -3858,7 +3825,8 @@ PICK_PROMPT = 'Numbers to do their next step (a for all of them; Enter for none)
 LIVE_PROMPT = ("Type a customer's number to open it, a to do the next step of every "
                "customer, q to leave: ")
 LIVE_HELP = ('A number opens that customer and asks what to do for it: its mail, its '
-             'website, its cron jobs, everything that is left, or new mail passwords. '
+             'website, its cron jobs, everything that is left, or giving an account its own '
+             'password on the new server. '
              'a does the next step of every customer, r looks around again, q leaves. '
              '"3 all" does everything one customer has left without opening it.')
 

@@ -304,61 +304,97 @@ def test_i_and_p_take_a_number_and_say_so_when_they_do_not():
     assert "I don't understand: banana" in said[-1]
 
 
-# ---- new passwords ----------------------------------------------------------
+# ---- the password of an account that already exists -------------------------
 
-def test_new_passwords_are_set_through_the_new_server_and_shown_once():
-    items = _one_customer()
-    status = _status(**{"mail:example.nl": "new", "site:example.nl": "new"})
-    row = migrate.customers(items, status)[0]
+import crypt as _crypt
+
+_REAL = "{SHA256-CRYPT}" + _crypt.crypt("HetEchteW8woord", _crypt.mksalt(_crypt.METHOD_SHA256))
+
+
+def test_the_password_is_checked_against_what_this_server_already_has():
+    """The hash carries its own salt, so the right password hashes to the same thing and a wrong one does not."""
+    assert migrate.password_fits("HetEchteW8woord", _REAL)
+    assert not migrate.password_fits("ietsAnders", _REAL)
+    assert not migrate.password_fits("HetEchteW8woord", None)
+    assert not migrate.password_fits("HetEchteW8woord", "{CRAM-MD5}nonsense")
+
+
+def test_without_the_crypt_module_doveadm_does_the_checking(monkeypatch):
+    """Python 3.13 took crypt out, and an old server may be newer than this tool."""
+    monkeypatch.setattr(migrate, "crypt", None)
+    seen = {}
+
+    def fake_run(*words, **kwargs):
+        seen["words"], seen["stdin"] = words, kwargs.get("stdin")
+        return ""
+    assert migrate.password_fits("HetEchteW8woord", _REAL, run=fake_run)
+    assert seen["words"] == ("doveadm", "pw", "-t", _REAL)
+    assert seen["stdin"] == "HetEchteW8woord\n"  # on standard input, never in the words of a command
+
+    def fake_fail(*words, **kwargs):
+        raise migrate.CommandFailed("password mismatch")
+    assert not migrate.password_fits("ietsAnders", _REAL, run=fake_fail)
+
+
+def test_a_wrong_password_changes_nothing_and_asks_again():
+    connection, said, asked = Connection(), [], ["ietsAnders", "HetEchteW8woord"]
+    got = migrate.give_password(connection, "a0@a.nl", _REAL, said.append, lambda prompt: asked.pop(0))
+    assert got is True and not asked
+    assert "not the password this server has for a0@a.nl" in " ".join(said)
+    assert [r["request"] for r in connection.requests] == ["password"]  # only after it fitted
+    assert connection.requests[0]["password"] == "HetEchteW8woord"
+
+
+def test_enter_leaves_an_account_alone():
     connection, said = Connection(), []
-    made = migrate.set_passwords(connection, row, said.append)
-    assert [address for address, _ in made] == ["a0@example.nl", "a1@example.nl"]
-    assert [request["request"] for request in connection.requests] == ["password", "password"]
-    assert [request["address"] for request in connection.requests] == ["a0@example.nl", "a1@example.nl"]
-    for request, (address, password) in zip(connection.requests, made):
-        assert request["password"] == password and len(password) == 16
+    assert migrate.give_password(connection, "a0@a.nl", _REAL, said.append, lambda prompt: "") is False
+    assert connection.requests == []
+
+
+def test_the_customers_accounts_are_asked_for_one_by_one(monkeypatch):
+    row = migrate.customers(_one_customer(), _status(**{"mail:example.nl": "new", "site:example.nl": "new"}))[0]
+    connection, said = Connection(), []
+    monkeypatch.setattr(migrate, "_stored_hash", lambda address, database, run=None: _REAL)
+    monkeypatch.setattr(migrate, "_typed_password", lambda prompt: "HetEchteW8woord")
+    done = migrate.set_passwords(connection, row, said.append, database="mailserver",
+                                 old_server="old.nl", new_server="new.nl")
+    assert done == ["a0@example.nl", "a1@example.nl"]
     text = " ".join(said)
-    assert "New mail passwords for example.nl:" in text
-    assert all(password in text for _, password in made)
-    assert "shown only now" in text
+    assert "no new password is made up" in text and "HetEchteW8woord" not in text
+    assert "imapsync \\" in text and "THE-PASSWORD-OF-THIS-ACCOUNT" in text
 
 
-def test_a_password_is_never_in_a_command_and_never_in_the_notes(tmp_path, monkeypatch):
+def test_an_account_this_server_has_no_password_for_is_said_and_skipped(monkeypatch):
     row = migrate.customers([_mail("a.nl")], _status(**{"mail:a.nl": "new"}))[0]
-    connection = Connection()
-    state = _notes(tmp_path)
-    made = migrate.set_passwords(connection, row, lambda text: None)
+    connection, said = Connection(), []
+    monkeypatch.setattr(migrate, "_stored_hash", lambda address, database, run=None: None)
+    assert migrate.set_passwords(connection, row, said.append, database="mailserver") == []
+    assert "no password stored" in " ".join(said) and connection.requests == []
+
+
+def test_the_password_never_reaches_a_command_a_note_or_the_report(tmp_path, monkeypatch):
+    row = migrate.customers([_mail("a.nl")], _status(**{"mail:a.nl": "new"}))[0]
+    connection, state = Connection(), _notes(tmp_path)
+    monkeypatch.setattr(migrate, "_stored_hash", lambda address, database, run=None: _REAL)
+    monkeypatch.setattr(migrate, "_typed_password", lambda prompt: "HetEchteW8woord")
+    done = migrate.set_passwords(connection, row, lambda text: None, database="mailserver")
     state.save()
-    assert made and made[0][1] not in open(state.path).read()
+    assert done and "HetEchteW8woord" not in open(state.path).read()
+    result = migrate.Report()
+    result.moved = [(_mail("a.nl"), {})]
+    text = migrate.report(result, passwords=done)
+    assert "Accounts that now open with the same password on both servers:" in text
+    assert "a0@a.nl" in text and "HetEchteW8woord" not in text
     # the new server's half pipes it into mailctl's standard input, never into an argument
     from migrate import migratectl
     ran = []
     monkeypatch.setattr(migratectl, "_run",
                         lambda command, what, stdin=None, **more: ran.append((command, stdin)) or "")
-    answer = migratectl.password({"request": "password", "address": "a0@a.nl", "password": "sixteenletters12"})
-    assert answer["ok"] is True
+    assert migratectl.password({"address": "a0@a.nl", "password": "HetEchteW8woord"})["ok"] is True
     assert ran == [(["mailctl", "address", "password", "a0@a.nl", "--password-stdin"],
-                    "sixteenletters12\n")]
-    assert migratectl.password({"address": "not an address", "password": "x" * 16})["ok"] is False
+                    "HetEchteW8woord\n")]
+    assert migratectl.password({"address": "not an address", "password": "x"})["ok"] is False
     assert migratectl.password({"address": "a0@a.nl", "password": ""})["ok"] is False
-
-
-def test_a_password_has_nothing_in_it_that_reads_two_ways():
-    for _ in range(20):
-        password = migrate.new_password()
-        assert len(password) == 16
-        assert not set(password) & set("l1IO0")
-        assert password.isalnum()
-
-
-def test_the_new_passwords_are_in_the_report():
-    result = migrate.Report()
-    result.moved = [(_mail("a.nl"), {})]
-    text = migrate.report(result, passwords=[("a0@a.nl", "Kw7mRt2xPqL9sVbn")])
-    assert "New mail passwords, set in this run:" in text
-    assert "a0@a.nl  Kw7mRt2xPqL9sVbn" in text
-    assert "shown only now" in " ".join(text.split())
-    assert all(len(line) <= 79 for line in text.splitlines())
 
 
 # ---- what it costs to draw the screen ---------------------------------------
@@ -439,50 +475,15 @@ def test_p_at_the_prompt_sets_the_passwords_and_the_report_says_them(monkeypatch
     items = [_mail("a.nl", accounts=2)]
     connection, state = _wired(monkeypatch, items, _status(**{"mail:a.nl": "new"}), ["p 1", "1 all", "q"],
                                tmp_path)
-    monkeypatch.setattr(migrate, "_question", lambda *a, **k: True)
-    here = []
-    monkeypatch.setattr(migrate, "password_here",
-                        lambda address, password, database, run=None: here.append((address, password)))
+    monkeypatch.setattr(migrate, "_stored_hash", lambda address, database, run=None: _REAL)
+    monkeypatch.setattr(migrate, "_typed_password", lambda prompt: "HetEchteW8woord")
     migrate._live(migrate._arguments([]), connection, state, [])
     text = capsys.readouterr().out
     assert [r["request"] for r in connection.requests].count("password") == 2
-    assert "New mail passwords for a.nl:" in text
-    assert "New mail passwords, set in this run:" in text  # and again in the report of the move
-    assert len(here) == 2  # and the same password is set on this server too, or no copy can log in here
-    assert [address for address, _ in here] == [address for address, _ in
-                                                sorted(here, key=lambda pair: pair[0])]
+    assert "no new password is made up" in text
+    assert "Accounts that now open with the same password on both servers:" in text  # in the report too
+    assert "HetEchteW8woord" not in text  # the customer's own password is never printed back
+    # The imapsync lines need both servers' names, which this fixture has not got; they are covered by
+    # test_the_customers_accounts_are_asked_for_one_by_one.
 
 
-def test_a_new_password_is_hashed_the_way_this_server_keeps_it():
-    """Dovecot reads the {SCHEME} in front of the hash, so the label has to match what was made."""
-    for scheme, start in (("SHA512-CRYPT", "$6$"), ("SHA256-CRYPT", "$5$"), ("BLF-CRYPT", "$6$")):
-        hashed = migrate.hash_here("Pr0efW8woord", scheme)
-        label = "SHA512-CRYPT" if scheme == "BLF-CRYPT" else scheme  # one it cannot make falls back
-        assert hashed.startswith("{%s}%s" % (label, start)), hashed
-
-
-def test_without_the_crypt_module_openssl_does_the_hashing(monkeypatch):
-    """Python 3.13 took crypt out, and an old server may well be newer than this tool."""
-    monkeypatch.setattr(migrate, "crypt", None)
-    seen = {}
-
-    def fake_run(*words, **kwargs):
-        seen["words"], seen["stdin"] = words, kwargs.get("stdin")
-        return "$6$Zout$Hasj\n"
-    assert migrate.hash_here("Pr0efW8woord", "SHA512-CRYPT", run=fake_run) == "{SHA512-CRYPT}$6$Zout$Hasj"
-    assert seen["words"] == ("openssl", "passwd", "-6", "-stdin")
-    assert seen["stdin"] == "Pr0efW8woord\n"  # on standard input, never in the words of a command
-
-
-def test_the_password_on_this_server_goes_in_over_standard_input():
-    """ps shows every argument to every user, so neither the password nor its hash may be one."""
-    runs = []
-
-    def fake_run(*words, **kwargs):
-        runs.append((words, kwargs.get("stdin")))
-        return "{SHA256-CRYPT}$5$oud$hasj\n" if "SELECT" in (kwargs.get("stdin") or "") else ""
-    migrate.password_here("info@a.nl", "Pr0efW8woord", "mailserver", run=fake_run)
-    assert all("Pr0efW8woord" not in " ".join(words) for words, _ in runs)
-    assert any("UPDATE virtual_users SET password=" in (stdin or "") for _, stdin in runs)
-    assert runs[-1][0][:2] == ("mysql", "--batch") and "info@a.nl" in runs[-1][1]
-    assert "{SHA256-CRYPT}" in runs[-1][1]  # kept in the scheme this server already uses
