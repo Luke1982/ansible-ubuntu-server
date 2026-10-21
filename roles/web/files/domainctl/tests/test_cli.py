@@ -97,10 +97,14 @@ def test_add_makes_the_user_and_directories_before_the_domain_points_here(server
     result = run("add", "example.nl", "--no-dns")
 
     assert result.exit_code == 0, result.output
-    assert "isn't this server" in result.output and "no certificate and no site yet" in result.output
-    assert f"put the site's files in {server.docroot_of('example')}" in result.output
+    assert "isn't this server" in result.output and "no certificate from it yet" in result.output
+    assert f"Put the site's files in {server.docroot_of('example')}" in result.output
     assert server.docroot_of("example").is_dir() and server.logs_of("example").is_dir()
-    assert sites.list_sites(server) == [], "the virtual host waits for the domain"
+    # The whole site is here, not a Linux user and some directories nothing knows about: nothing can reach it
+    # over that name until the DNS moves, so the certificate it is served with is one signed here.
+    assert sites.list_sites(server) == [Site("example", "example.nl")]
+    assert certbot.made_here(server.letsencrypt_dir, "example")
+    assert "no browser trusts" in result.output
 
 
 def test_add_finishes_the_site_once_the_domain_points_here(server, monkeypatch):
@@ -173,13 +177,15 @@ def test_state_says_absent_when_nothing_of_the_site_is_here(server):
     assert result.output.split() == ["absent"]
 
 
-def test_state_says_made_for_a_site_that_is_still_waiting_for_its_dns(server, monkeypatch):
-    """What a migration needs to know: the site is here, although no virtual host is saved for it yet."""
+def test_state_says_made_for_a_site_with_its_directories_and_no_virtual_host(server, monkeypatch):
+    """What a migration needs to know. add writes the virtual host now, so this is a site from an older
+    version, or one whose virtual host could not be written."""
     monkeypatch.setattr(_Resolver, "answers", {"example.nl": {ip_address("45.87.2.9")}})
     run("add", "example.nl", "--no-dns")
     monkeypatch.setattr(users, "exists", lambda name: name == "example")
+    sites.remove(server, "example")
 
-    assert sites.list_sites(server) == [], "the virtual host waits for the domain"
+    assert sites.list_sites(server) == []
     assert run("state", "example").output.split() == ["made"]
 
 
@@ -372,9 +378,9 @@ def test_without_yes_and_without_a_terminal_the_move_is_only_named(server, monke
 
     assert result.exit_code == 0, result.output
     assert "Add --yes to move it at TransIP without being asked." in result.output
-    assert "no certificate and no site yet" in result.output
+    assert "no certificate from it yet" in result.output
     assert server.docroot_of("example").is_dir(), "the directories are made all the same"
-    assert sites.list_sites(server) == []
+    assert sites.list_sites(server) == [Site("example", "example.nl")]
 
 
 def test_repair_finishes_a_site_and_takes_its_name_as_well(server, monkeypatch):
@@ -428,12 +434,13 @@ def test_dns_publish_points_a_domain_here_without_setting_the_site_up(server, mo
     assert sites.list_sites(server) == [], "it only touches the DNS"
 
 
-def test_list_shows_a_site_whose_domain_does_not_point_here_yet(server, monkeypatch):
-    """Its files are here and its virtual host is not, so without this line it is invisible: on the server and
-    in no list."""
+def test_list_shows_a_site_that_has_its_directories_and_no_virtual_host(server, monkeypatch):
+    """A site from an older version, or one whose virtual host could not be written: on the server and in no
+    list, until this line."""
     monkeypatch.setattr(_Resolver, "answers", {"example.nl": {ip_address("45.87.2.9")}})
     run("add", "example.nl", "--no-dns")
-    assert sites.list_sites(server) == [], "the virtual host waits for the domain"
+    sites.remove(server, "example")
+    assert sites.list_sites(server) == []
 
     result = run("list")
 

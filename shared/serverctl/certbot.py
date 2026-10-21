@@ -13,6 +13,9 @@ from .errors import CtlError
 # Certbot renews 30 days before the end, so less than this means renewing fails.
 EXPIRY_WARNING_DAYS = 14
 _FILES = ("fullchain.pem", "privkey.pem")
+# A certificate domainctl made itself, so a site can be served before its domain points here. The marker is
+# what tells it apart from a real one, so certbot replaces it instead of refusing the directory.
+_OURS = ".made-here"
 
 
 @dataclass(frozen=True)
@@ -32,10 +35,32 @@ def exists(letsencrypt_dir: Path, cert_name: str) -> bool:
 
 
 def is_placeholder(letsencrypt_dir: Path, cert_name: str) -> bool:
-    """Whether the certificate is the empty files the mail role puts there, so Dovecot starts before certbot has
-    run. They are plain files, where certbot's are links."""
+    """Whether what is there is standing in for a real certificate: the empty files the mail role puts there so
+    Dovecot starts, or one domainctl signed itself so a site could be served before its domain pointed here.
+    Certbot's own are links, and neither of these is."""
     paths = [live(letsencrypt_dir, cert_name) / file for file in _FILES]
-    return all(path.is_file() and not path.is_symlink() and path.stat().st_size == 0 for path in paths)
+    if not all(path.is_file() and not path.is_symlink() for path in paths):
+        return False
+    return all(path.stat().st_size == 0 for path in paths) or made_here(letsencrypt_dir, cert_name)
+
+
+def made_here(letsencrypt_dir: Path, cert_name: str) -> bool:
+    """Whether the certificate there is one we signed ourselves, waiting for the real one."""
+    return (live(letsencrypt_dir, cert_name) / _OURS).is_file()
+
+
+def sign_here(letsencrypt_dir: Path, cert_name: str, names: Sequence[str]) -> None:
+    """Signs a certificate for those names here, so OpenLiteSpeed has files to load and the site is served
+    while its domain still points somewhere else. A browser will not trust it; certbot replaces it with the
+    real one as soon as the domain points here."""
+    directory = live(letsencrypt_dir, cert_name)
+    directory.mkdir(parents=True, exist_ok=True)
+    alt = ",".join("DNS:%s" % name for name in names)
+    system.run("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "3650", "-sha256",
+               "-keyout", str(directory / "privkey.pem"), "-out", str(directory / "fullchain.pem"),
+               "-subj", "/CN=%s" % names[0], "-addext", "subjectAltName=%s" % alt)
+    (directory / "privkey.pem").chmod(0o600)
+    (directory / _OURS).write_text("Signed by domainctl, waiting for the DNS. Certbot replaces it.\n")
 
 
 @contextmanager
@@ -45,15 +70,28 @@ def placeholders_aside(letsencrypt_dir: Path, cert_name: str) -> Iterator[None]:
     if not is_placeholder(letsencrypt_dir, cert_name):
         yield
         return
+    ours = made_here(letsencrypt_dir, cert_name)
     paths = [live(letsencrypt_dir, cert_name) / file for file in _FILES]
+    kept = [(path, path.read_bytes()) for path in paths] if ours else []
     for path in paths:
         path.unlink()
+    if ours:
+        (live(letsencrypt_dir, cert_name) / _OURS).unlink()
     try:
         yield
     finally:
         if not exists(letsencrypt_dir, cert_name):
-            for path in paths:
-                path.touch()
+            # Certbot made none, so what was standing in goes back: a site that was being served keeps being
+            # served, and Dovecot still starts.
+            for path, kept_bytes in kept:
+                path.write_bytes(kept_bytes)
+            if ours:
+                (live(letsencrypt_dir, cert_name) / _OURS).write_text(
+                    "Signed by domainctl, waiting for the DNS. Certbot replaces it.\n")
+                (live(letsencrypt_dir, cert_name) / "privkey.pem").chmod(0o600)
+            else:
+                for path in paths:
+                    path.touch()
 
 
 def webroots(letsencrypt_dir: Path, cert_name: str) -> dict[str, Path]:

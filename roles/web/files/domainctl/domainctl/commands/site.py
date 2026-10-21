@@ -46,11 +46,22 @@ def add(domain: Domain = None, user: UserOption = None, no_dns: NoDns = False,
         _make_home(config, Site(name, domain), existing_user)
         checked = _check_names(session, domain, no_dns, yes)
         if not checked[0].ready:
-            # The files can be put in place meanwhile; the virtual host and the certificate wait for the DNS.
-            ui.warn(f"{checked[0].detail} Let's Encrypt checks the same thing, so there is no certificate and no "
-                    f"site yet.")
-            ui.note(f"The directories are ready: put the site's files in {config.docroot_of(name)}. Point {domain} "
-                    f"at {_addresses(session)} and run the same command again to finish.")
+            # The domain still points somewhere else, so Let's Encrypt cannot check it and there is no real
+            # certificate yet. The site is made all the same, with one signed here: nothing can reach it over
+            # that name until the DNS moves, and this way it is a whole site on this server rather than a
+            # Linux user and some directories that nothing knows about.
+            site = Site(name, domain)
+            if not certificates.exists(config, name) or certbot.made_here(config.letsencrypt_dir, name):
+                certbot.sign_here(config.letsencrypt_dir, name, [domain])
+            if sites.save(config, site):
+                openlitespeed.restart(config.ols_root)
+            ui.warn(f"{checked[0].detail} Let's Encrypt checks the same thing, so there is no certificate from "
+                    f"it yet.")
+            ui.success(f"{domain} is set up and served from {config.docroot_of(name)}, with a certificate "
+                       f"signed here that no browser trusts.")
+            ui.note(f"Put the site's files in {config.docroot_of(name)}. Point {domain} at "
+                    f"{_addresses(session)} and run the same command again: it then gets its real "
+                    f"certificate and takes www along.")
             return
         site = Site(name, domain, tuple(found.name for found in checked[1:] if found.ready))
         if sites.save(config, site):
