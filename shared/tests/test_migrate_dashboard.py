@@ -1,8 +1,20 @@
+import os
+import pty
+import re
+import select
+import subprocess
+import sys
 import types
 
 import pytest
 
 from migrate import migrate
+
+
+@pytest.fixture(autouse=True)
+def notes_in_a_place_of_their_own(monkeypatch, tmp_path):
+    """No test writes the real /var/lib/migrate/state.json."""
+    monkeypatch.setattr(migrate, "STATE_PATH", str(tmp_path / "state.json"))
 
 
 def _site(name, size=None, database="db1"):
@@ -230,7 +242,8 @@ def test_each_subcommand_reaches_its_own_work_and_nothing_else(monkeypatch, caps
     monkeypatch.setattr(migrate, "Connection", lambda host: object())
     monkeypatch.setattr(migrate, "check", lambda connection, show_key=True: calls.append("check") or
                         {"server": "web03", "tools": {"mailctl": True, "domainctl": True}, "version": 2})
-    monkeypatch.setattr(migrate, "State", lambda: calls.append("state") or types.SimpleNamespace())
+    monkeypatch.setattr(migrate, "State", lambda: calls.append("state") or types.SimpleNamespace(
+        server=None, items={}, save=lambda: None))
     monkeypatch.setattr(migrate, "_list", lambda *a, **k: calls.append("list"))
     result = migrate.Report()
     monkeypatch.setattr(migrate, "_work", lambda args, *a, **k: calls.append(
@@ -241,10 +254,13 @@ def test_each_subcommand_reaches_its_own_work_and_nothing_else(monkeypatch, caps
     assert calls == ["key"] and "ssh-ed25519 AAAA" in capsys.readouterr().out
     del calls[:]
     assert migrate.main(["check", "--host", "new"], geteuid=root) == 0
-    assert calls == ["key", "check"] and "web03" in capsys.readouterr().out
+    assert calls == ["state", "key", "check"] and "web03" in capsys.readouterr().out
+    del calls[:]
+    assert migrate.main(["forget"], geteuid=root) == 0
+    assert calls == ["state"] and "nothing to forget" in capsys.readouterr().out
     del calls[:]
     assert migrate.main(["list", "--host", "new"], geteuid=root) == 0
-    assert calls == ["key", "check", "state", "list"]
+    assert calls == ["state", "key", "check", "list"]
     assert "ssh-ed25519" not in capsys.readouterr().out  # the key is for `key` and for a refused login only
     del calls[:]
     assert migrate.main(["move", "1-3", "5", "--host", "new"], geteuid=root) == 0
@@ -258,11 +274,25 @@ def test_each_subcommand_reaches_its_own_work_and_nothing_else(monkeypatch, caps
     capsys.readouterr()
 
 
-def test_bare_migrate_prints_the_help_and_does_nothing(capsys):
-    assert migrate.main([], geteuid=lambda: 1) == 0
+def test_the_help_still_lists_every_command(capsys):
+    with pytest.raises(SystemExit):
+        migrate.main(["--help"])
     text = capsys.readouterr().out
-    for word in ("key", "check", "list", "move", "again", "report"):
+    for word in ("key", "check", "list", "move", "again", "report", "forget"):
         assert word in text
+
+
+def test_the_bare_command_is_the_live_dashboard_and_not_the_help(monkeypatch, capsys):
+    """Nothing is typed, so it draws the dashboard and leaves at the end of the input."""
+    calls = []
+    monkeypatch.setattr(migrate, "own_key", lambda *a: "ssh-ed25519 AAAA migrate")
+    monkeypatch.setattr(migrate, "Connection", lambda host: object())
+    monkeypatch.setattr(migrate, "check", lambda connection, show_key=True: {"version": 2})
+    monkeypatch.setattr(migrate, "_live", lambda *a, **k: calls.append("live"))
+    monkeypatch.setattr(migrate, "_work", lambda *a, **k: calls.append("work"))
+    monkeypatch.setattr(migrate, "_typed", lambda prompt: "web03.example.nl")
+    assert migrate.main([], geteuid=lambda: 0) == 0
+    assert calls == ["live"] and "usage:" not in capsys.readouterr().out
 
 
 def test_a_move_says_what_was_picked_and_what_will_happen_before_it_asks(capsys):
@@ -628,7 +658,7 @@ def test_an_interrupted_run_prints_its_report_and_exits_non_zero(monkeypatch, ca
     monkeypatch.setattr(migrate, "own_key", lambda *a: "ssh-ed25519 AAAA migrate")
     monkeypatch.setattr(migrate, "Connection", lambda host: object())
     monkeypatch.setattr(migrate, "check", lambda connection, show_key=True: {})
-    monkeypatch.setattr(migrate, "State", lambda: types.SimpleNamespace())
+    monkeypatch.setattr(migrate, "State", lambda: types.SimpleNamespace(server="new", items={}))
     monkeypatch.setattr(migrate, "_work", lambda *a: result)
     assert migrate.main(["move", "--host", "new"], geteuid=lambda: 0) == 1
     assert "You stopped the run" in capsys.readouterr().out
@@ -694,3 +724,161 @@ def test_a_section_title_in_the_report_is_wrapped_to_the_width():
     migrate._section(out, "Catch-all addresses and aliases that could not be moved. Set them up on the new "
                      "server by hand:", ["  - x"])
     assert all(len(line) <= 79 for line in out) and len(out) > 3
+
+
+def _live_state(tmp_path):
+    return migrate.State(path=str(tmp_path / "state.json"), say=lambda text: None)
+
+
+def test_the_bare_command_stays_up_a_move_a_look_again_and_then_quit(monkeypatch, capsys, tmp_path):
+    """One process: it moves what was picked, prints that move's report, draws the list again and asks again."""
+    items = [_mail("a.nl"), _mail("b.nl")]
+    connection, state = _wired(monkeypatch, ["yes"] * 4, state=_live_state(tmp_path), items=items)
+    prompts, typed = [], ["1", "r", "q"]
+    monkeypatch.setattr(migrate, "_typed_line", lambda prompt: prompts.append(prompt) or typed.pop(0))
+    result = migrate._live(migrate._arguments([]), connection, state, [])
+    text = capsys.readouterr().out
+    assert len(prompts) == 3 and not typed  # it did not leave after the move
+    assert text.count("MAIL") == 3  # the first list, the one after the move, and the one r asked for
+    assert "Report" in text and [item["name"] for item, _ in result.moved] == ["a.nl"]
+    assert "q to leave" in prompts[0] and "r to look again" in prompts[0]
+    assert state.entry(items[0]).get("status") == "moved"
+
+
+def test_the_live_prompt_leaves_at_the_end_of_the_input_and_at_q(monkeypatch, capsys):
+    for answer in (None, "q"):
+        connection, state = _wired(monkeypatch, [])
+        monkeypatch.setattr(migrate, "_typed_line", lambda prompt: answer)
+        assert migrate._live(migrate._arguments([]), connection, state, []) is None
+        assert "MAIL" in capsys.readouterr().out
+        assert [r for r in connection.requests if r["request"] != "status"] == []
+
+
+def test_the_live_prompt_says_what_it_takes_when_nothing_is_typed(monkeypatch, capsys):
+    connection, state = _wired(monkeypatch, [])
+    answers = ["", None]
+    monkeypatch.setattr(migrate, "_typed_line", lambda prompt: answers.pop(0))
+    migrate._live(migrate._arguments([]), connection, state, [])
+    assert "r to look around again" in " ".join(capsys.readouterr().out.split())
+
+
+def test_the_new_server_is_asked_for_once_remembered_and_forgotten(monkeypatch, capsys):
+    asked, seen = [], []
+    monkeypatch.setattr(migrate, "_typed", lambda prompt: asked.append(prompt) or "web03.example.nl")
+    monkeypatch.setattr(migrate, "own_key", lambda *a: "ssh-ed25519 AAAA migrate")
+    monkeypatch.setattr(migrate, "Connection", lambda host: seen.append(host) or object())
+    monkeypatch.setattr(migrate, "check", lambda connection, show_key=True: {"version": 2})
+    monkeypatch.setattr(migrate, "_list", lambda *a, **k: None)
+    root = lambda: 0
+
+    def remembered():
+        return migrate.State(path=migrate.STATE_PATH, say=lambda text: None).server
+
+    assert migrate.main(["list"], geteuid=root) == 0
+    assert len(asked) == 1 and seen == ["web03.example.nl"] and remembered() == "web03.example.nl"
+    assert migrate.main(["list"], geteuid=root) == 0
+    assert len(asked) == 1 and seen[-1] == "web03.example.nl"  # not asked a second time
+    assert migrate.main(["list", "--host", "web04.example.nl"], geteuid=root) == 0
+    assert len(asked) == 1 and seen[-1] == "web04.example.nl" and remembered() == "web04.example.nl"
+    assert migrate.main(["forget"], geteuid=root) == 0
+    assert remembered() is None and "forgotten web04.example.nl" in capsys.readouterr().out
+    assert migrate.main(["list"], geteuid=root) == 0
+    assert len(asked) == 2  # forgotten, so it asks again
+
+
+def test_notes_that_cannot_keep_the_server_name_say_so_and_carry_on(monkeypatch, capsys):
+    def broken():
+        raise migrate.MoveFailed("I couldn't write my notes in /var/lib/migrate (read-only).")
+
+    state = types.SimpleNamespace(server=None, items={}, save=broken)
+    assert migrate._server_name(migrate._arguments(["list", "--host", "new"]), state) == "new"
+    text = " ".join(capsys.readouterr().out.split())
+    assert "couldn't write my notes" in text and "ask for the new server again next time" in text
+
+
+def test_the_host_can_come_before_or_after_the_command():
+    assert migrate._arguments(["--host", "a", "list"]).host == "a"
+    assert migrate._arguments(["list", "--host", "b"]).host == "b"
+    assert migrate._arguments(["--host", "a", "list", "--host", "b"]).host == "b"
+    assert migrate._arguments(["--no-colour", "list"]).no_colour is True
+    assert migrate._arguments(["list", "--no-colour"]).no_colour is True
+    assert migrate._arguments(["list"]).no_colour is False
+    assert migrate._arguments([]).host is None and migrate._arguments([]).command is None
+
+
+# ---- colour, against a real terminal ----------------------------------------
+
+_DRIVER = """
+import sys, types
+sys.path.insert(0, %r)
+from migrate import migrate
+
+ITEMS = [{"id": "mail:a.nl", "kind": "mail_domain", "name": "a.nl",
+          "data": {"addresses": [{"address": "info@a.nl"}], "forwards": []}}]
+STATUS = {"ok": True, "items": {"mail:a.nl": {"state": "new", "detail": "a.nl is not on this server yet."}}}
+migrate.own_key = lambda *a: "ssh-ed25519 AAAA migrate"
+migrate.State = lambda: types.SimpleNamespace(server="web03.example.nl", items={}, save=lambda: None,
+                                             entry=lambda item: {}, outstanding=lambda item: False)
+migrate.Connection = lambda host: types.SimpleNamespace(host=host, user="ansible",
+                                                        ask=lambda request: STATUS)
+migrate.check = lambda connection, show_key=True: {"version": migrate.PROTOCOL_VERSION, "server": "web03"}
+migrate._look_around = lambda args, notes: (None, None, [], {}, ITEMS)
+sys.exit(migrate.main(sys.argv[1:], geteuid=lambda: 0))
+"""
+
+_SGR = re.compile(r"\x1b\[[0-9;]*m")  # colour; the loader's \r and \x1b[K are not colour
+
+
+def _driver(tmp_path):
+    path = tmp_path / "live_driver.py"
+    path.write_text(_DRIVER % str(os.path.dirname(os.path.dirname(migrate.__file__))))
+    return str(path)
+
+
+def _in_a_terminal(driver, words=(), env=None):
+    """Runs the driver with a real terminal for its input and output, types q, and gives what it printed."""
+    master, slave = pty.openpty()
+    process = subprocess.Popen([sys.executable, driver] + list(words), stdin=slave, stdout=slave, stderr=slave,
+                               env=dict(os.environ, **(env or {})))
+    os.close(slave)
+    os.write(master, b"q\n")
+    out = b""
+    while True:
+        if not select.select([master], [], [], 20)[0]:
+            break
+        try:
+            piece = os.read(master, 65536)
+        except OSError:
+            break  # the child is gone and the terminal is closed
+        if not piece:
+            break
+        out += piece
+    os.close(master)
+    assert process.wait(timeout=20) == 0
+    return out.decode("utf-8", "replace")
+
+
+def _piped(driver, words=(), env=None):
+    done = subprocess.run([sys.executable, driver] + list(words), input=b"q\n", stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, env=dict(os.environ, **(env or {})))
+    assert done.returncode == 0, done.stderr
+    return done.stdout.decode("utf-8", "replace")
+
+
+def test_the_colour_is_really_there_on_a_terminal(tmp_path):
+    text = _in_a_terminal(_driver(tmp_path))
+    assert "MAIL" in text and "a.nl" in text
+    assert "\x1b[1mNo." in text  # the heads of the table
+    assert "\x1b[1m   1" in text or "\x1b[1m  1" in text  # and the number of a row that can be moved
+    assert "\x1b[2m" in text  # and what the new server has
+    assert "\x1b[1mWhat now?" in text  # the live prompt itself
+
+
+@pytest.mark.parametrize("words, env", [((), {"NO_COLOR": "1"}), (("--no-colour",), {})])
+def test_the_colour_goes_away_when_it_is_turned_off(tmp_path, words, env):
+    assert not _SGR.search(_in_a_terminal(_driver(tmp_path), words, env))
+
+
+def test_nothing_is_painted_when_the_output_is_piped(tmp_path):
+    text = _piped(_driver(tmp_path))
+    assert "MAIL" in text and not _SGR.search(text)

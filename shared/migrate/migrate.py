@@ -1136,6 +1136,14 @@ def use_colour(stream=None):
         return False
 
 
+def _wanted_colour(args=None, stream=None):
+    """Whether what is printed gets colour: not with --no-colour, not with
+    NO_COLOR, and not when the output is piped into something else."""
+    if getattr(args, "no_colour", False):
+        return False
+    return use_colour(stream)
+
+
 def _paint(text, style, on):
     if not on or not text or style is None:
         return text
@@ -2063,18 +2071,18 @@ class State(object):
     made but never filled is only known from here, because the new server
     already calls it 'there'."""
 
-    def __init__(self, path=STATE_PATH, say=print):
-        self.path, self.say, self.items = path, say, {}
-        self.server = None  # the new server's name, kept for `report`
+    def __init__(self, path=None, say=print):
+        self.path, self.say, self.items = path or STATE_PATH, say, {}
+        self.server = None  # the new server's name, so it is asked for once
         try:
-            with open(path, encoding="utf-8") as handle:
+            with open(self.path, encoding="utf-8") as handle:
                 data = json.load(handle)
         except (FileNotFoundError, NotADirectoryError):
             return
         except (OSError, ValueError):
             say("I couldn't read my notes in %s, so I start without them. A "
                 "site made earlier but never filled will show as already on "
-                "the new server." % path)
+                "the new server." % self.path)
             return
         if isinstance(data, dict) and isinstance(data.get("server"), str):
             self.server = data["server"]
@@ -2084,7 +2092,7 @@ class State(object):
         else:
             say("My notes in %s are not in a form I know, so I start without "
                 "them. A site made earlier but never filled will show as "
-                "already on the new server." % path)
+                "already on the new server." % self.path)
 
     def entry(self, item):
         return self.items.get(item.get("id"), {})
@@ -2681,7 +2689,8 @@ def report(result, connection=None, old_server=None, found_sites=None,
 
 # ---- Running it ---------------------------------------------------------------
 
-HELP_DESCRIPTION = """Moves the mail, WordPress sites and cron jobs of this server to a new one.
+HELP_DESCRIPTION = """Moves the mail, the mail messages, the WordPress sites and the cron jobs of
+this server to a new one.
 
 How to use it:
   1. Copy this one file to the OLD server, for example from your own machine:
@@ -2690,10 +2699,14 @@ How to use it:
        python3 migrate.py key
      Paste that line into /home/ansible/.ssh/authorized_keys on the new
      server (once).
-  3. See what it found and what the new server already has:
-       python3 migrate.py list --host NEW-SERVER
-  4. Move what you pick, by the numbers on that list:
-       python3 migrate.py move 1-3 --host NEW-SERVER
+  3. On the old server, as root, run it:
+       python3 migrate.py
+     It asks for the new server's name the first time and remembers it. It
+     shows what is here and what the new server already has, and then stays
+     up: type the numbers to move, r to look around again, q to leave.
+
+The commands below do one thing each and stop, which is what a script wants;
+each takes --help of its own. --no-colour leaves the colour off.
 
 What it needs on the old server: Python 3.6 or newer, the ssh and ssh-keygen
 programs and rsync. To find things it also uses the mysql or mariadb client,
@@ -2707,6 +2720,7 @@ the .ssh folder of the user running it, and its notes in
 
 COMMANDS = (
     ("key", "print the key to paste on the new server, and where"),
+    ("forget", "forget the new server's name, so it is asked for again"),
     ("check", "connect, and say which server answered and what it has"),
     ("list", "look around and show what can be moved (changes nothing)"),
     ("move", "move what the numbers name (asks which, with none given)"),
@@ -2716,28 +2730,42 @@ COMMANDS = (
 
 
 def _options(parser, host=True, domain=True, user=True):
+    """The options a command takes. Nothing given before the command is
+    wiped by a default here (that is what SUPPRESS is for), so --no-colour
+    and --host work in front of the command as well as behind it."""
     if host:
-        parser.add_argument("--host", metavar="NEW",
+        parser.add_argument("--host", metavar="NEW", default=argparse.SUPPRESS,
                             help="the name or address of the new server")
     if domain:
         parser.add_argument("--domain", metavar="example.nl",
+                            default=argparse.SUPPRESS,
                             help="look at only this mail domain and its sites")
     if user:
         parser.add_argument("--user", metavar="NAME",
+                            default=argparse.SUPPRESS,
                             help="the Linux user to give the site on the new "
                             "server, instead of the name taken from its "
                             "domain; goes with --domain, for a site whose "
                             "name would clash with another one's")
+    parser.add_argument("--no-colour", action="store_true", dest="no_colour",
+                        default=argparse.SUPPRESS,
+                        help="print no colour at all")
 
 
 def _parser():
     parser = argparse.ArgumentParser(
         prog="migrate.py", description=HELP_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--host", metavar="NEW",
+                        help="the name or address of the new server")
+    parser.add_argument("--no-colour", action="store_true", dest="no_colour",
+                        help="print no colour at all")
     commands = parser.add_subparsers(dest="command", metavar="COMMAND",
                                      title="commands")
     helps = dict(COMMANDS)
     commands.add_parser("key", help=helps["key"], description=helps["key"])
+    commands.add_parser("forget", help=helps["forget"],
+                        description=helps["forget"])
     every = commands.add_parser("report", help=helps["report"],
                                 description=helps["report"])
     _options(every, domain=False, user=False)
@@ -2772,7 +2800,7 @@ def _arguments(argv):
     if not hasattr(args, "numbers"):
         args.numbers = []
     for name, value in (("host", None), ("domain", None), ("user", None),
-                        ("everything", False)):
+                        ("everything", False), ("no_colour", False)):
         if not hasattr(args, name):
             setattr(args, name, value)
     return args
@@ -2841,6 +2869,16 @@ def _typed(prompt):
         return input(prompt)
     except EOFError:
         return ""
+
+
+def _typed_line(prompt):
+    """What was typed, or None at the end of the input: the live prompt must
+    leave then, instead of asking the same thing for ever."""
+    try:
+        return input(prompt)
+    except EOFError:
+        print()
+        return None
 
 
 def _question(text):
@@ -2973,8 +3011,10 @@ def _inspect(args, connection, notes, doing, hello):
     return mail, database, found, sizes, items, status
 
 
-def _board(items, status, state, connection, hello, hint=True, detail=False):
-    return dashboard(items, status, state, colour=use_colour(), detail=detail,
+def _board(items, status, state, connection, hello, hint=True, detail=False,
+           colour=None):
+    return dashboard(items, status, state, detail=detail,
+                     colour=_wanted_colour() if colour is None else colour,
                      old_server=socket.gethostname(),
                      new_server=_new_name(connection, hello),
                      addresses=(hello or {}).get("addresses"), hint=hint)
@@ -3001,7 +3041,8 @@ def _list(args, connection, state, notes, doing=None, hello=None):
     mail, database, found, sizes, items, status = _inspect(
         args, connection, notes, doing, hello)
     print()
-    print(_board(items, status, state, connection, hello, detail=True))
+    print(_board(items, status, state, connection, hello, detail=True,
+                 colour=_wanted_colour(args)))
     lines = _lay_of_the_land(found, sizes, database, items, notes)
     if lines:
         print("\n" + "\n".join(lines))
@@ -3050,63 +3091,135 @@ def _confirmed(lines, chosen, ask, state=None):
     return _is_yes(ask("Go ahead? Type yes or no: "))
 
 
+PICK_PROMPT = "Numbers to move (like 1 3, 2-5, all; Enter for none): "
+LIVE_PROMPT = "What now? Numbers to move, r to look again, q to leave: "
+LIVE_HELP = ("Type the numbers of what to move (like 1 3, 2-5 or all), r to "
+             "look around again, or q to leave.")
+
+
+def _move_and_report(args, connection, state, notes, looked, hello, chosen,
+                     doing=None):
+    """Moves what was picked and prints the report of that move alone.
+    'looked' is what _inspect found. Returns the Report."""
+    doing = doing if doing is not None else [""]
+    mail, database, found, sizes, items, status = looked
+    extra = []
+    doing[0] = "moving what you picked"
+    move = mover(connection, state, _question, extra)
+    result = run(connection, chosen, _question, move=move, notes=state,
+                 status=status, php=(hello or {}).get("php"),
+                 wp=(hello or {}).get("wp"), extra_notes=extra)
+    moved_domains = [i["name"] for i, _ in result.moved
+                     if i.get("kind") == "mail_domain"]
+    print()
+    doing[0] = "writing the report"
+    print(report(result, connection=connection,
+                 old_server=socket.gethostname(), found_sites=found,
+                 mail=_left_out_of(mail, moved_domains), databases=sizes,
+                 items=items, notes=notes, extra_notes=extra,
+                 mail_database=database,
+                 addresses=(hello or {}).get("addresses")))
+    return result
+
+
+def _again(args, connection, state, notes, looked, doing, hello):
+    """`again`: copies the files of a site that already moved and replaces
+    its database, each after a question."""
+    mail, database, found, sizes, items, status = looked
+    extra = []
+    chosen = _to_do_again(items, state, status)
+    if not chosen:
+        _say("No site that moved is still on the new server, so there is "
+             "nothing to copy again. A site the new server no longer has "
+             "is offered on the ordinary list instead.")
+    else:
+        print("Sites that already moved:")
+        for number, item in enumerate(chosen, 1):
+            print("%3d  %s" % (number, _title(item)))
+        chosen = _choose(chosen, "Numbers to copy again (like 1 3, 2-5, "
+                         "all; Enter for none): ")
+    result = do_again(connection, chosen, state, _question, extra)
+    print()
+    doing[0] = "writing the report"
+    print(report(result, connection=connection,
+                 old_server=socket.gethostname(), found_sites=found,
+                 mail=None, databases=sizes, items=items, notes=notes,
+                 extra_notes=extra, mail_database=database,
+                 addresses=(hello or {}).get("addresses")))
+    return result
+
+
 def _work(args, connection, state, notes, doing=None, hello=None):
-    """Does the whole run after the connection works and returns its Report.
+    """Does one move after the connection works and returns its Report.
     'doing' is a list whose one place always holds what is being done.
     'hello' is what the new server answered when it was first asked: which
     PHP and wp-cli it has, for the cron jobs, and its own addresses, for the
     DNS records in the report."""
     doing = doing if doing is not None else [""]
-    mail, database, found, sizes, items, status = _inspect(
-        args, connection, notes, doing, hello)
-    doing[0] = "moving what you picked"
-    extra = []
-    moved_domains = []
+    looked = _inspect(args, connection, notes, doing, hello)
+    items, status = looked[4], looked[5]
     print()
     if args.again:
-        chosen = _to_do_again(items, state, status)
-        if not chosen:
-            _say("No site that moved is still on the new server, so there is "
-                 "nothing to copy again. A site the new server no longer has "
-                 "is offered on the ordinary list instead.")
-        else:
-            print("Sites that already moved:")
-            for number, item in enumerate(chosen, 1):
-                print("%3d  %s" % (number, _title(item)))
-            chosen = _choose(chosen, "Numbers to copy again (like 1 3, 2-5, "
-                             "all; Enter for none): ")
-        ask = _question
-        result = do_again(connection, chosen, state, ask, extra)
+        return _again(args, connection, state, notes, looked, doing, hello)
+    numbers = getattr(args, "numbers", None)
+    lines = offered(items, status, state)
+    chosen = []
+    if numbers:
+        chosen = pick(lines, " ".join(numbers))
     else:
-        numbers = getattr(args, "numbers", None)
-        lines = offered(items, status, state)
+        print(_board(items, status, state, connection, hello, hint=False,
+                     colour=_wanted_colour(args)))
+        if lines:
+            chosen = _choose(lines, PICK_PROMPT)
+    if chosen and not _confirmed(lines, chosen, _typed, state):
+        print("Nothing will be moved.")
         chosen = []
-        if numbers:
-            chosen = pick(lines, " ".join(numbers))
-        else:
-            print(_board(items, status, state, connection, hello, hint=False))
-            if lines:
-                chosen = _choose(lines, "Numbers to move (like 1 3, 2-5, all; "
-                                 "Enter for none): ")
-        if chosen and not _confirmed(lines, chosen, _typed, state):
+    return _move_and_report(args, connection, state, notes, looked, hello,
+                            chosen, doing)
+
+
+def _live(args, connection, state, notes, doing=None, hello=None):
+    """The tool as people use it, with no subcommand: the dashboard, then a
+    prompt that stays up. Numbers move what they name, and the report of
+    that move is printed; r looks around again; q or the end of the input
+    leaves. After a move it looks around again, so what is on the screen is
+    what the new server really has by then. Returns the last Report, or
+    None when nothing was moved."""
+    doing = doing if doing is not None else [""]
+    colour = _wanted_colour(args)
+    result, looked = None, None
+    while True:
+        if looked is None:
+            del notes[:]
+            looked = _inspect(args, connection, notes, doing, hello)
+        items, status = looked[4], looked[5]
+        lines = offered(items, status, state)
+        print()
+        print(_board(items, status, state, connection, hello, hint=False,
+                     colour=colour))
+        print()
+        doing[0] = "waiting for you to say what to move"
+        typed = _typed_line(_paint(LIVE_PROMPT, "bold", colour))
+        word = (typed or "").strip().lower()
+        if typed is None or word in ("q", "quit"):
+            return result
+        if word == "r":
+            looked = None
+            continue
+        if not word:
+            _say(LIVE_HELP)
+            continue
+        chosen = pick(lines, typed)
+        if not chosen:
+            continue
+        if not _confirmed(lines, chosen, _typed, state):
             print("Nothing will be moved.")
-            chosen = []
-        move = mover(connection, state, _question, extra)
-        result = run(connection, chosen, _question, move=move, notes=state,
-                     status=status, php=(hello or {}).get("php"),
-                     wp=(hello or {}).get("wp"), extra_notes=extra)
-        moved_domains = [i["name"] for i, _ in result.moved
-                         if i.get("kind") == "mail_domain"]
-        mail = _left_out_of(mail, moved_domains)
-    if args.again:
-        mail = None
-    print()
-    doing[0] = "writing the report"
-    print(report(result, connection=connection, old_server=socket.gethostname(),
-                 found_sites=found, mail=mail, databases=sizes, items=items,
-                 notes=notes, extra_notes=extra, mail_database=database,
-                 addresses=(hello or {}).get("addresses")))
-    return result
+            continue
+        result = _move_and_report(args, connection, state, notes, looked,
+                                  hello, chosen, doing)
+        if result.interrupted:
+            return result
+        looked = None  # what the new server has has changed: look again
 
 
 def _show_check(hello, host, colour):
@@ -3174,14 +3287,55 @@ def _check_arguments(args):
                       % (args.user, MAX_USER_NAME))
 
 
-def main(argv=None, geteuid=os.geteuid):
-    parser = _parser()
-    args = parser.parse_args(argv)
-    if not args.command:
-        parser.print_help()
+def _remember(state, host, say=print):
+    """Writes the new server's name down, so it is asked for only once. When
+    the notes can't be written it says so and carries on: the next run asks
+    again."""
+    if host == getattr(state, "server", None):
+        return
+    state.server = host
+    try:
+        state.save()
+    except MoveFailed as problem:
+        _say("%s For now I carry on without it written down, so I ask for "
+             "the new server again next time." % problem.message, say)
+
+
+def _server_name(args, state):
+    """The new server: what --host says, else what the notes remember, else
+    what is typed in. Whatever it comes to is written down, so the next run
+    does not ask."""
+    host = args.host or getattr(state, "server", None)
+    if not host:
+        host = _typed("Name or address of the new server: ").strip()
+    if not host:
+        raise Stopped("I need the name or address of the new server: run me "
+                      "again with --host NEW-SERVER.")
+    _remember(state, host)
+    return host
+
+
+def _forget(state):
+    """Drops the new server's name from the notes."""
+    name = getattr(state, "server", None)
+    if not name:
+        print("I have no new server written down, so there is nothing to "
+              "forget.")
         return 0
+    state.server = None
+    try:
+        state.save()
+    except MoveFailed as problem:
+        print(problem.message)
+        return 1
+    print("I have forgotten %s. The next run asks for the new server again."
+          % name)
+    return 0
+
+
+def main(argv=None, geteuid=os.geteuid):
     args = _arguments(argv)
-    colour = use_colour()
+    colour = _wanted_colour(args)
     if geteuid() != 0:
         print(_paint("Run me as root: I read other users' cron jobs and "
                      "mailboxes.", "red", colour))
@@ -3191,6 +3345,8 @@ def main(argv=None, geteuid=os.geteuid):
         _check_arguments(args)
         if args.command == "report":
             state = State()
+            if args.host:
+                _remember(state, args.host)
             host = args.host or getattr(state, "server", None)
             connection = _try_connecting(host)
             result = _result_from_notes(state)
@@ -3204,15 +3360,17 @@ def main(argv=None, geteuid=os.geteuid):
                          found_sites=found, databases=sizes, items=items,
                          notes=notes, mail_database=database, everything=True))
             return 0
-        doing[0] = "making the key"
         if args.command == "key":
+            doing[0] = "making the key"
             print("The new server must have this key (one line) in\n%s:\n\n%s\n"
                   % (AUTHORIZED_KEYS, own_key()))
             return 0
-        host = args.host or _typed("Name or address of the new server: ").strip()
-        if not host:
-            raise Stopped("I need the name or address of the new server: run "
-                          "me again with --host NEW-SERVER.")
+        state = State()
+        if args.command == "forget":
+            return _forget(state)
+        doing[0] = "asking which server to move to"
+        host = _server_name(args, state)
+        doing[0] = "making the key"
         own_key()
         doing[0] = "connecting to the new server"
         connection = Connection(host)
@@ -3222,13 +3380,12 @@ def main(argv=None, geteuid=os.geteuid):
         if args.command == "check":
             _show_check(hello, host, colour)
             return 0
-        state = State()
-        state.server = host
         if args.command == "list":
             _list(args, connection, state, [], doing, hello)
             return 0
-        result = _work(args, connection, state, [], doing, hello)
-        if result.interrupted:
+        work = _live if args.command is None else _work
+        result = work(args, connection, state, [], doing, hello)
+        if result is not None and result.interrupted:
             print("You stopped the run; the report above says what moved.")
             return 1
     except Stopped as problem:
