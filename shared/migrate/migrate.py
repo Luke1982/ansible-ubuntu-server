@@ -1925,41 +1925,124 @@ CUSTOMER_ACTIONS = ((1, "mail", "move the mail"), (2, "site", "copy the website 
                     (3, "cron", "install the cron jobs"))
 
 
+def _state_of(item, status):
+    """What the new server said about one item: new, exists, refused, or None when it said nothing."""
+    said = status.get(item.get("id")) if isinstance(status, dict) else None
+    return said.get("state") if isinstance(said, dict) else None
+
+
+def _here_words(row, part):
+    """The short cell: what this server has of that part."""
+    if not row.items[part]:
+        return "-"
+    if part == "mail":
+        accounts = forwards = 0
+        for item in row.items[part]:
+            one = _mail_here(item)
+            accounts, forwards = accounts + one[0], forwards + one[1]
+        what = _plural(accounts, "account", "accounts")
+        return what + (", %s" % _plural(forwards, "forward", "forwards") if forwards else "")
+    if part == "site":
+        sizes = [item.get("size") for item in row.items[part] if item.get("size")]
+        if not any(item.get("wordpress", True) for item in row.items[part]):
+            return "not WordPress"
+        return "WordPress, %s" % _size(sizes[0]) if sizes else "WordPress"
+    return _plural(len(row.items[part]), "job", "jobs")
+
+
+def _there_words(row, part, status, short):
+    """The short cell: what the new server says it has of that part."""
+    if not row.items[part]:
+        return "-"
+    states = [_state_of(item, status) for item in row.items[part]]
+    if all(state == "exists" for state in states):
+        return "there already"
+    if any(state == "refused" for state in states):
+        return "refused"
+    if any(state == "exists" for state in states):
+        return "part of it"
+    return "not there yet"
+
+
+def _part_cells(row, part, status, short):
+    """The three short cells of one part: what is here, what the new server has, and where that leaves it."""
+    here = _here_words(row, part)
+    there = _there_words(row, part, status, short)
+    return [PART_HEADS[part], here, there, row.word(part)]
+
+
 def customer_screen(row, status, remembered=None, colour=False, new_server=None):
-    """What a number opens: where each part of one customer stands, and then what can be done for it. Nothing
-    on it happens by itself; the numbers on it are things to do, not things to pick from a list."""
-    short = _fit(_short_name(new_server), 16)
+    """What a number opens: a small table of where each part of one customer stands, then what can be done for
+    it. Nothing on it happens by itself; the numbers are things to do, not things to pick from a list."""
+    short = _fit(_short_name(new_server), 18)
     out = [_paint(_fit(row.name, _WIDTH, True), "bold", colour), ""]
-    for label, text in (("Mail", _mail_sentence(row, status, short)),
-                        ("Website", _site_sentence(row, status, short)),
-                        ("Cron", _cron_sentence(row, status, short))):
-        head = "  " + _paint(label, "bold", colour) + " " * (_LABEL - len(label))
-        lines = textwrap.wrap(text, _WIDTH - 2 - _LABEL) or [""]
-        out.append(head + lines[0])
-        out.extend(" " * (2 + _LABEL) + piece for piece in lines[1:])
+    heads = ["Part", "On this server", "On %s" % short, "Status"]
+    cells = [_part_cells(row, part, status, short) for part in PARTS]
+    widths = _widths(heads, cells, 10)
+    out.append("  " + "  ".join(_paint(head, "bold", colour) + " " * (width - len(head))
+                                for head, width in zip(heads, widths)).rstrip())
+    for line in cells:
+        shown = []
+        for i, text in enumerate(line):
+            fitted = _fit(text, widths[i])
+            style = {DONE: "green", PART: "yellow", NONE: "dim"}.get(text) if i == 3 else \
+                ("bold" if i == 0 else None)
+            shown.append(_paint(fitted, style, colour) + " " * (widths[i] - len(fitted)))
+        out.append("  " + "  ".join(shown).rstrip())
     out.append("")
-    for number, part, what in CUSTOMER_ACTIONS:
-        out.append("  %s  %s%s" % (_paint(str(number), "bold", colour), what,
-                                   "" if row.to_move(part) else "   nothing to do"))
-    out.append("  %s  everything that is left%s"
-               % (_paint("4", "bold", colour), "" if row.to_move() else "   nothing to do"))
-    out.append("  %s  give an account its own password on the new server" % _paint("5", "bold", colour))
-    out.append("  %s  back to the list          %s  leave"
-               % (_paint("b", "bold", colour), _paint("q", "bold", colour)))
+    for key, what, note in customer_menu(row):
+        line = "  %s  %s" % (_paint(key, "bold", colour), what)
+        if note:
+            line += " " * max(2, 44 - len(what)) + _paint(note, "dim", colour)
+        out.append(line)
+    for item in row.items["site"] + row.items["cron"]:
+        if item.get("problem"):
+            out.append("")
+            out.extend(textwrap.wrap(item["problem"], _WIDTH - 2, initial_indent="  ",
+                                     subsequent_indent="  "))
     return "\n".join(_fit_line(line) for line in out)
 
 
-def customer_action(row, word):
-    """What was typed on a customer's own screen: (what to move, what it is called), or (None, None) when it
-    means nothing."""
+def customer_menu(row):
+    """The lines of the menu, as (key, what it does, the note beside it). A part that is already on the new
+    server is offered again instead: a website whose files changed since it moved is copied over the old one,
+    and a mail domain is sent again to add whatever is missing."""
+    out = []
     for number, part, what in CUSTOMER_ACTIONS:
-        if word == str(number):
-            return row.to_move(part), what
+        if row.to_move(part):
+            out.append((str(number), what, "" if row.word(part) != PART else "it is half there"))
+        elif part == "site" and row.items["site"] and row.word("site") == DONE:
+            out.append((str(number), "copy the website again", "replaces its database"))
+        elif part == "mail" and row.items["mail"] and row.word("mail") == DONE:
+            out.append((str(number), "send the mail again", "adds only what is missing"))
+        else:
+            out.append((str(number), what, "nothing to do"))
+    out.append(("4", "everything that is left", "" if row.to_move() else "nothing to do"))
+    out.append(("5", "give an account its own password on the new server", ""))
+    out.append(("b", "back to the list", ""))
+    out.append(("q", "leave", ""))
+    return out
+
+
+def customer_action(row, word):
+    """What was typed on a customer's own screen: (what to do with, what it is called, whether it is a copy
+    over one that is already there), or (None, None, False) when it means nothing."""
+    for number, part, what in CUSTOMER_ACTIONS:
+        if word != str(number):
+            continue
+        left = row.to_move(part)
+        if left:
+            return left, what, False
+        if part == "site" and row.word("site") == DONE:
+            return row.items["site"], "copy the website again", True
+        if part == "mail" and row.word("mail") == DONE:
+            return row.items["mail"], "send the mail again", False
+        return [], what, False
     if word == "4":
-        return row.to_move(), "everything that is left"
+        return row.to_move(), "everything that is left", False
     if word == "5":
-        return [], "passwords"
-    return None, None
+        return [], "passwords", False
+    return None, None, False
 
 
 # ---- The password of an account that already exists --------------------------
@@ -3721,7 +3804,7 @@ def _open_customer(name, args, connection, state, notes, doing, hello, colour, a
             return looked, result, True
         if word in ("", "b", "back"):
             return looked, result, False
-        chosen, what = customer_action(row, word)
+        chosen, what, over = customer_action(row, word)
         if what is None:
             _say("I don't know '%s'. Type one of the numbers above, b to go back to the list, or q to leave."
                  % word)
@@ -3734,6 +3817,18 @@ def _open_customer(name, args, connection, state, notes, doing, hello, colour, a
             continue
         if not chosen:
             _say("There is nothing to do for that.")
+            continue
+        if over:
+            # The site is on the new server already: its files are copied over the ones there and its
+            # database is replaced, each after the question do_again asks for it.
+            doing[0] = "copying %s over what is there" % row.name
+            extra = []
+            result = do_again(connection, chosen, state, _question, extra)
+            print()
+            print(report(result, connection=connection, old_server=socket.gethostname(),
+                         notes=notes, extra_notes=extra,
+                         addresses=(hello or {}).get("addresses")))
+            looked = None
             continue
         if not _confirmed(chosen, _typed, state, _domain_numbers([row])):
             _say("Nothing will be moved.")
