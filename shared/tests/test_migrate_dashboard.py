@@ -55,22 +55,22 @@ def test_the_worst_case_fits_eighty_columns_and_no_row_loses_its_number_column()
              dict(_cron("example.nl"), line="* * * * * " + "x" * 200)]
     status = _status(**{items[0]["id"]: "refused", items[1]["id"]: "new", items[2]["id"]: "new"})
     status[items[0]["id"]]["detail"] = "A very long reason. " * 20
-    text = migrate.dashboard(items, status, new_server="w" * 100 + ".example.com", old_server="o" * 100,
-                             addresses=["187.126.5.65", "2001:db8::1"])
+    text = migrate.items_board(items, status, new_server="w" * 100 + ".example.com", old_server="o" * 100,
+                               addresses=["187.126.5.65", "2001:db8::1"])
     assert all(len(line) <= 79 for line in text.splitlines())
     assert "MAIL" in text and "WEBSITES" in text and "CRON JOBS" in text
     assert "A very long reason." in text  # the reason is under its row, in full
 
 
-def test_the_dashboard_is_grouped_one_section_per_kind_with_the_new_servers_answer_in_a_column():
+def test_every_item_is_grouped_one_section_per_kind_with_the_new_servers_answer_in_a_column():
     items = [_site("example.nl", 13 * 10 ** 8), _mail("example.nl"),
              dict(_site("static.nl"), wordpress=False, problem="No wp-config.php was found in /var/www/static."),
              _cron("example.nl"),
              dict(_cron("root", site=None), problem=migrate.NO_SITE_JOB, line="0 3 * * * /usr/bin/backup.sh")]
     status = _status(**dict((i["id"], "new") for i in items))
     status[items[1]["id"]] = {"state": "exists", "detail": "example.nl is already here, with 2 accounts and 1 forwards."}
-    text = migrate.dashboard(items, status, old_server="old.example.nl", new_server="web03.majorlabel.nl",
-                             addresses=["187.126.5.65"])
+    text = migrate.items_board(items, status, old_server="old.example.nl", new_server="web03.majorlabel.nl",
+                               addresses=["187.126.5.65"])
     lines = text.splitlines()
     assert lines[0] == "Old server  old.example.nl"
     assert lines[1] == "New server  web03.majorlabel.nl (187.126.5.65)"
@@ -81,7 +81,7 @@ def test_the_dashboard_is_grouped_one_section_per_kind_with_the_new_servers_answ
     assert "every 15 minutes" in text
     assert "not in example's crontab" in text
     assert "static.nl" in text and "not WordPress" in text
-    assert text.splitlines()[-1] == "3 of 4 can be moved. Type: migrate.py move 1-3"
+    assert text.splitlines()[-1] == "4 items here, 3 of them to do."
     assert "Why some can't be moved" not in text and "What it takes" not in text
 
 
@@ -89,22 +89,23 @@ def test_only_what_can_be_moved_is_numbered_and_a_site_that_is_not_wordpress_nev
     items = [dict(_site("static.nl"), wordpress=False, problem="No wp-config.php was found in /var/www/static."),
              _site("shop.nl"), _mail("a.nl")]
     status = _status(**dict((i["id"], "new") for i in items))
-    text = migrate.dashboard(items, status)
+    text = migrate.items_board(items, status)
     row = [l for l in text.splitlines() if "static.nl" in l][0]
     assert row.split()[0] == "-"
     assert migrate.offered(items, status) == [items[2], items[1]]  # the mail first, as it is shown
 
 
 def test_a_section_with_nothing_in_it_is_left_out_with_its_heading():
-    text = migrate.dashboard([_mail("a.nl")], _status(**{"mail:a.nl": "new"}))
+    text = migrate.items_board([_mail("a.nl")], _status(**{"mail:a.nl": "new"}))
     assert "MAIL" in text and "WEBSITES" not in text and "CRON JOBS" not in text
+    assert migrate.items_board([], {}) == "Nothing was found on this server to move."
     assert migrate.dashboard([], {}) == "Nothing was found on this server to move."
 
 
 def test_what_the_new_server_already_has_is_shown_but_not_offered():
     items = [_site("old.nl"), _site("new.nl", 5 * 10 ** 6), _site("bad.nl")]
     status = _status(**{"site:old.nl": "exists", "site:new.nl": "new", "site:bad.nl": "refused"})
-    text = migrate.dashboard(items, status)
+    text = migrate.items_board(items, status)
     rows = dict((l.split()[1], l) for l in text.splitlines() if l[:7].strip() in ("-", "1"))
     assert rows["old.nl"].split()[0] == "-" and "already on the new server" in rows["old.nl"]
     assert rows["new.nl"].split()[0] == "1" and "5.0 MB" in rows["new.nl"]
@@ -115,7 +116,7 @@ def test_what_the_new_server_already_has_is_shown_but_not_offered():
 def test_one_reason_that_many_rows_share_is_said_once_with_their_names():
     reason = "No wp-config.php was found in /var/lib/roundcube."
     items = [dict(_site("w%d.nl" % n), wordpress=False, problem=reason) for n in range(5)]
-    text = migrate.dashboard(items, _status(**dict((i["id"], "new") for i in items)))
+    text = migrate.items_board(items, _status(**dict((i["id"], "new") for i in items)))
     assert text.count(reason) == 1
     assert "Applies to: w0.nl, w1.nl, w2.nl, w3.nl, w4.nl" in " ".join(text.split())
 
@@ -129,8 +130,8 @@ def test_the_old_servers_own_webmail_is_one_counted_line_and_never_a_site():
     items = [_site("shop.a.nl")] + [{"id": "aside:" + s["name"], "kind": "aside", "name": s["name"]}
                                     for s in plumbing]
     status = _status(**{"site:shop.a.nl": "new"})
-    text = migrate.dashboard(items, status)
-    assert "webmail.a.nl" not in text and "5 names" in text and "1 of 1 can be moved" in text
+    text = migrate.items_board(items, status)
+    assert "webmail.a.nl" not in text and "5 names" in text and "1 item here, 1 of them to do." in text
     assert migrate.offered(items, status) == [items[0]]
 
 
@@ -139,10 +140,10 @@ def test_jobs_that_belong_to_no_site_are_one_counted_line_and_only_list_names_th
                   line="0 3 * * * /usr/lib/job%d/run" % n) for n in range(3)]
     items = [_cron("example.nl")] + loose
     status = _status(**dict((i["id"], "new") for i in items))
-    text = migrate.dashboard(items, status)
+    text = migrate.items_board(items, status)
     assert "3 more jobs belong to no site" in text and "job1" not in text
-    assert "1 of 1 can be moved" in text
-    detail = migrate.dashboard(items, status, detail=True)
+    assert "1 item here, 1 of them to do." in text
+    detail = migrate.items_board(items, status, detail=True)
     assert "root: daily at 03:00  /usr/lib/job1/run" in detail
     assert all(len(line) <= 79 for line in detail.splitlines())
 
@@ -161,7 +162,7 @@ def test_a_schedule_is_said_in_words_or_left_as_the_five_fields(fields, words):
 def test_a_cron_command_is_cut_from_the_left_so_the_script_name_stays():
     command = "/opt/plesk/php/8.1/bin/php " + "/very/long/path" * 10 + "/wp-cron.php"
     item = dict(_cron("example.nl"), line="*/15 * * * * " + command)
-    text = migrate.dashboard([item], _status(**{item["id"]: "new"}))
+    text = migrate.items_board([item], _status(**{item["id"]: "new"}))
     shown = [l for l in text.splitlines() if l.strip().startswith("...")][0]
     assert shown.endswith("wp-cron.php") and len(shown) <= 79
 
@@ -301,13 +302,13 @@ def test_a_move_says_what_was_picked_and_what_will_happen_before_it_asks(capsys)
     job = dict(_cron("b.nl"), user="b")
     lines = [mail, site, job]
     asked = []
-    assert migrate._confirmed(lines, lines, lambda prompt: asked.append(prompt) or "yes") is True
+    assert migrate._confirmed(lines, lambda prompt: asked.append(prompt) or "yes") is True
     text = " ".join(capsys.readouterr().out.split())
     assert "3 accounts and 1 forward" in text and "filters and spam settings come too" in text
     assert "its files and its database of 52.0 MB are copied" in text
     assert "goes into the crontab of b on the new server" in text
     assert asked == ["Go ahead? Type yes or no: "]
-    assert migrate._confirmed(lines, lines, lambda prompt: "no") is False
+    assert migrate._confirmed(lines, lambda prompt: "no") is False
 
 
 def test_the_report_after_one_mail_domain_is_about_that_move_only():
@@ -393,11 +394,11 @@ def test_pick_says_something_for_empty_reversed_duplicate_and_odd_input():
     assert migrate.pick(lines, "\uff11", said.append) == [] and "understand" in said[0]
 
 
-def test_the_numbers_on_the_dashboard_are_the_ones_pick_resolves():
+def test_the_numbers_on_the_item_list_are_the_ones_pick_resolves():
     items = [_site("old.nl"), _mail("one.nl"), _site("bad.nl"), _mail("two.nl"), _site("good.nl")]
     status = _status(**{"site:old.nl": "exists", "mail:one.nl": "new", "site:bad.nl": "refused",
                         "mail:two.nl": "new", "site:good.nl": "new"})
-    text = migrate.dashboard(items, status)
+    text = migrate.items_board(items, status)
     numbered = [line.split() for line in text.splitlines() if line.startswith(" ") and line.split()[:1] in (["1"], ["2"], ["3"])]
     assert [(line[0], line[1]) for line in numbered] == [("1", "one.nl"), ("2", "two.nl"), ("3", "good.nl")]
     assert migrate.pick(migrate.offered(items, status), "2") == [items[3]]
@@ -408,7 +409,7 @@ def test_a_domain_of_253_characters_and_a_huge_size_fit_and_the_headers_are_whol
     name = ("a" * 60 + ".") * 3 + "b" * 60 + ".nl"
     name = name[:253]
     items = [_site(name, 10 ** 15), _site("z" * 20 + "." + "y" * 40 + ".com")]
-    text = migrate.dashboard(items, _status(**{"site:" + name: "new", items[1]["id"]: "exists"}))
+    text = migrate.items_board(items, _status(**{"site:" + name: "new", items[1]["id"]: "exists"}))
     assert all(len(line) <= 79 for line in text.splitlines())
     header = [l for l in text.splitlines() if l.startswith("  No.")][0]
     assert header.split() == ["No.", "Domain", "Here", "On", "the", "new", "server", "To", "copy"]
@@ -670,7 +671,7 @@ def test_a_mail_domain_that_is_half_there_can_be_sent_again_with_the_counts_in_s
     status = {"mail:example.nl": {"state": "exists",
                                   "detail": "example.nl is already here, with 50 accounts and 1 forwards."},
               "site:example.nl": {"state": "exists", "detail": "The site example.nl is already here."}}
-    text = migrate.dashboard([mail, site], status)
+    text = migrate.items_board([mail, site], status)
     assert migrate.offered([mail, site], status) == [mail]
     assert "50 accounts, 1 forward - can be topped up" in text
     assert "adds the accounts" in " ".join(text.split())
@@ -679,15 +680,11 @@ def test_a_mail_domain_that_is_half_there_can_be_sent_again_with_the_counts_in_s
 
 def test_no_phrase_ever_ends_up_in_a_command_and_the_dns_is_fetched_when_it_can_be():
     mail = dict(_mail("a.nl"), data={"addresses": [{"address": "x@a.nl"}], "forwards": []})
-    box = {"id": "mailbox:x@a.nl", "kind": "mailbox", "name": "x@a.nl", "maildir": "/var/vmail/a.nl/x/Maildir"}
     result = migrate.Report()
-    result.moved = [(mail, {}), (box, {"ok": True, "messages": 3})]
+    result.moved = [(mail, {})]
     text = migrate.report(result)
     assert "'the new server'" not in text  # a phrase goes in a sentence, never in a command
-    assert "Mail messages copied to the new server" in text
-    named = migrate.report(result, new_server="web03.example.nl")
-    assert "Mail messages copied to web03.example.nl" in named
-    assert "copied to the new server" in migrate.report(result, new_server="not a name at all")
+    assert "On the new server, run: mailctl dns show a.nl" in text
 
     class Asked(object):
         host = "web03.example.nl"
@@ -740,9 +737,11 @@ def test_the_bare_command_stays_up_a_move_a_look_again_and_then_quit(monkeypatch
     result = migrate._live(migrate._arguments([]), connection, state, [])
     text = capsys.readouterr().out
     assert len(prompts) == 3 and not typed  # it did not leave after the move
-    assert text.count("MAIL") == 3  # the first list, the one after the move, and the one r asked for
+    assert text.count("Old server") == 3  # the first screen, the one after the move, and the one r asked for
     assert "Report" in text and [item["name"] for item, _ in result.moved] == ["a.nl"]
-    assert "q to leave" in prompts[0] and "r to look again" in prompts[0]
+    asked = " ".join(prompts[0].split())  # the prompt is wrapped, so it is read as one line
+    assert asked == ('Type a number to do its next step, a for all of them, "i 3" to look '
+                     'inside one, "p 3" to give one new mail passwords, q to leave:')
     assert state.entry(items[0]).get("status") == "moved"
 
 
@@ -751,7 +750,7 @@ def test_the_live_prompt_leaves_at_the_end_of_the_input_and_at_q(monkeypatch, ca
         connection, state = _wired(monkeypatch, [])
         monkeypatch.setattr(migrate, "_typed_line", lambda prompt: answer)
         assert migrate._live(migrate._arguments([]), connection, state, []) is None
-        assert "MAIL" in capsys.readouterr().out
+        assert "Old server" in capsys.readouterr().out
         assert [r for r in connection.requests if r["request"] != "status"] == []
 
 
@@ -760,7 +759,7 @@ def test_the_live_prompt_says_what_it_takes_when_nothing_is_typed(monkeypatch, c
     answers = ["", None]
     monkeypatch.setattr(migrate, "_typed_line", lambda prompt: answers.pop(0))
     migrate._live(migrate._arguments([]), connection, state, [])
-    assert "r to look around again" in " ".join(capsys.readouterr().out.split())
+    assert "r looks around again" in " ".join(capsys.readouterr().out.split())
 
 
 def test_the_new_server_is_asked_for_once_remembered_and_forgotten(monkeypatch, capsys):
@@ -815,8 +814,11 @@ sys.path.insert(0, %r)
 from migrate import migrate
 
 ITEMS = [{"id": "mail:a.nl", "kind": "mail_domain", "name": "a.nl",
-          "data": {"addresses": [{"address": "info@a.nl"}], "forwards": []}}]
-STATUS = {"ok": True, "items": {"mail:a.nl": {"state": "new", "detail": "a.nl is not on this server yet."}}}
+          "data": {"addresses": [{"address": "info@a.nl"}], "forwards": []}},
+         {"id": "site:a.nl", "kind": "site", "name": "a.nl", "user": "a", "database": "db1",
+          "size": 5, "wordpress": True, "docroot": "/var/www/a", "problem": None}]
+STATUS = {"ok": True, "items": {"mail:a.nl": {"state": "new", "detail": "a.nl is not on this server yet."},
+                                "site:a.nl": {"state": "exists", "detail": "The site a.nl is already here."}}}
 migrate.own_key = lambda *a: "ssh-ed25519 AAAA migrate"
 migrate.State = lambda: types.SimpleNamespace(server="web03.example.nl", items={}, save=lambda: None,
                                              entry=lambda item: {}, outstanding=lambda item: False)
@@ -868,11 +870,11 @@ def _piped(driver, words=(), env=None):
 
 def test_the_colour_is_really_there_on_a_terminal(tmp_path):
     text = _in_a_terminal(_driver(tmp_path))
-    assert "MAIL" in text and "a.nl" in text
-    assert "\x1b[1mNo." in text  # the heads of the table
-    assert "\x1b[1m   1" in text or "\x1b[1m  1" in text  # and the number of a row that can be moved
-    assert "\x1b[2m" in text  # and what the new server has
-    assert "\x1b[1mWhat now?" in text  # the live prompt itself
+    assert "Customer" in text and "a.nl" in text
+    assert "\x1b[1m#" in text and "\x1b[1mCustomer" in text  # the heads of the table
+    assert "\x1b[1m  1" in text  # and the number of a customer
+    assert "\x1b[32mdone" in text  # and the green of a part that is done
+    assert "\x1b[1mType a number" in text  # the live prompt itself
 
 
 @pytest.mark.parametrize("words, env", [((), {"NO_COLOR": "1"}), (("--no-colour",), {})])
@@ -882,99 +884,8 @@ def test_the_colour_goes_away_when_it_is_turned_off(tmp_path, words, env):
 
 def test_nothing_is_painted_when_the_output_is_piped(tmp_path):
     text = _piped(_driver(tmp_path))
-    assert "MAIL" in text and not _SGR.search(text)
+    assert "Customer" in text and not _SGR.search(text)
 
 
 # ---- the mailboxes on the list ----------------------------------------------
 
-def _box(address, size=None, **more):
-    return dict({"id": "mailbox:" + address, "kind": "mailbox", "name": address,
-                 "domain": address.partition("@")[2], "maildir": "/var/vmail/x", "size": size,
-                 "problem": None}, **more)
-
-
-def test_a_mailbox_has_a_section_of_its_own_between_the_mail_and_the_sites():
-    items = [_mail("a.nl"), _box("info@a.nl", 67500000000), _box("sales@a.nl", 1200000), _site("a.nl")]
-    status = _status(**{"mail:a.nl": "new", "site:a.nl": "new"})
-    status["mailbox:info@a.nl"] = {"state": "new", "detail": "info@a.nl has no messages yet."}
-    status["mailbox:sales@a.nl"] = {"state": "new", "detail": "sales@a.nl has 12 messages."}
-    text = migrate.dashboard(items, status, new_server="web03.majorlabel.nl")
-    assert text.index("MAILBOXES") > text.index("MAIL\n") and text.index("MAILBOXES") < text.index("WEBSITES")
-    assert "Address" in text and "Mail here" in text
-    assert "67.5 GB" in text and "no messages yet" in text and "12 messages" in text
-    assert [item["id"] for item in migrate.offered(items, status)] == [
-        "mail:a.nl", "mailbox:info@a.nl", "mailbox:sales@a.nl", "site:a.nl"]
-    assert all(len(line) <= 79 for line in text.splitlines())
-
-
-def test_a_mailbox_whose_domain_has_not_moved_is_shown_and_not_offered():
-    box = _box("info@a.nl", 500)
-    status = {"mailbox:info@a.nl": {"state": "refused",
-                                    "detail": "a.nl is not on this server yet, so move its domain first."}}
-    text = migrate.dashboard([box], status)
-    assert migrate.offered([box], status) == []
-    assert "move its domain first" in text
-    assert "a.nl is not on this server yet" in " ".join(text.split())
-    assert "   -   info@a.nl" in text  # a dash instead of a number
-
-
-def test_a_mailbox_that_was_not_found_on_this_server_is_shown_and_not_offered():
-    box = _box("info@a.nl", maildir=None, problem="I found no mail folder for info@a.nl. I looked in /var/vmail.")
-    status = {"mailbox:info@a.nl": {"state": "new", "detail": "info@a.nl has no messages yet."}}
-    text = migrate.dashboard([box], status)
-    assert migrate.offered([box], status) == [] and "needs a look first" not in text  # the column says what is here
-    assert "not found" in text and "I looked in /var/vmail." in " ".join(text.split())
-
-
-def test_a_mailbox_that_moved_before_is_offered_again_and_says_what_that_does(tmp_path):
-    box = _box("info@a.nl", 500)
-    notes = migrate.State(path=str(tmp_path / "state.json"), say=lambda text: None)
-    notes.items[box["id"]] = {"status": "moved"}
-    status = {"mailbox:info@a.nl": {"state": "new", "detail": "info@a.nl has 40 messages."}}
-    assert migrate.offered([box], status, notes) == [box]
-    assert "brings over whatever arrived since" in " ".join(migrate.dashboard([box], status, notes).split())
-
-
-def test_what_moving_a_mailbox_does_is_said_before_it_happens(capsys):
-    box = _box("info@a.nl", 67500000000)
-    assert migrate._confirmed([box], [box], lambda prompt: "no") is False
-    text = " ".join(capsys.readouterr().out.split())
-    assert "Mailbox info@a.nl" in text and "67.5 GB" in text
-    assert "copied straight to the new server" in text and "no password needed" in text
-
-
-def test_again_takes_one_address_for_one_mailbox(tmp_path):
-    args = migrate._arguments(["again", "Info@Example.NL"])
-    assert args.address == "info@example.nl" and args.domain == "example.nl" and args.again is True
-    migrate._check_arguments(args)  # it is a valid address, so nothing is raised
-    with pytest.raises(migrate.Stopped) as stopped:
-        migrate._check_arguments(migrate._arguments(["again", "@example.nl"]))
-    assert "isn't a mail address I can look for" in stopped.value.message
-    assert migrate._arguments(["again", "example.nl"]).address is None
-
-    box, site = _box("info@example.nl"), _site("example.nl")
-    notes = migrate.State(path=str(tmp_path / "state.json"), say=lambda text: None)
-    notes.items = {box["id"]: {"status": "moved"},
-                   site["id"]: {"status": "moved", "docroot": "/home/example/public_html/www"}}
-    status = {box["id"]: {"state": "new", "detail": "info@example.nl has 40 messages."},
-              site["id"]: {"state": "exists", "detail": "The site example.nl is already here."}}
-    assert [i["id"] for i in migrate._to_do_again([site, box], notes, status)] == [site["id"], box["id"]]
-    assert migrate._to_do_again([site, box], notes, status, "info@example.nl") == [box]
-    assert migrate._to_do_again([site, box], notes, status, "other@example.nl") == []
-
-
-def test_looking_around_puts_the_mailboxes_in_the_list(monkeypatch):
-    mail = migrate.Mail({"version": 1, "domains": ["a.nl"], "addresses": [{"address": "info@a.nl"}],
-                         "forwards": [], "spam": [], "sieve": []}, [], [])
-    monkeypatch.setattr(migrate, "mail_database", lambda run, notes: "mailserver")
-    monkeypatch.setattr(migrate, "mail_inventory", lambda run, database, domain=None: mail)
-    monkeypatch.setattr(migrate, "sites", lambda run, notes: [])
-    monkeypatch.setattr(migrate, "database_sizes", lambda run, notes: {})
-    monkeypatch.setattr(migrate, "cron_jobs", lambda run, found, notes: [])
-    monkeypatch.setattr(migrate, "mail_places", lambda run, notes: {"mail_path": "/var/vmail/%d/%n/Maildir"})
-    monkeypatch.setattr(migrate, "maildir_of", lambda address, places, root, isdir=None:
-                        ("/var/vmail/a.nl/info/Maildir", None))
-    monkeypatch.setattr(migrate, "directory_size", lambda run, place, notes: 4096)
-    _, _, _, _, items = migrate._look_around(migrate._arguments([]), [])
-    boxes = [item for item in items if item["kind"] == "mailbox"]
-    assert [item["id"] for item in boxes] == ["mailbox:info@a.nl"] and boxes[0]["size"] == 4096

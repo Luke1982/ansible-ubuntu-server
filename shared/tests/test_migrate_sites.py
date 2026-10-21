@@ -328,7 +328,7 @@ def test_a_second_run_offers_a_site_whose_files_did_not_arrive(tmp_path):
 
     again = migrate.State(path=str(tmp_path / "state.json"), say=print)
     assert migrate.offered([site], exists, again) == [site]
-    assert "files still to come" in migrate.dashboard([site], exists, again)
+    assert "files still to come" in migrate.items_board([site], exists, again)
     ok = Fakes()
     connection.requests.clear()
     asked = []
@@ -356,7 +356,7 @@ def test_a_site_that_already_moved_is_not_offered_again_and_says_so(tmp_path):
     exists = {site["id"]: {"state": "exists", "detail": "waiting for the DNS"}}
 
     assert migrate.offered([site], exists, notes) == []
-    assert "already moved from here" in migrate.dashboard([site], exists, notes)
+    assert "already moved from here" in migrate.items_board([site], exists, notes)
     # --again is the only way back to it, and it finds it before the DNS is flipped.
     assert [i["id"] for i in migrate._to_do_again([site], notes, exists)] == [site["id"]]
 
@@ -384,7 +384,7 @@ def test_nothing_is_moved_when_the_notes_cannot_be_kept(tmp_path):
     assert "Nothing was moved" in report.stopped
     assert report.not_tried == [_shop()]
     # Looking at the dashboard needs no notes at all.
-    assert "shop.example.nl" in migrate.dashboard([_shop()], {}, notes)
+    assert "shop.example.nl" in migrate.items_board([_shop()], {}, notes)
 
 
 def test_doing_it_again_replaces_the_database_only_when_told(tmp_path):
@@ -550,7 +550,7 @@ def test_two_domains_that_give_one_user_name_do_not_share_it():
     assert "--user" in refused["problem"]
     status = {i["id"]: {"state": "new", "detail": ""} for i in items}
     assert migrate.offered(items, status) == [kept]
-    assert refused["problem"] in " ".join(migrate.dashboard(items, status).split())
+    assert refused["problem"] in " ".join(migrate.items_board(items, status).split())
 
 
 def test_the_user_asked_for_on_the_command_line_is_the_one_the_site_gets():
@@ -669,7 +669,7 @@ def test_a_site_that_is_not_wordpress_is_listed_and_left_alone():
 
     assert "not a WordPress site" in items[0]["problem"] and "/var/www/static" in items[0]["problem"]
     assert migrate.offered(items, status) == [items[1]]
-    assert items[0]["problem"] in " ".join(migrate.dashboard(items, status).split())
+    assert items[0]["problem"] in " ".join(migrate.items_board(items, status).split())
 
     # It is named once in the report, under the hand work, and never as moved.
     result = migrate.Report()
@@ -696,7 +696,7 @@ def test_a_site_deleted_on_the_new_server_is_offered_again_and_says_so(tmp_path)
     gone = {site["id"]: {"state": "new", "detail": "shop.example.nl is not on this server yet."}}
 
     assert migrate.offered([site], gone, notes) == [site]
-    text = " ".join(migrate.dashboard([site], gone, notes).split())
+    text = " ".join(migrate.items_board([site], gone, notes).split())
     assert migrate.GONE_THERE in text and "already moved from here" not in text
     # --again stays for a site the new server still has, and says so when there is none.
     assert migrate._to_do_again([site], notes, gone) == []
@@ -709,7 +709,7 @@ def test_a_site_the_new_server_refuses_is_still_said_to_have_moved(tmp_path):
     notes.moved(site)
     refused = {site["id"]: {"state": "refused", "detail": "The user shop already serves another site here."}}
     assert migrate.offered([site], refused, notes) == []
-    assert "already moved from here" in migrate.dashboard([site], refused, notes)
+    assert "already moved from here" in migrate.items_board([site], refused, notes)
 
 
 def test_a_resumed_site_asks_before_its_database_is_replaced_and_no_stops_it(tmp_path):

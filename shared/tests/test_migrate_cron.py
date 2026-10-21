@@ -256,7 +256,7 @@ def test_a_job_the_state_says_moved_is_not_offered_a_second_time(tmp_path):
     status = {item["id"]: {"state": "exists", "detail": "This job is already in the crontab of shopexample."}}
 
     assert migrate.offered([item], status, notes) == []
-    assert "already moved from here" in migrate.dashboard([item], status, notes)
+    assert "already moved from here" in migrate.items_board([item], status, notes)
 
 
 def test_a_job_whose_crontab_was_cleared_is_offered_again_and_says_so(tmp_path):
@@ -267,7 +267,7 @@ def test_a_job_whose_crontab_was_cleared_is_offered_again_and_says_so(tmp_path):
     status = {item["id"]: {"state": "new", "detail": "The crontab of shopexample doesn't have this job yet."}}
 
     assert migrate.offered([item], status, notes) == [item]
-    text = " ".join(migrate.dashboard([item], status, notes).split())
+    text = " ".join(migrate.items_board([item], status, notes).split())
     assert migrate.GONE_THERE in text and "already moved from here" not in text
 
 

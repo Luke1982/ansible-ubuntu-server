@@ -19,6 +19,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import secrets
 import textwrap
 import threading
 
@@ -43,7 +44,7 @@ SITES_ENABLED = "/etc/apache2/sites-enabled"
 APACHE_ROOT = "/etc/apache2"
 # Of the talk with migratectl on the new server; both halves must come from the same release. It goes up whenever
 # the requests or the answers change, so a mismatch is found at the handshake and not in the middle of a site.
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 KEY_NAME = "migrate_key"
 KNOWN_HOSTS_NAME = "migrate_known_hosts"
 AUTHORIZED_KEYS = "/home/ansible/.ssh/authorized_keys"
@@ -68,7 +69,7 @@ def run_command(*args, stdin=None, env=None, timeout=LOOK_TIMEOUT):
     'env' is added to this program's own environment for that one command (a password goes here, never in args).
 
     A command that does not answer within 'timeout' seconds is killed and told about, like one that isn't there at
-    all: a mysql client whose my.cnf points at a machine that drops packets, or doveadm on a mailbox on a dead
+    all: a mysql client whose my.cnf points at a machine that drops packets, or doveadm against a dead
     mount, would otherwise hang the whole tool with nothing on the screen at all. rsync and the dump have no
     limit (run_visible and run_piped): those legitimately run for hours, and show their own progress."""
     try:
@@ -434,127 +435,6 @@ _QUOTED = r"""(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)")"""
 _WP_DEFINE = r"""^[ \t]*define[ \t]*\([ \t]*['"]%s['"][ \t]*,[ \t]*""" + _QUOTED + r"""[ \t]*\)[ \t]*;"""
 _WP_PREFIX = re.compile(r"^[ \t]*\$table_prefix[ \t]*=[ \t]*" + _QUOTED + r"[ \t]*;", re.MULTILINE)
 WP_SETTINGS = ("DB_NAME", "DB_USER", "DB_PASSWORD", "DB_HOST")
-
-
-# ---- Where the mail messages are kept on this server ------------------------
-
-# What Dovecot's own settings call the place where mail is kept: mail_path is 2.4's, mail_location 2.3's.
-MAIL_SETTINGS = ("mail_path", "mail_location", "mail_home", "mail_driver")
-# The index files Dovecot builds again by itself, and the filters, which came across with the mail domain and
-# must not land in the maildir. dovecot-uidlist is NOT in here: with it, a mail client keeps the message numbers
-# it already knows and does not download every message again.
-MAILDIR_EXCLUDES = ("dovecot.index*", "dovecot.list.index*", "sieve", ".dovecot.sieve", ".dovecot.svbin")
-_MAIL_VARIABLES = ((r"%\{user\s*\|\s*domain\}", "domain"), (r"%\{user\s*\|\s*username\}", "local"),
-                   (r"%\{user\}", "address"), (r"%d", "domain"), (r"%n", "local"), (r"%u", "address"))
-
-
-def mail_places(run, notes=None):
-    """What `doveconf -n` says about where this server keeps mail, of the settings in MAIL_SETTINGS. Empty when
-    doveconf isn't here or says nothing about them: the usual places are then looked at instead, and nothing is
-    assumed about either."""
-    notes = notes if notes is not None else []
-    try:
-        text = run("doveconf", "-n")
-    except CommandFailed as problem:
-        notes.append("Couldn't ask Dovecot where it keeps the mail (%s), so I looked in %s itself."
-                     % (problem.message, VMAIL))
-        return {}
-    found = {}
-    for line in text.splitlines():
-        match = re.match(r"\s*(%s)\s*=\s*(\S.*)$" % "|".join(MAIL_SETTINGS), line)
-        if match and match.group(1) not in found:
-            found[match.group(1)] = match.group(2).strip()
-    return found
-
-
-def _place_setting(value):
-    """(the path a mail_path or mail_location setting names, the driver it names or None). mail_location is
-    'driver:path' and may have options after the path; mail_path is the path on its own."""
-    text = str(value or "").strip()
-    if not text:
-        return None, None
-    driver = None
-    head, found, rest = text.partition(":")
-    if found and not head.startswith(("/", "~", "%")):
-        driver, text = head.strip().lower(), rest.strip()
-    text = text.split(":")[0].strip()  # an option behind the path, like :LAYOUT=fs
-    return (text or None), driver
-
-
-def expand_mail_path(template, address, home=None):
-    """A Dovecot path with one account filled in: %{user | domain} and %d are the domain, %{user | username}
-    and %n the part before the @, %{user} and %u the address itself, %h and ~ the account's home. None when
-    something is left in it that this doesn't know, so no path is ever guessed."""
-    address = str(address or "").strip().lower()
-    local, _, domain = address.partition("@")
-    if not local or not domain or not _LOCAL_PART.fullmatch(local) or not _valid_domain(domain):
-        return None
-    parts = {"domain": domain, "local": local, "address": address}
-    text = str(template or "").strip()
-    if not text:
-        return None
-    if "%h" in text or text.startswith("~"):
-        if not home:
-            return None
-        filled = expand_mail_path(home, address)
-        if not filled:
-            return None
-        text = text.replace("%h", filled)
-        if text.startswith("~"):
-            text = filled + text[1:]
-    for pattern, part in _MAIL_VARIABLES:
-        text = re.sub(pattern, parts[part], text)
-    return None if "%" in text else text
-
-
-def maildir_of(address, places=None, mail_root=VMAIL, isdir=os.path.isdir):
-    """(where this account's mail really is on this server, why not). It checks, never assumes: Dovecot's own
-    settings first, then /var/vmail/<domain>/<user>/Maildir and the home folder itself. A folder without a 'cur'
-    in it is not a maildir, and that is said plainly instead of copying something this doesn't understand."""
-    places = places or {}
-    address = str(address or "").strip().lower()
-    local, _, domain = address.partition("@")
-    driver = (places.get("mail_driver") or "").strip().lower()
-    candidates = []
-    for name in ("mail_path", "mail_location"):
-        path, said = _place_setting(places.get(name))
-        driver = driver or (said or "")
-        filled = expand_mail_path(path, address, places.get("mail_home")) if path else None
-        filled = filled.rstrip("/") if filled else None
-        if filled and filled.startswith("/") and filled not in candidates:
-            candidates.append(filled)
-    if driver and driver != "maildir":
-        return None, ("Dovecot on this server keeps the mail of %s as %s and not as a maildir, which is not "
-                      "something I copy. Move this one by hand, with doveadm or dsync." % (address, driver))
-    if local and domain:
-        for place in (os.path.join(mail_root, domain, local, "Maildir"), os.path.join(mail_root, domain, local)):
-            if place not in candidates:
-                candidates.append(place)
-    if not candidates:
-        return None, "%s isn't an address I can find a mailbox for on this server." % address
-    there = []
-    for candidate in candidates:
-        for place in (candidate, os.path.join(candidate, "Maildir")):
-            if isdir(os.path.join(place, "cur")):
-                return place, None
-        if isdir(candidate):
-            there.append(candidate)
-    if there:
-        return None, ("%s is there, but it has no 'cur' folder in it, so it is not a maildir. Mail kept as mdbox "
-                      "or mbox is not something I copy: move this one by hand, with doveadm or dsync." % there[0])
-    return None, ("I found no mail folder for %s. I looked in %s." % (address, " and in ".join(candidates)))
-
-
-def directory_size(run, path, notes=None):
-    """How many bytes a folder holds, as du says; None when du can't say, with a note about why."""
-    try:
-        output = run("du", "-s", "-b", path)
-    except CommandFailed as problem:
-        if notes is not None:
-            notes.append("Couldn't measure %s: %s." % (path, problem.message))
-        return None
-    first = output.replace("\t", " ").split(" ")[0].strip()
-    return int(first) if first.isdigit() else None
 
 
 def _php_text(found):
@@ -946,9 +826,9 @@ _UNREACHABLE = ("could not resolve", "no route to host", "connection refused", "
                 "connection reset")
 
 
-# How long each request may take, in seconds. The status of a whole server counts the messages in every mailbox
-# there, which is many little commands; making something gets half an hour, as before.
-ASK_TIMEOUTS = {"apply": 1800, "finish_site": 1800, "finish_mailbox": 1800, "status": 600}
+# How long each request may take, in seconds. Asking for the status of a whole server is many little commands
+# there, one for each item; making something gets half an hour, as before.
+ASK_TIMEOUTS = {"apply": 1800, "finish_site": 1800, "status": 600}
 
 
 class Connection(object):
@@ -1004,10 +884,10 @@ class Connection(object):
 
     def ask(self, request, timeout=None):
         """The new server's answer to one request, as a dict. Raises Stopped, and nothing else, when it can't.
-        It waits 2 minutes for a quick request, 10 for the status of everything (it counts the messages of every
-        mailbox) and 30 for one that makes something."""
+        It waits 2 minutes for a quick request, 10 for the status of everything and 30 for one that makes
+        something."""
         kind = request.get("request") if isinstance(request, dict) else None
-        slow = kind in ("apply", "finish_site", "finish_mailbox")
+        slow = kind in ("apply", "finish_site")
         timeout = timeout or ASK_TIMEOUTS.get(kind, 120)
         what = "making this" if slow else "answering the request '%s'" % kind
         try:
@@ -1162,7 +1042,7 @@ def apply_item(connection, item, ask_password=None, say=print, answers=None):
     return answer, skipped
 
 
-KIND_NAMES = {"mail_domain": "Mail", "mailbox": "Mailbox", "site": "Website", "cron": "Cron job"}
+KIND_NAMES = {"mail_domain": "Mail", "site": "Website", "cron": "Cron job"}
 _WIDTH = 79  # one less than a terminal's 80, so no line wraps by itself
 
 
@@ -1194,15 +1074,12 @@ def cost(item):
             return "the site's files"
         size = _size(item.get("size"))
         return "files and a database of %s" % size if size else "files and a database"
-    if kind == "mailbox":
-        size = _size(item.get("size"))
-        return "%s of mail" % size if size else "its mail"
     if kind == "mail_domain":
         data = item.get("data") if isinstance(item.get("data"), dict) else {}
         accounts, forwards = data.get("addresses"), data.get("forwards")
         parts = []
         if isinstance(accounts, list) and accounts:
-            parts.append(_plural(len(accounts), "mailbox", "mailboxes"))
+            parts.append(_plural(len(accounts), "account", "accounts"))
         if isinstance(forwards, list) and forwards:
             parts.append(_plural(len(forwards), "forward", "forwards"))
         return " and ".join(parts) or "the mail settings"
@@ -1216,9 +1093,18 @@ MAIL_MERGES = ("Sending it again adds the accounts, forwards, filters and "
                "there alone.")
 GONE_THERE = ("This moved from here before, but the new server doesn't have "
               "it any more. Moving it again puts it back.")
-MAILBOX_AGAIN = ("This mailbox moved from here before. Copying it again "
-                 "brings over whatever arrived since; nothing the new server "
-                 "has is removed.")
+
+def _not_asked(item, moved_before):
+    """The verdict for an item the new server was not asked about. A cron job is only asked about when a
+    customer is looked into or moved, because answering about it means reading a crontab there, and that is not
+    what starting up should cost. Nothing is made up here: what is used is the item's own problem, which this
+    server can see, and what the notes remember moving from here, which counts as done until the new server is
+    asked about it."""
+    if item.get("problem"):
+        return "needs a look first", False, item["problem"]
+    if moved_before:
+        return "already moved from here", False, None
+    return cost(item), True, None
 
 
 def _verdict(item, status, notes=None):
@@ -1226,21 +1112,14 @@ def _verdict(item, status, notes=None):
     it remembers as made but not filled is offered again, for its files and database only, and anything it
     remembers as moved is kept off the list for as long as the new server still has it (a site that moved and is
     still there is caught up with --again). What the notes remember never outranks what the new server says: an
-    item that was deleted there is offered again, and said to be."""
+    item that was deleted there is offered again, and said to be. An item 'status' says nothing about at all was
+    not asked about, which is not the same as the new server not answering: see _not_asked."""
     said = status.get(item.get("id")) if isinstance(status, dict) else None
     state = said.get("state") if isinstance(said, dict) else None
     detail = said.get("detail") if isinstance(said, dict) else None
     moved_before = notes is not None and notes.entry(item).get("status") == "moved"
-    if item.get("kind") == "mailbox":
-        # The account has to be there before its messages can go anywhere, and that is what the new server
-        # answers about. Copying a mailbox again only adds, so one that moved before is offered again.
-        if state == "refused":
-            return "can't be moved", False, detail
-        if state != "new":
-            return "the new server didn't say", False, "The new server gave no answer about this."
-        if item.get("problem"):
-            return "needs a look first", False, item["problem"]
-        return cost(item), True, MAILBOX_AGAIN if moved_before else None
+    if not isinstance(said, dict):
+        return _not_asked(item, moved_before)
     if moved_before and state in ("exists", "refused"):
         return "already moved from here", False, None
     if state == "exists" and notes is not None and notes.outstanding(item):
@@ -1340,8 +1219,7 @@ def _step(label, work, summary=None, out=None):
 
 # ---- The dashboard -----------------------------------------------------------
 
-# The mailboxes come straight after the mail domains, because a mailbox can only go once its domain has.
-SECTIONS = (("mail_domain", "MAIL"), ("mailbox", "MAILBOXES"), ("site", "WEBSITES"), ("cron", "CRON JOBS"))
+SECTIONS = (("mail_domain", "MAIL"), ("site", "WEBSITES"), ("cron", "CRON JOBS"))
 _INDENT = 7  # the width of the number column and the gap after it
 _DAYS = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
 _AT_WORDS = {"@hourly": "every hour", "@daily": "daily at 00:00", "@midnight": "daily at 00:00",
@@ -1423,11 +1301,10 @@ def _cron_parts_of(item):
     return words[:count], " ".join(words[count:])
 
 
-MOVE_DOMAIN_FIRST = "move its domain first"
-
-
 def _there_text(item, info, reason, said, short):
     """(what the new server has, in a few words, its colour) for the column that is headed with its name."""
+    if not isinstance(said, dict):
+        return "not asked yet", "dim"  # a cron job: only asked about inside a customer
     state = said.get("state") if isinstance(said, dict) else None
     detail = said.get("detail") if isinstance(said, dict) else None
     if state == "exists" and item.get("kind") == "mail_domain" and info == "already there, can be sent again":
@@ -1435,14 +1312,6 @@ def _there_text(item, info, reason, said, short):
         text = (_counts(int(counts.group(1)), int(counts.group(2))).replace(" and ", ", ")
                 if counts else "already there")
         return text + " - can be topped up", "green"
-    if item.get("kind") == "mailbox":
-        if state == "refused":
-            return (MOVE_DOMAIN_FIRST if MOVE_DOMAIN_FIRST in str(detail or "")
-                    else "can't be moved"), "yellow"
-        counted = re.search(r"(no messages yet|[0-9]+ messages?)", str(detail or ""))
-        if counted:
-            return counted.group(1), ("dim" if counted.group(1) == "no messages yet" else "green")
-        return "the new server didn't say", "yellow"
     if state == "new":
         if reason == GONE_THERE:
             return "not there any more", "dim"
@@ -1461,8 +1330,6 @@ TROUBLE = ("needs a look first", "can't be moved", "the new server didn't say")
 
 def _here_text(item):
     kind = item.get("kind")
-    if kind == "mailbox":
-        return _size(item.get("size")) or ("size unknown" if item.get("maildir") else "not found")
     if kind == "mail_domain":
         data = item.get("data") if isinstance(item.get("data"), dict) else {}
         accounts = data.get("addresses")
@@ -1485,8 +1352,6 @@ def _table(kind, group, numbers, status, remembered, short, colour):
     """The lines of one section. 'group' is [(item, verdict)], 'numbers' {id(item): its number or None}."""
     if kind == "cron":
         heads = ["For", "Runs", "On " + short]
-    elif kind == "mailbox":
-        heads = ["Address", "Mail here", "On " + short]
     elif kind == "site":
         heads = ["Domain", "Here", "On " + short, "To copy"]
     else:
@@ -1567,29 +1432,34 @@ def _loose_job(item, colour):
     return _fit_line(head + _fit_left(command, max(_WIDTH - len(head), 10)))
 
 
-def dashboard(inventory, status, remembered=None, colour=False, old_server=None, new_server=None,
-              addresses=None, hint=True, detail=False):
-    """The list as it is printed: a section for each kind, with the columns that kind needs. 'status' is what the
-    new server said about each item, by id: {id: {"state", "detail"}}. Only an item that can be moved gets a
-    number (the same order as offered()); the others get a dash and a line under them saying why. A reason that
-    several rows share is said once, with their names. A cron job that belongs to no site gets no row: they are
-    counted in one line (and listed, one line each, with 'detail'). The old server's own webmail and autodiscover
-    addresses ('aside' items) are one line with a count. 'hint' ends it with the command to type."""
+def items_board(inventory, status, remembered=None, colour=False, old_server=None, new_server=None,
+                addresses=None, detail=False, numbers=None, heading=True):
+    """Every item on its own line: a section for each kind, with the columns that kind needs. This is what
+    `migrate.py list` prints; the screen the tool is worked from is dashboard(), which has one row for a whole
+    customer. 'status' is what the new server said about each item, by id: {id: {"state", "detail"}}. A reason
+    that several rows share is said once, with their names. A cron job that belongs to no site gets no row:
+    they are counted in one line (and listed, one line each, with 'detail'). The old server's own webmail and
+    autodiscover addresses ('aside' items) are one line with a count. 'numbers' is {id(item): the number to
+    type for it}, which is its customer's; an item that is in none gets a dash, and without 'numbers' at all
+    the items are numbered one by one. 'heading' starts it with the two servers' names."""
     asides = [item for item in inventory if item.get("kind") == "aside"]
     inventory = [item for item in inventory if item.get("kind") != "aside"]
     if not inventory and not asides:
         return "Nothing was found on this server to move."
     short = _fit(_short_name(new_server), 16)
     ordered = _ordered(inventory)
-    numbers, count = {}, 0
+    given, numbers, count = numbers, {}, 0
     verdicts = [(item, _verdict(item, status, remembered)) for item in ordered]
     for item, (_, movable, _) in verdicts:
         if movable:
             count += 1
-            numbers[id(item)] = count
+            numbers[id(item)] = given.get(id(item)) if given is not None else count
     there = _fit(new_server or "(not known)", 50) + (" (%s)" % ", ".join(addresses) if addresses else "")
-    out = [_paint("Old server", "bold", colour) + "  " + _fit(old_server or socket.gethostname(), 60, True),
-           _paint("New server", "bold", colour) + "  " + there]
+    out = []
+    if heading:
+        out.extend([_paint("Old server", "bold", colour) + "  "
+                    + _fit(old_server or socket.gethostname(), 60, True),
+                    _paint("New server", "bold", colour) + "  " + there])
     kinds = [kind for kind, _ in SECTIONS] + [None]
     total = len(inventory)
     for kind in kinds:
@@ -1621,14 +1491,10 @@ def dashboard(inventory, status, remembered=None, colour=False, old_server=None,
             "Not sites: %s (vhosts) of this server's own webmail, autodiscover and autoconfig are left out; the new "
             "server has its own." % _plural(len(asides), "name", "names"), _WIDTH))
     out.append("")
-    if not count:
-        out.append("None of the %d can be moved." % total if total > 1
-                   else "Nothing here can be moved." if not total else "It can't be moved.")
-    else:
-        line = "%d of %d can be moved." % (count, total)
-        if hint:
-            line += " Type: migrate.py move %s" % ("1-%d" % count if count > 1 else "1")
-        out.append(line)
+    out.append("%s here, %d of them to do." % (_plural(total, "item", "items"), count) if total
+               else "Nothing here to do.")
+    while out and not out[0]:
+        out.pop(0)
     return "\n".join(_fit_line(line) for line in out)
 
 
@@ -1650,30 +1516,548 @@ def pick(lines, typed, say=print):
         if word == "all":
             chosen.update(range(1, len(lines) + 1))
             continue
-        match = re.fullmatch(r"([0-9]+)(?:-([0-9]+))?", word)
-        if not match:
+        numbers = _number_words(word, len(lines), notes)
+        if numbers is None:
             unreadable.append(word)
-            continue
-        first = int(match.group(1))
-        last = int(match.group(2)) if match.group(2) else first
-        if last < first:
-            first, last = last, first
-            notes.append("%s is backwards, so it is taken as %d-%d." % (word, first, last))
-        low, high = max(first, 1), min(last, len(lines))
-        chosen.update(range(low, high + 1))
-        if low > high:
-            notes.append("%s is not on the list, so nothing is picked for it." % word)
-        elif (low, high) != (first, last):
-            outside = [str(number) if number == other else "%d-%d" % (number, other)
-                       for number, other in ((first, low - 1), (high + 1, last)) if number <= other]
-            notes.append("The list has %s, so %s is taken as %s. Not on the list: %s." % (
-                _plural(len(lines), "item", "items"), word, "%d-%d" % (low, high) if low != high else str(low),
-                ", ".join(outside)))
+        else:
+            chosen.update(numbers)
     if unreadable:
         say("I don't understand: %s. Type numbers like 1 3, a range like 2-5, or all." % ", ".join(unreadable))
     for note in notes:
         say(note)
     return [lines[number - 1] for number in sorted(chosen)]
+
+
+# ---- One customer, one number ------------------------------------------------
+
+# The parts of a customer, in the order a move has to do them: the mail domain makes the accounts, a site
+# brings its database, and a job needs the files of its site.
+PARTS = ("mail", "site", "cron")
+PART_OF = {"mail_domain": "mail", "site": "site", "cron": "cron"}
+PART_HEADS = {"mail": "Mail", "site": "Website", "cron": "Cron"}
+# What may be typed behind a number to do one part only. 'all' behind a number is every part of it.
+PART_WORDS = {"mail": "mail", "domain": "mail", "accounts": "mail", "site": "site", "website": "site",
+              "cron": "cron", "job": "cron", "jobs": "cron"}
+# The only words a column of the screen ever says. Four of them, and each means the same in every column.
+TO_DO, PART, DONE, NONE = "to do", "part", "done", "-"
+ALSO = "Also, only reported: %s. See: migrate.py list"
+
+
+def _mail_here(item):
+    """(how many accounts, how many forwards) a mail domain has on this server."""
+    data = item.get("data") if isinstance(item.get("data"), dict) else {}
+    accounts, forwards = data.get("addresses"), data.get("forwards")
+    return (len(accounts) if isinstance(accounts, list) else 0,
+            len(forwards) if isinstance(forwards, list) else 0)
+
+
+def _mail_there(detail):
+    """(how many accounts, how many forwards) the new server said it has, or None when it didn't say."""
+    counts = re.search(r"with ([0-9]+) accounts and ([0-9]+) forwards", str(detail or ""))
+    return (int(counts.group(1)), int(counts.group(2))) if counts else None
+
+
+def _item_word(item, status, notes):
+    """Where one item stands, in one of the three words the screen says: 'done', 'part' or 'to do'. None means
+    this tool never moves it: it is reported and left alone, and the customer's own screen says why. What the
+    new server says outranks the notes: something that moved from here and is not there any more is to do
+    again."""
+    said = status.get(item.get("id")) if isinstance(status, dict) else None
+    state = said.get("state") if isinstance(said, dict) else None
+    detail = str(said.get("detail") or "") if isinstance(said, dict) else ""
+    entry = notes.entry(item) if notes is not None else {}
+    moved = entry.get("status") == "moved"
+    kind = item.get("kind")
+    if kind == "mail_domain":
+        if state == "exists":
+            there, here = _mail_there(detail), _mail_here(item)
+            return DONE if there and sum(there) >= sum(here) else PART
+        return DONE if moved and state is None else TO_DO
+    if item.get("problem") or state == "refused":
+        return None
+    if kind == "site" and entry.get("status") == "made" and state in (None, "exists"):
+        return PART  # made on the new server, its files and its database still to come
+    if state == "exists":
+        return DONE
+    return DONE if moved and state is None else TO_DO
+
+
+class Customer(object):
+    """One customer's domain, which is one row of the screen: every item of that domain by part, where each
+    part stands, and what the one number next to it does next. A domain this tool never moves anything of is
+    no row at all: it is counted in the sentence under the table."""
+
+    def __init__(self, name):
+        self.name = name
+        self.number = None
+        self.items = dict((part, []) for part in PARTS)
+        self.words = dict((part, []) for part in PARTS)
+
+    def add(self, part, item, word):
+        self.items[part].append(item)
+        self.words[part].append(word)
+
+    def sort(self):
+        for part in PARTS:
+            pairs = sorted(zip(self.items[part], self.words[part]), key=lambda pair: _title(pair[0]))
+            self.items[part] = [item for item, _ in pairs]
+            self.words[part] = [word for _, word in pairs]
+
+    def word(self, part):
+        """Where a whole part stands: '-' when there is nothing of it to move, else done, part or to do."""
+        words = [word for word in self.words[part] if word is not None]
+        if not words:
+            return NONE
+        if all(word == DONE for word in words):
+            return DONE
+        if any(word in (DONE, PART) for word in words):
+            return PART
+        return TO_DO
+
+    def every(self):
+        """Every item of this customer, in the order the parts are moved."""
+        return [item for part in PARTS for item in self.items[part]]
+
+    def to_move(self, part=None):
+        """What is left to move: the whole customer, in the order that works, or one part of it."""
+        out = []
+        for name in ((part,) if part else PARTS):
+            out.extend(item for item, word in zip(self.items[name], self.words[name])
+                       if word in (TO_DO, PART))
+        return out
+
+    def is_customer(self):
+        """Whether this domain is a customer to move at all: something of it moved or can move."""
+        return any(word is not None for part in PARTS for word in self.words[part])
+
+    def accounts(self):
+        """Every mail address of this customer on this server, in the order they were found."""
+        out = []
+        for item in self.items["mail"]:
+            data = item.get("data") if isinstance(item.get("data"), dict) else {}
+            for account in data.get("addresses") or []:
+                address = str(account.get("address") or "").strip().lower() \
+                    if isinstance(account, dict) else ""
+                if address and address not in out:
+                    out.append(address)
+        return out
+
+
+def _about(item):
+    """The domain an item is about: a cron job's is its site's, everything else's is its own name."""
+    return item.get("site") if item.get("kind") == "cron" else item.get("name")
+
+
+def _base_names(inventory):
+    """The names a row can be about: the mail domains and the sites this server has."""
+    return set(str(item.get("name") or "").strip().lower() for item in inventory
+               if item.get("kind") in ("mail_domain", "site") and item.get("name"))
+
+
+def _row_name(name, bases):
+    """Which row a name belongs in: the shortest of 'bases' it is part of, so shop.example.nl lands in the row
+    of example.nl, which is the one customer."""
+    name = str(name or "").strip().lower()
+    if not name:
+        return None
+    for base in sorted(bases, key=lambda text: (len(text), text)):
+        if _in_domain(name, base):
+            return base
+    return name
+
+
+def _rows_of(inventory, status, notes=None):
+    """Every domain the inventory touches, customer or not, sorted by name."""
+    bases, found = _base_names(inventory), {}
+    for item in inventory:
+        part = PART_OF.get(item.get("kind"))
+        name = _row_name(_about(item), bases) if part else None
+        if not name:
+            continue
+        row = found.get(name)
+        if row is None:
+            row = found[name] = Customer(name)
+        row.add(part, item, _item_word(item, status, notes))
+    for row in found.values():
+        row.sort()
+    return [found[name] for name in sorted(found)]
+
+
+def customers(inventory, status, notes=None):
+    """The customers to move, sorted by domain and numbered. One number stands for one customer and does its
+    next step. A domain this tool never moves anything of (a site that is not WordPress, a name with nothing
+    behind it) is not among them; left_over() counts those."""
+    rows = [row for row in _rows_of(inventory, status, notes) if row.is_customer()]
+    for number, row in enumerate(rows, 1):
+        row.number = number
+    return rows
+
+
+def left_over(inventory, status, notes=None, databases=None):
+    """What is only reported, as counted phrases: no row of its own anywhere on the screen."""
+    quiet = [row for row in _rows_of(inventory, status, notes) if not row.is_customer()]
+    counted = (
+        (len(quiet), "name with nothing to move", "names with nothing to move"),
+        (len([item for item in inventory if item.get("kind") == "site"
+              and not item.get("wordpress", True)]),
+         "site that is not WordPress", "sites that are not WordPress"),
+        (len([item for item in inventory if _cron_by_hand(item)]),
+         "cron job of this server itself", "cron jobs of this server itself"),
+        (len([item for item in inventory if item.get("kind") == "aside"]),
+         "webmail name", "webmail names"),
+        (len(databases or ()),
+         "database that belongs to no site", "databases that belong to no site"))
+    return [_plural(count, one, many) for count, one, many in counted if count]
+
+
+def next_step(row):
+    """(what typing this customer's number moves, in the order that works; what that is, in plain words). It is
+    one step: the first part that is not done yet. With nothing done at all there is nothing to go in order
+    after, so then one number is the whole customer."""
+    left = [part for part in PARTS if row.to_move(part)]
+    if not left:
+        return [], "nothing left"
+    started = any(row.word(part) in (DONE, PART) for part in PARTS)
+    if not started and len(left) > 1:
+        return row.to_move(), "move everything"
+    part = left[0]
+    return row.to_move(part), _step_words(row, part)
+
+
+def _step_words(row, part):
+    """What doing one part of one customer comes to, in words that fit a column."""
+    begun = row.word(part) == PART
+    if part == "mail":
+        return "finish the mail" if begun else "move the mail"
+    if part == "site":
+        return "finish the website" if begun else "copy the website"
+    if begun:
+        return "move the rest"
+    jobs = len(row.to_move("cron"))
+    return "move the cron job" if jobs == 1 else "move the %d cron jobs" % jobs
+
+
+# ---- The screen --------------------------------------------------------------
+
+_LEAST_NAME = 16  # the customer column never gets narrower than this; a long name is cut in the middle
+_ROOM = 6  # the width of the number column and the gap after it
+
+
+def _widths(heads, cells, least):
+    """How wide each column gets: what it needs, and when that is more than there is room for, the first column
+    gives way first, down to 'least', and then the ones at the end, down to their heading."""
+    fields = len(heads)
+    widths = [max([len(heads[i])] + [len(row[i]) for row in cells]) for i in range(fields)]
+    floors = [least] + [len(head) for head in heads[1:]]
+    room, total = _WIDTH - _ROOM - 2 * (fields - 1), sum(widths)
+    for i in [0] + list(range(fields - 1, 0, -1)):
+        if total <= room:
+            break
+        cut = min(total - room, max(widths[i] - floors[i], 0))
+        widths[i] -= cut
+        total -= cut
+    return widths
+
+
+def _table_of(rows, colour):
+    """The table itself: a column for each part that has something to say, and the next step at the end."""
+    steps = [next_step(row)[1] for row in rows]
+    parts = [part for part in PARTS if any(row.word(part) != NONE for row in rows)]
+    heads = ["Customer"] + [PART_HEADS[part] for part in parts] + ["Next step"]
+    cells = [[row.name] + [row.word(part) for part in parts] + [step]
+             for row, step in zip(rows, steps)]
+    widths = _widths(heads, cells, _LEAST_NAME)
+    out = ["  " + _paint("#", "bold", colour) + "   "
+           + "  ".join(_paint(head, "bold", colour) + " " * (width - len(head))
+                       for head, width in zip(heads, widths)).rstrip()]
+    for row, line in zip(rows, cells):
+        shown = []
+        for i, text in enumerate(line):
+            fitted = _fit(text, widths[i], middle=(i == 0))
+            style = {DONE: "green", PART: "yellow", NONE: "dim"}.get(text) \
+                if 0 < i < len(heads) - 1 else None
+            shown.append(_paint(fitted, style, colour)
+                         + ("" if i == len(heads) - 1 else " " * (widths[i] - len(fitted))))
+        out.append(_paint("%3s" % row.number, "bold", colour) + "   " + "  ".join(shown).rstrip())
+    return out
+
+
+def _two_servers(old_server, new_server, addresses, colour):
+    """The one line that names both servers, and the new one's addresses under it."""
+    old = "%s  %s" % (_paint("Old server", "bold", colour), _fit(old_server or socket.gethostname(), 20, True))
+    new = "%s  %s" % (_paint("New server", "bold", colour), _fit(new_server or "(not known)", 26, True))
+    out = [_fit_line("%s      %s" % (old, new))]
+    if addresses:
+        out.append("%s  %s" % (" " * 10, _fit(", ".join(addresses), _WIDTH - 12)))
+    return out
+
+
+def dashboard(inventory, status, remembered=None, colour=False, old_server=None, new_server=None,
+              addresses=None, databases=None, rows=None):
+    """The screen this tool is worked from: one row for each customer, one number for each row, and the next
+    step that number does. Every column says one of four words and nothing else: 'to do', 'part', 'done' or
+    '-'. A column with nothing to say for any customer is left out. Everything this tool never moves is counted
+    in one sentence under the table, and what one customer holds is what `i N` prints (inside()). 'rows' are
+    the customers when they were worked out already, 'databases' the databases that belong to no site."""
+    if not inventory:
+        return "Nothing was found on this server to move."
+    rows = customers(inventory, status, remembered) if rows is None else rows
+    out = _two_servers(old_server, new_server, addresses, colour) + [""]
+    if rows:
+        out.extend(_table_of(rows, colour))
+    else:
+        out.append("  Nothing here is a customer to move.")
+    also = left_over(inventory, status, remembered, databases)
+    if also:
+        out.append("")
+        out.extend("  " + piece for piece in textwrap.wrap(ALSO % ", ".join(also), _WIDTH - 2))
+    done = len([row for row in rows if not next_step(row)[0]])
+    out.extend(["", "%s, %d done, %d to go." % (_plural(len(rows), "customer", "customers"),
+                                                done, len(rows) - done)])
+    return "\n".join(_fit_line(line) for line in out)
+
+
+def _domain_numbers(rows):
+    """{id(item): the number to type for it}, which is the number of the customer it belongs to."""
+    return dict((id(item), row.number) for row in rows for item in row.to_move())
+
+
+# ---- Inside one customer -----------------------------------------------------
+
+_LABEL = 11  # the width of the part's name at the start of its sentence
+
+
+def _said_about(item, status):
+    said = status.get(item.get("id")) if isinstance(status, dict) else None
+    return said.get("detail") if isinstance(said, dict) else None
+
+
+def _mail_sentence(row, status, short):
+    if not row.items["mail"]:
+        return "No mail for this domain."
+    accounts = forwards = 0
+    for item in row.items["mail"]:
+        here = _mail_here(item)
+        accounts, forwards = accounts + here[0], forwards + here[1]
+    what = _plural(accounts, "account", "accounts")
+    if forwards:
+        what += " and %s" % _plural(forwards, "forward", "forwards")
+    with_what = ", with its password, filters and spam settings" if (accounts, forwards) == (1, 0) \
+        else ", with their passwords, filters and spam settings"
+    word = row.word("mail")
+    if word == DONE:
+        return "%s%s. On %s already." % (what, with_what, short)
+    if word == PART:
+        there = _mail_there(_said_about(row.items["mail"][0], status))
+        has = ("%s and %s" % (_plural(there[0], "account", "accounts"),
+                              _plural(there[1], "forward", "forwards")) if there else "part of it")
+        return ("%s. On %s with %s so far; moving the mail again adds what is missing and changes nothing "
+                "that is there." % (what, short, has))
+    return "%s%s. Not on %s yet." % (what, with_what, short)
+
+
+def _site_sentence(row, status, short):
+    sites = row.items["site"]
+    if not sites:
+        return "No website for this domain."
+    said = []
+    for item, word in zip(sites, row.words["site"]):
+        name = ("%s: " % item.get("name")) if len(sites) > 1 else ""
+        if word is None:
+            said.append(name + (item.get("problem") or "This site is not moved."))
+            continue
+        size = _size(item.get("size"))
+        what = ("WordPress, %s plus its files" % size if size else
+                "WordPress, its files and its database" if item.get("database") else
+                "WordPress, its files")
+        if word == DONE:
+            said.append("%s%s. On %s already." % (name, what, short))
+        elif word == PART:
+            said.append("%s%s. Made on %s; its files and its database are still to come."
+                        % (name, what, short))
+        else:
+            said.append("%s%s. Not on %s yet." % (name, what, short))
+    return " ".join(said)
+
+
+def _cron_sentence(row, status, short):
+    jobs = row.items["cron"]
+    if not jobs:
+        return "No jobs for this site."
+    said = []
+    for item, word in zip(jobs, row.words["cron"]):
+        when = schedule_in_words(_cron_parts_of(item)[0])
+        command = _fit_left(_cron_parts_of(item)[1], 40)
+        if word is None:
+            said.append("%s: %s. %s" % (when, command, item.get("problem") or "This job is not moved."))
+        elif word == DONE:
+            said.append("%s: %s. On %s already." % (when, command, short))
+        else:
+            said.append("%s: %s. Not on %s yet." % (when, command, short))
+    return " ".join(said)
+
+
+def inside(row, status, remembered=None, colour=False, new_server=None):
+    """What `i N` prints: one sentence for each part of one customer, in plain words, and what its number does
+    next. No table and no numbers of its own: the only number on the screen is the customer's."""
+    short = _fit(_short_name(new_server), 16)
+    out = [_paint(_fit(row.name, _WIDTH, True), "bold", colour), ""]
+    for label, text in (("Mail", _mail_sentence(row, status, short)),
+                        ("Website", _site_sentence(row, status, short)),
+                        ("Cron", _cron_sentence(row, status, short))):
+        head = "  " + _paint(label, "bold", colour) + " " * (_LABEL - len(label))
+        lines = textwrap.wrap(text, _WIDTH - 2 - _LABEL) or [""]
+        out.append(head + lines[0])
+        out.extend(" " * (2 + _LABEL) + piece for piece in lines[1:])
+    items, step = next_step(row)
+    out.extend(["", "Next step: %s. Type %d to do that." % (step, row.number) if items
+                else "Nothing left to do for this customer."])
+    return "\n".join(_fit_line(line) for line in out)
+
+
+# ---- New passwords for a customer's accounts ---------------------------------
+
+# No l, 1, I, O or 0: a password gets read out over the telephone, so nothing in it may read two ways.
+PASSWORD_LETTERS = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+PASSWORD_LENGTH = 16
+PASSWORDS_ONLY_NOW = ("These are shown only now and are written down nowhere: not in my notes, not on this "
+                      "server and not in plain on the new one. Give them to the customer before you go on.")
+
+
+def new_password(length=PASSWORD_LENGTH, pick=None):
+    """A password to hand to a customer, made here on the old server."""
+    pick = pick or secrets.choice
+    return "".join(pick(PASSWORD_LETTERS) for _ in range(length))
+
+
+def set_passwords(connection, row, say=print, make=new_password):
+    """Gives every mail account of one customer a new password, with the new server's own mailctl. Returns
+    [(address, password)] of the ones that were set. The password travels inside the request and goes into
+    mailctl's standard input there: it is never an argument of a command, never in the notes and never in a
+    log. Nothing is automatic about this: an account whose password the customer knows keeps working until
+    somebody asks for this."""
+    if not row.accounts():
+        _say("%s has no mail accounts on this server, so there is no password to set." % row.name, say)
+        return []
+    done, failed = [], []
+    for address in row.accounts():
+        password = make()
+        answer = connection.ask({"request": "password", "address": address, "password": password})
+        if answer.get("ok"):
+            done.append((address, password))
+        else:
+            failed.append((address, answer.get("error") or "the new server gave no reason"))
+    if done:
+        width = max(len(address) for address, _ in done)
+        _say("New mail passwords for %s:" % row.name, say)
+        say("")
+        for address, password in done:
+            say("  %s  %s" % (address.ljust(width), password))
+        say("")
+        _say(PASSWORDS_ONLY_NOW, say)
+    for address, why in failed:
+        _say("The password of %s was not changed: %s" % (address, why), say)
+    return done
+
+
+# ---- What was typed ----------------------------------------------------------
+
+def _number_words(word, count, notes, one="item", many="items"):
+    """The numbers one word names, inside a list of 'count' things, with a note when it says more than that.
+    None when the word is not a number or a range at all."""
+    match = re.fullmatch(r"([0-9]+)(?:-([0-9]+))?", word)
+    if not match:
+        return None
+    first = int(match.group(1))
+    last = int(match.group(2)) if match.group(2) else first
+    if last < first:
+        first, last = last, first
+        notes.append("%s is backwards, so it is taken as %d-%d." % (word, first, last))
+    low, high = max(first, 1), min(last, count)
+    if low > high:
+        notes.append("%s is not on the list, so nothing is picked for it." % word)
+        return []
+    if (low, high) != (first, last):
+        outside = [str(number) if number == other else "%d-%d" % (number, other)
+                   for number, other in ((first, low - 1), (high + 1, last)) if number <= other]
+        notes.append("The list has %s, so %s is taken as %s. Not on the list: %s." % (
+            _plural(count, one, many), word, "%d-%d" % (low, high) if low != high else str(low),
+            ", ".join(outside)))
+    return list(range(low, high + 1))
+
+
+UNDERSTAND = ('I don\'t understand: %s. Type a number to do its next step, a to do all of '
+              'them, "i 3" to look inside one or "p 3" to give one new mail passwords.')
+AFTER_NUMBER = '"%s" goes after a number, like "3 %s".'
+LETTER_NEEDS = '"%s" says which customer, so it goes with a number, like "%s 1".'
+
+
+class Typed(object):
+    """What was typed, worked out: 'move' is what to move, in the order that works, 'look' the customers to
+    look inside and 'passwords' the customers to give new mail passwords."""
+
+    def __init__(self):
+        self.move, self.look, self.passwords = [], [], []
+
+
+def picked(rows, typed, say=print):
+    """What was typed, as a Typed. A number does that customer's next step, "a" or "all" the next step of every
+    customer, "3 all" every step customer 3 has left, "i 3" looks inside one and "p 3" gives one new mail
+    passwords. A part by name ("3 mail") does that part alone. Ranges and commas work. A number that is not on
+    the list is never acted on, and is said so."""
+    out, picks, notes, unreadable = Typed(), [], [], []
+    words = [word for word in re.split(r"[\s,]+", str(typed).lower()) if word]
+    if not words:
+        say("You typed nothing, so nothing is picked.")
+    letter, last = None, []
+    for word in words:
+        stuck = re.fullmatch(r"([ipd])([0-9]+(?:-[0-9]+)?)", word)
+        if word in ("i", "inside", "d", "detail", "p", "password", "passwords") or stuck:
+            letter = (stuck.group(1) if stuck else word)[0]
+            if not stuck:
+                continue
+            word = stuck.group(2)
+        if word in PART_WORDS or (word in ("a", "all") and last):
+            if not last:
+                notes.append(AFTER_NUMBER % (word, word))
+            for place in last:
+                picks[place] = (picks[place][0], PART_WORDS.get(word, ""))
+            continue
+        chosen = (list(range(1, len(rows) + 1)) if word in ("a", "all")
+                  else _number_words(word, len(rows), notes, "customer", "customers"))
+        if chosen is None:
+            unreadable.append(word)
+            continue
+        last = []
+        for number in chosen:
+            row = rows[number - 1]
+            if letter == "p":
+                if row not in out.passwords:
+                    out.passwords.append(row)
+            elif letter in ("i", "d"):
+                if row not in out.look:
+                    out.look.append(row)
+            else:
+                last.append(len(picks))
+                picks.append((row, None))
+        letter = None
+    if letter:
+        notes.append(LETTER_NEEDS % (letter, letter))
+    if unreadable:
+        say(UNDERSTAND % ", ".join(unreadable))
+    seen = set()
+    for row, part in picks:
+        chosen = next_step(row)[0] if part is None else (row.to_move(part) if part else row.to_move())
+        for item in chosen:
+            if id(item) not in seen:
+                seen.add(id(item))
+                out.move.append(item)
+        if not chosen:
+            notes.append("Nothing of %s is left to do%s." % (
+                row.name, " for its %s" % PART_HEADS[part].lower() if part else ""))
+    for note in notes:
+        _say(note, say)
+    return out
 
 
 class Report(object):
@@ -1721,13 +2105,11 @@ NEEDS_PROGRAM = ("%s isn't installed on this server, and a site's files and "
 
 
 def _missing_programs(item, which=None):
-    """The programs this server needs to bring a site or a mailbox over that
+    """The programs this server needs to bring a site over that
     aren't here. Looked for before the site is made on the new server:
     finding out afterwards leaves a site made there with nothing in it."""
     which = which or shutil.which
-    if item.get("kind") == "mailbox":
-        wanted = ["rsync"]
-    elif item.get("kind") == "site":
+    if item.get("kind") == "site":
         wanted = ["rsync"] + (["mysqldump"] if item.get("database") else [])
     else:
         return []
@@ -1750,18 +2132,12 @@ def _new_web_root(item, docroots, notes):
     return None
 
 
-NO_COPIER = ("I wasn't told how to copy mail in this run, so nothing was "
-             "copied for %s.")
-
-
 def run(connection, items, ask, move=None, notes=None, status=None, php=None,
-        extra_notes=None, wp=None, copy=None):
+        extra_notes=None, wp=None):
     """Moves the items one by one and returns a Report. 'ask' is called with
     the new server's question and gives "yes" or "no". 'move' is called with
     a site and the new server's answer to its apply, after it was made, to
-    bring its files and database. 'copy' is called with a mailbox, which the
-    new server makes nothing for: its messages are copied straight into the
-    place the new server named. One item going wrong stops that item only;
+    bring its files and database. One item going wrong stops that item only;
     the new server not answering ends the run. A site that was made but not
     filled is in files_to_copy, whatever went wrong after it was made.
 
@@ -1803,22 +2179,6 @@ def run(connection, items, ask, move=None, notes=None, status=None, php=None,
                                        " ".join(missing))
                 report.skipped.append((item, why))
                 _say(why)
-                continue
-            if item.get("kind") == "mailbox":
-                # Nothing is made on the new server for a mailbox: the
-                # account is already there (that is what makes it offered),
-                # so this is the copy and the finish, and no password.
-                if copy is None:
-                    report.skipped.append((item, NO_COPIER % _title(item)))
-                    _say(NO_COPIER % _title(item))
-                    continue
-                answer = copy(item)
-                if answer.get("skipped"):
-                    report.skipped.append((item, answer.get("message")
-                                           or "Left alone, as you asked."))
-                    _say(answer.get("message") or "")
-                else:
-                    report.moved.append((item, answer))
                 continue
             left = notes.entry(item) if notes is not None else {}
             said = (status or {}).get(item.get("id")) or {}
@@ -1976,25 +2336,6 @@ def site_items(found, owner_of=_owner_of, users=None):
             "size": site.get("size"), "problem": problem,
             "wordpress": bool(site.get("wordpress"))})
     _one_user_per_site(items, given)
-    return items
-
-
-def mailbox_items(mail, places=None, mail_root=VMAIL, size_of=None, isdir=os.path.isdir):
-    """One mailbox item for each account of the mail that was found: where its messages are on this server and
-    how much there is of them. An account whose mail folder can't be found gets a problem, so it is shown and
-    not offered. It is one item per account on purpose: a mailbox of 67 GB is something a person picks."""
-    items = []
-    for account in ((mail.file.get("addresses") if mail is not None else None) or []):
-        address = str(account.get("address") or "").strip().lower() if isinstance(account, dict) else ""
-        if not address or "@" not in address:
-            continue
-        place, problem = maildir_of(address, places, mail_root, isdir)
-        item = {"id": "mailbox:" + address, "kind": "mailbox", "name": address,
-                "domain": address.partition("@")[2], "maildir": place, "size": None,
-                "problem": problem}
-        if place and size_of is not None:
-            item["size"] = size_of(place)
-        items.append(item)
     return items
 
 
@@ -2318,7 +2659,7 @@ class State(object):
 
     def moved(self, item, detail=None):
         """Writes down that this item is completely moved. 'detail' is what is worth keeping about it for a
-        later report: how many messages a mailbox had on the new server."""
+        later report."""
         entry = dict(self.entry(item), status="moved")
         if isinstance(detail, dict):
             entry.update(detail)
@@ -2594,112 +2935,6 @@ def move_site(connection, site, answer, again=False, notes=None, ask=None,
     return {"ok": True, "steps": steps}
 
 
-MAILBOX_DELETE_QUESTION = (
-    "Copying the mail of %s again also REMOVES from the new server anything "
-    "in that mailbox which is not on this server any more. Go on?")
-NOT_COPIED = ("Nothing was copied for %s: the mail already on the new server "
-              "was not to be removed.")
-MAIL_NO_DELETE_NOTE = ("Copying a mailbox only adds and replaces: a message "
-                       "that is gone here was not removed from the new "
-                       "server. To have that too, run migrate.py again "
-                       "ADDRESS, which says so before it does it.")
-MAIL_VANISHED_NOTE = ("Some messages were moved or deleted on this server "
-                      "while they were being copied, which happens on a "
-                      "mailbox that is in use. The rest came across.")
-
-
-def _new_maildir(hello, address):
-    """Where this account's mail goes on the new server: the path the new
-    server itself gave when it said hello, with the account filled in.
-    Nothing about the new server's layout is worked out here."""
-    said = (hello or {}).get("mail") if isinstance(hello, dict) else None
-    said = said if isinstance(said, dict) else {}
-    template, driver = said.get("path"), said.get("driver")
-    if not template:
-        raise MoveFailed("The new server didn't say where it keeps mail, so "
-                         "nothing was copied. Both servers must come from "
-                         "the same release of this repository.")
-    if driver and str(driver).strip().lower() != "maildir":
-        raise MoveFailed("The new server keeps mail as %s and not as a "
-                         "maildir, so I can't copy a maildir into it."
-                         % driver)
-    filled = expand_mail_path(template, address)
-    if not filled or not filled.startswith("/"):
-        raise MoveFailed("I can't work out from what the new server said "
-                         "(%s) where the mail of %s goes there, so nothing "
-                         "was copied." % (template, address))
-    return filled
-
-
-def move_mailbox(connection, item, hello=None, again=False, notes=None,
-                 ask=None, extra_notes=None, runner=run_visible):
-    """Copies one account's mail to the new server, over the connection this
-    tool already has, and then has the new server finish the mailbox off. No
-    password is needed anywhere: the messages are files. The folder it copies
-    is the one that was found on this server, and the place it goes is the
-    one the new server gave in hello; neither is made up here. Returns a
-    dict with 'ok', 'steps' and 'messages' (what the new server counted), or
-    'skipped' and 'message'. Raises MoveFailed, or Stopped when the new
-    server can't be reached. With again=True anything the new server has and
-    this one hasn't is removed, after 'ask' was told so and said yes."""
-    address = str(item.get("name") or "")
-    source = item.get("maildir")
-    if not source:
-        raise MoveFailed(item.get("problem") or "I don't know where the mail "
-                         "of %s is on this server, so nothing was copied."
-                         % address)
-    target = _new_maildir(hello, address)
-    if again:
-        reply = ask(MAILBOX_DELETE_QUESTION % address) if ask is not None else None
-        if not _is_yes(reply):
-            return {"ok": False, "skipped": True, "message": NOT_COPIED % address}
-    shell = " ".join(shlex.quote(word) for word in ["ssh"] + connection.options())
-    # -a: the messages, their times and their flags as they are. No -z: mail is small files, and the time goes
-    # into reading them, not into the wire. Slashes on both ends, so the messages land IN the maildir.
-    words = ["rsync", "-a", "-s", "--info=progress2", "-e", shell,
-             "--rsync-path", "sudo -n rsync"]
-    for name in MAILDIR_EXCLUDES:
-        words += ["--exclude", name]
-    if again:
-        words.append("--delete")
-    words += [source.rstrip("/") + "/", "%s@%s:%s/" % (connection.user, connection.host, target.rstrip("/"))]
-    try:
-        code = runner(*words)
-    except CommandFailed as problem:
-        raise MoveFailed("Copying the mail of %s did not work: %s"
-                         % (address, problem.message))
-    if code not in (0, 24):
-        raise MoveFailed("Copying the mail of %s did not work: rsync stopped "
-                         "with code %d (its own message is above)."
-                         % (address, code))
-    steps = ["Copied the mail of %s to %s on the new server." % (address, target)]
-    if code == 24:
-        steps.append(MAIL_VANISHED_NOTE)
-    if not again and extra_notes is not None and MAIL_NO_DELETE_NOTE not in extra_notes:
-        extra_notes.append(MAIL_NO_DELETE_NOTE)
-    reply = connection.ask({"request": "finish_mailbox", "address": address})
-    if not reply.get("ok"):
-        raise MoveFailed("The mail of %s is across, but the new server could "
-                         "not finish the mailbox off: %s Copy it again to "
-                         "finish it." % (address, reply.get("error")
-                                         or "it gave no reason."))
-    steps.extend(step for step in reply.get("steps", []) if isinstance(step, str))
-    count = reply.get("messages")
-    if notes is not None:
-        notes.moved(item, {"messages": count} if isinstance(count, int)
-                    and not isinstance(count, bool) else None)
-    return {"ok": True, "steps": steps,
-            "messages": count if isinstance(count, int) and not isinstance(count, bool) else None}
-
-
-def copier(connection, notes, hello, ask=None, extra_notes=None, **fakes):
-    """The 'copy' that run() and do_again() call with a mailbox."""
-    def copy(item, again=False):
-        return move_mailbox(connection, item, hello, again=again, notes=notes,
-                            ask=ask, extra_notes=extra_notes, **fakes)
-    return copy
-
-
 def mover(connection, notes, ask, extra_notes=None, **fakes):
     """The 'move' that run() calls with a site and the answer to its apply."""
     def move(item, answer):
@@ -2708,24 +2943,16 @@ def mover(connection, notes, ask, extra_notes=None, **fakes):
     return move
 
 
-def do_again(connection, items, notes, ask, extra_notes=None, copy=None,
-             **fakes):
+def do_again(connection, items, notes, ask, extra_notes=None, **fakes):
     """Copies the files of sites already moved once and replaces their
-    database, and copies the mail of a mailbox again, each only after the
-    question for it got a yes. Returns a Report: moved, skipped (said no)
-    and failed. The new server's place for a site's files is the one
-    remembered from the run that made it. For a mailbox this is the one way
-    to a copy that also removes what the new server has and this one hasn't,
-    which is why the question says so."""
+    database, each only after the question for it got a yes. Returns a
+    Report: moved, skipped (said no) and failed. The new server's place for a
+    site's files is the one remembered from the run that made it."""
     report = Report()
     for index, item in enumerate(items):
         entry = notes.entry(item)
         try:
-            if item.get("kind") == "mailbox":
-                if copy is None:
-                    raise MoveFailed(NO_COPIER % item.get("name"))
-                result = copy(item, again=True)
-            elif not entry.get("docroot"):
+            if not entry.get("docroot"):
                 raise MoveFailed("I don't know where %s's files go on the "
                                  "new server: it was not made by this tool "
                                  "here." % item["name"])
@@ -2821,21 +3048,6 @@ def _ask_dns(connection, domain):
     return None, str(answer.get("error") or "the new server gave no records")
 
 
-MAIL_COPIED = ("The messages were copied straight from this server to the "
-               "new one over ssh, so there is nothing to do by hand for the "
-               "mail. A mailbox can be copied again later, to pick up what "
-               "came in since: migrate.py again ADDRESS.")
-
-
-def _messages_said(answer):
-    """How many messages the new server counted in a mailbox after the copy, in words. That count is the one
-    honest proof the mail arrived, so when it is missing this says so and does not make one up."""
-    count = answer.get("messages") if isinstance(answer, dict) else None
-    if isinstance(count, int) and not isinstance(count, bool):
-        return "%s on the new server" % _plural(count, "message", "messages")
-    return "copied, but the new server could not say how many messages it has"
-
-
 def _same_item(one, other):
     return one.get("id") is not None and one.get("id") == other.get("id")
 
@@ -2844,27 +3056,32 @@ def _cron_by_hand(item):
     return item.get("kind") == "cron" and item.get("problem") == NO_SITE_JOB
 
 
+def loose_databases(found_sites, databases, mail_database):
+    """The databases on this server that belong to no site: not a site's own, not the mail server's and not one
+    the server itself needs. They are only reported, never moved."""
+    known = set(SYSTEM_DATABASES) | {SPAM_DATABASE}
+    known.update(name for name in (mail_database,) if name)
+    known.update(site["database"] for site in (found_sites or []) if site.get("database"))
+    return sorted(name for name in (databases or {}) if name not in known)
+
+
 def _inventory_lists(found_sites, databases, mail_database, jobs, notes):
     """The lists about the whole server, as lines: (cron jobs that belong to
     no site, sites that are not WordPress, databases that belong to no site,
     what could not be read)."""
     others = [s for s in (found_sites or []) if not s.get("wordpress")]
-    known = set(SYSTEM_DATABASES) | {SPAM_DATABASE}
-    known.update(d for d in (mail_database,) if d)
-    known.update(s["database"] for s in (found_sites or [])
-                 if s.get("database"))
     return (["%s (user %s)" % (j["line"], j.get("old_user") or j.get("user"))
              for j in jobs],
             ["%s (files in %s)" % (s["name"], s.get("docroot")
                                    or "an unknown place") for s in others],
-            sorted(name for name in (databases or {}) if name not in known),
+            loose_databases(found_sites, databases, mail_database),
             list(notes or []))
 
 
 def report(result, connection=None, old_server=None, found_sites=None,
            mail=None, databases=None, items=None, notes=None,
            extra_notes=None, mail_database=None, addresses=None,
-           everything=False, new_server=None):
+           everything=False, new_server=None, passwords=None):
     """What a run did and what is still to do by hand, as text of at most
     79 columns. 'connection' is asked for the DNS records; 'found_sites' is
     sites(), 'databases' is database_sizes(), 'items' everything the
@@ -2915,14 +3132,10 @@ def report(result, connection=None, old_server=None, found_sites=None,
 
     domains = [item.get("name") or "" for item, _ in moved
                if item.get("kind") == "mail_domain"]
-    boxes = [(item, answer) for item, answer in moved
-             if item.get("kind") == "mailbox"]
-    if boxes:
-        _section(out, "Mail messages copied to %s, and what it counted "
-                 "afterwards:" % new_name,
-                 _bullets("%s: %s" % (_title(item), _messages_said(answer))
-                          for item, answer in boxes))
-        out.extend([""] + textwrap.wrap(MAIL_COPIED, 79))
+    if passwords:
+        _section(out, "New mail passwords, set in this run:",
+                 _bullets("%s  %s" % (address, password) for address, password in passwords))
+        out.extend([""] + textwrap.wrap(PASSWORDS_ONLY_NOW, _WIDTH))
     dns_said = False
     for domain in domains:
         text, why = _ask_dns(connection, domain) if connection else (None, None)
@@ -3002,8 +3215,8 @@ def report(result, connection=None, old_server=None, found_sites=None,
 
 # ---- Running it ---------------------------------------------------------------
 
-HELP_DESCRIPTION = """Moves the mail, the mail messages, the WordPress sites and the cron jobs of
-this server to a new one.
+HELP_DESCRIPTION = """Moves the mail accounts, the WordPress sites and the cron jobs of this
+server to a new one. The mail messages themselves are not moved.
 
 How to use it:
   1. Copy this one file to the OLD server, for example from your own machine:
@@ -3015,8 +3228,12 @@ How to use it:
   3. On the old server, as root, run it:
        python3 migrate.py
      It asks for the new server's name the first time and remembers it. It
-     shows what is here and what the new server already has, and then stays
-     up: type the numbers to move, r to look around again, q to leave.
+     shows one row for each customer, with where its mail, its website and
+     its cron jobs stand and what its next step is, and then stays up: a
+     number does that customer's next step, a does the next step of every
+     customer, "3 all" every step one customer has left, "i 3" says what one
+     holds, "p 3" gives its accounts new passwords, r looks around again and
+     q leaves.
 
 The commands below do one thing each and stop, which is what a script wants;
 each takes --help of its own. --no-colour leaves the colour off.
@@ -3036,9 +3253,9 @@ COMMANDS = (
     ("forget", "forget the new server's name, so it is asked for again"),
     ("check", "connect, and say which server answered and what it has"),
     ("list", "look around and show what can be moved (changes nothing)"),
-    ("move", "move what the numbers name (asks which, with none given)"),
-    ("again", "catch up what already moved: a site's files and database, "
-     "or one mailbox's mail"),
+    ("move", "do the next step of the customers the numbers name (asks "
+     "which, with none given)"),
+    ("again", "catch up what already moved: a site's files and database"),
     ("report", "print the report of what has been done so far"),
 )
 
@@ -3093,18 +3310,19 @@ def _parser():
     _options(commands.add_parser("list", help=helps["list"],
                                  description=helps["list"]))
     move = commands.add_parser("move", help=helps["move"],
-                               description=helps["move"] + ". Numbers, ranges "
-                               "like 2-5, commas and 'all' work.")
+                               description=helps["move"] + ". A number does "
+                               "that customer's next step; numbers, ranges "
+                               "like 2-5, commas, 'all' and '3 all' work.")
     move.add_argument("numbers", nargs="*", metavar="NUMBERS",
-                      help="the numbers on the list, like 1 3, 2-5 or all")
+                      help="the numbers on the screen, like 1 3, 2-5, all, or "
+                      "'3 all' for every step one customer has left")
     _options(move)
     again = commands.add_parser("again", help=helps["again"],
                                 description=helps["again"] + ". Copies its "
                                 "files again and replaces its database, after "
                                 "asking.")
     again.add_argument("domain", metavar="DOMAIN",
-                       help="the site that already moved, or one mail "
-                       "address, for its mailbox")
+                       help="the site that already moved")
     _options(again, domain=False)
     return parser
 
@@ -3112,15 +3330,11 @@ def _parser():
 def _arguments(argv):
     args = _parser().parse_args(argv)
     args.again = args.command == "again"
-    args.address = None
-    if args.again and "@" in (getattr(args, "domain", None) or ""):
-        # `again ADDRESS` is the catch-up of one mailbox; the domain part is what to look at while finding it.
-        args.address = args.domain.strip().lower()
-        args.domain = args.address.partition("@")[2]
     if not hasattr(args, "numbers"):
         args.numbers = []
     for name, value in (("host", None), ("domain", None), ("user", None),
-                        ("everything", False), ("no_colour", False)):
+                        ("everything", False), ("no_colour", False),
+                        ("sizes", False)):
         if not hasattr(args, name):
             setattr(args, name, value)
     return args
@@ -3254,18 +3468,6 @@ def _look_around(args, notes, run=run_command):
 
     database, mail = _step("Looking at the mail", look_at_mail, mail_summary)
 
-    def look_at_mailboxes():
-        return mailbox_items(mail, mail_places(run, notes),
-                             size_of=lambda place: directory_size(run, place, notes))
-
-    def mailbox_summary(found):
-        total = sum(item["size"] for item in found if item.get("size"))
-        missing = len([item for item in found if item.get("problem")])
-        return "%s, %s%s" % (_plural(len(found), "mailbox", "mailboxes"), _size(total),
-                             ", %d not found" % missing if missing else "")
-
-    boxes = _step("Looking at the mail messages", look_at_mailboxes,
-                  mailbox_summary) if mail is not None else []
     every, sizes, plumbing = _step("Looking at the websites", look_at_sites,
                                    site_summary)
 
@@ -3282,7 +3484,6 @@ def _look_around(args, notes, run=run_command):
         jobs = [j for j in jobs if j.get("site") in names]
         plumbing = [s for s in plumbing if _in_domain(s["name"], domain)]
     items = _domain_items(mail) if mail else []
-    items += boxes
     minted = site_items(found, users=_user_for(found, domain, wanted_user))
     items += minted + cron_items(jobs, minted)
     items += [{"id": "aside:" + s["name"], "kind": "aside", "name": s["name"]}
@@ -3305,6 +3506,12 @@ def _user_for(found, domain, user):
     return {wanted[0]: user}
 
 
+# What the new server can answer from the two lists it reads once, `mailctl domain list` and `domainctl list`.
+# A cron job costs it a read of a crontab each, so jobs are asked about one customer at a time instead, when
+# that customer is looked into or moved.
+CHEAP_KINDS = ("mail_domain", "site")
+
+
 def _status_of(connection, items):
     answer = connection.ask({"request": "status", "items": [
         item for item in items if item.get("kind") != "aside"]})
@@ -3319,21 +3526,14 @@ def _choose(lines, prompt):
     return pick(lines, typed)
 
 
-def _to_do_again(items, state, status, address=None):
+def _to_do_again(items, state, status):
     """What a catch-up can be done for: a site this tool moved, whose place on the new server it knows and which
-    the new server still has, and a mailbox it copied whose account is still there. Before the DNS is flipped the
-    new server reports a site it made itself as 'exists', which is what lets this be the catch-up before the
-    flip that the design asks for. With an address, only that one mailbox."""
-    sites = [item for item in items if item.get("kind") == "site"
-             and state.entry(item).get("status") == "moved"
-             and state.entry(item).get("docroot")
-             and (status.get(item["id"]) or {}).get("state") == "exists"]
-    boxes = [item for item in items if item.get("kind") == "mailbox"
-             and state.entry(item).get("status") == "moved"
-             and (status.get(item["id"]) or {}).get("state") == "new"]
-    if address:
-        return [item for item in boxes if item.get("name") == address]
-    return sites + boxes
+    the new server still has. Before the DNS is flipped the new server reports a site it made itself as
+    'exists', which is what lets this be the catch-up before the flip that the design asks for."""
+    return [item for item in items if item.get("kind") == "site"
+            and state.entry(item).get("status") == "moved"
+            and state.entry(item).get("docroot")
+            and (status.get(item["id"]) or {}).get("state") == "exists"]
 
 
 def _new_name(connection, hello):
@@ -3347,18 +3547,50 @@ def _inspect(args, connection, notes, doing, hello):
     mail, database, found, sizes, items = _look_around(args, notes)
     doing[0] = "asking the new server what it already has"
     name = _short_name(_new_name(connection, hello))
+    asked = [item for item in items if item.get("kind") in CHEAP_KINDS]
     status = _step("Asking %s what it has" % name,
-                   lambda: _status_of(connection, items), lambda said: "answered")
+                   lambda: _status_of(connection, asked) if asked else {},
+                   lambda said: "answered")
     return mail, database, found, sizes, items, status
 
 
-def _board(items, status, state, connection, hello, hint=True, detail=False,
-           colour=None):
-    return dashboard(items, status, state, detail=detail,
+def _board(items, status, state, connection, hello, colour=None,
+           rows=None, databases=None):
+    """The screen: one row for each customer, and the next step for each."""
+    return dashboard(items, status, state, rows=rows, databases=databases,
                      colour=_wanted_colour() if colour is None else colour,
                      old_server=socket.gethostname(),
                      new_server=_new_name(connection, hello),
-                     addresses=(hello or {}).get("addresses"), hint=hint)
+                     addresses=(hello or {}).get("addresses"))
+
+
+def _loose_of(looked):
+    """The databases that belong to no site, from what looking around found."""
+    _, database, found, sizes, _, _ = looked
+    return loose_databases(found, sizes, database)
+
+
+def _ask_about(connection, row, status, hello, done):
+    """Asks the new server about one customer's own cron jobs, which the start of a run leaves alone. Once per
+    customer in a run: asking again would read the same crontab again."""
+    if row.name in done:
+        return
+    done.add(row.name)
+    asking = [item for item in row.every() if item.get("kind") not in CHEAP_KINDS]
+    if asking:
+        _step("Asking %s about %s" % (_short_name(_new_name(connection, hello)),
+                                      _fit(row.name, 24, True)),
+              lambda: status.update(_status_of(connection, asking)),
+              lambda said: "answered")
+
+
+def _look_inside(connection, row, status, state, hello, done, colour=False):
+    """What `i N` does: asks the new server about this customer's jobs, then says in sentences what the
+    customer holds and what its number does next."""
+    _ask_about(connection, row, status, hello, done)
+    print()
+    print(inside(row, status, state, colour=colour,
+                 new_server=_new_name(connection, hello)))
 
 
 def _lay_of_the_land(found, sizes, database, items, notes):
@@ -3377,13 +3609,18 @@ def _lay_of_the_land(found, sizes, database, items, notes):
 
 
 def _list(args, connection, state, notes, doing=None, hello=None):
-    """Looks around and prints the dashboard. Changes nothing."""
+    """Looks around and prints every item there is, with the number of the customer each belongs to. Changes
+    nothing."""
     doing = doing if doing is not None else [""]
     mail, database, found, sizes, items, status = _inspect(
         args, connection, notes, doing, hello)
     print()
-    print(_board(items, status, state, connection, hello, detail=True,
-                 colour=_wanted_colour(args)))
+    print(items_board(items, status, state, detail=True,
+                      numbers=_domain_numbers(customers(items, status, state)),
+                      colour=_wanted_colour(args),
+                      old_server=socket.gethostname(),
+                      new_server=_new_name(connection, hello),
+                      addresses=(hello or {}).get("addresses")))
     lines = _lay_of_the_land(found, sizes, database, items, notes)
     if lines:
         print("\n" + "\n".join(lines))
@@ -3412,10 +3649,6 @@ def _will_happen(item, state=None):
         return ("its files%s are copied to the new server, as the user %s"
                 % (" and its database of %s" % size if size else " and its database"
                    if item.get("database") else "", item.get("user") or site_user(item["name"])))
-    if kind == "mailbox":
-        size = _size(item.get("size"))
-        return ("its messages%s are copied straight to the new server, with "
-                "no password needed" % (" (%s)" % size if size else ""))
     if kind == "cron":
         command = _cron_parts_of(item)[1]
         return "%s: %s, goes into the crontab of %s on the new server" % (
@@ -3424,26 +3657,36 @@ def _will_happen(item, state=None):
     return "moved"
 
 
-def _confirmed(lines, chosen, ask, state=None):
+def _confirmed(chosen, ask, state=None, numbers=None):
     """Says what each picked item is and what will happen to it, then asks.
-    True when it got a yes."""
+    True when it got a yes. 'numbers' is {id(item): the number it was picked
+    by}, which is the number of its domain."""
     print("You picked:")
-    for item in chosen:
-        text = "%d. %s %s: %s" % (lines.index(item) + 1,
+    for place, item in enumerate(chosen, 1):
+        text = "%s. %s %s: %s" % ((numbers or {}).get(id(item)) or place,
                                   KIND_NAMES.get(item.get("kind"), "Other"),
                                   _fit(_title(item), 40, True), _will_happen(item, state))
         print("\n".join(textwrap.wrap(text, _WIDTH, subsequent_indent="   ")))
     return _is_yes(ask("Go ahead? Type yes or no: "))
 
 
-PICK_PROMPT = "Numbers to move (like 1 3, 2-5, all; Enter for none): "
-LIVE_PROMPT = "What now? Numbers to move, r to look again, q to leave: "
-LIVE_HELP = ("Type the numbers of what to move (like 1 3, 2-5 or all), r to "
-             "look around again, or q to leave.")
+PICK_PROMPT = 'Numbers to do their next step (a for all of them; Enter for none): '
+LIVE_PROMPT = ('Type a number to do its next step, a for all of them, "i 3" to look '
+               'inside one, "p 3" to give one new mail passwords, q to leave: ')
+LIVE_HELP = ('A number does the next step of that customer, a does the next step of every '
+             'customer, "i 3" shows what one holds, "p 3" gives its accounts new '
+             'passwords, r looks around again and q leaves. "3 all" does every step one '
+             'customer has left.')
+
+
+def _live_prompt(colour):
+    """The prompt as it is printed: wrapped to the width, like everything else."""
+    return "\n".join(_paint(line, "bold", colour)
+                     for line in textwrap.wrap(LIVE_PROMPT, _WIDTH)) + " "
 
 
 def _move_and_report(connection, state, notes, looked, hello, chosen,
-                     doing=None):
+                     doing=None, passwords=None):
     """Moves what was picked and prints the report of that move alone.
     'looked' is what _inspect found. Returns the Report."""
     doing = doing if doing is not None else [""]
@@ -3451,8 +3694,7 @@ def _move_and_report(connection, state, notes, looked, hello, chosen,
     extra = []
     doing[0] = "moving what you picked"
     move = mover(connection, state, _question, extra)
-    copy = copier(connection, state, hello, _question, extra)
-    result = run(connection, chosen, _question, move=move, copy=copy,
+    result = run(connection, chosen, _question, move=move,
                  notes=state, status=status, php=(hello or {}).get("php"),
                  wp=(hello or {}).get("wp"), extra_notes=extra)
     moved_domains = [i["name"] for i, _ in result.moved
@@ -3463,7 +3705,7 @@ def _move_and_report(connection, state, notes, looked, hello, chosen,
                  old_server=socket.gethostname(), found_sites=found,
                  mail=_left_out_of(mail, moved_domains), databases=sizes,
                  items=items, notes=notes, extra_notes=extra,
-                 mail_database=database,
+                 mail_database=database, passwords=passwords,
                  addresses=(hello or {}).get("addresses")))
     return result
 
@@ -3473,7 +3715,7 @@ def _again(args, connection, state, notes, looked, doing, hello):
     its database, each after a question."""
     mail, database, found, sizes, items, status = looked
     extra = []
-    chosen = _to_do_again(items, state, status, getattr(args, "address", None))
+    chosen = _to_do_again(items, state, status)
     if not chosen:
         _say("Nothing that moved from here is still on the new server, so "
              "there is nothing to copy again. A site the new server no "
@@ -3484,8 +3726,7 @@ def _again(args, connection, state, notes, looked, doing, hello):
             print("%3d  %s %s" % (number, KIND_NAMES.get(item.get("kind"), "Item"), _title(item)))
         chosen = _choose(chosen, "Numbers to copy again (like 1 3, 2-5, "
                          "all; Enter for none): ")
-    result = do_again(connection, chosen, state, _question, extra,
-                      copy=copier(connection, state, hello, _question, extra))
+    result = do_again(connection, chosen, state, _question, extra)
     print()
     doing[0] = "writing the report"
     print(report(result, connection=connection,
@@ -3503,67 +3744,94 @@ def _work(args, connection, state, notes, doing=None, hello=None):
     PHP and wp-cli it has, for the cron jobs, and its own addresses, for the
     DNS records in the report."""
     doing = doing if doing is not None else [""]
+    colour = _wanted_colour(args)
     looked = _inspect(args, connection, notes, doing, hello)
     items, status = looked[4], looked[5]
     print()
     if args.again:
         return _again(args, connection, state, notes, looked, doing, hello)
-    numbers = getattr(args, "numbers", None)
-    lines = offered(items, status, state)
-    chosen = []
-    if numbers:
-        chosen = pick(lines, " ".join(numbers))
-    else:
-        print(_board(items, status, state, connection, hello, hint=False,
-                     colour=_wanted_colour(args)))
-        if lines:
-            chosen = _choose(lines, PICK_PROMPT)
-    if chosen and not _confirmed(lines, chosen, _typed, state):
+    rows = customers(items, status, state)
+    typed = " ".join(getattr(args, "numbers", None) or [])
+    if not typed:
+        print(_board(items, status, state, connection, hello, colour=colour,
+                     rows=rows, databases=_loose_of(looked)))
+        if rows:
+            typed = _typed(PICK_PROMPT)
+    chosen = picked(rows, typed) if typed.strip() else Typed()
+    done = set()
+    for row in chosen.look:
+        _look_inside(connection, row, status, state, hello, done, colour)
+    passwords = []
+    for row in chosen.passwords:
+        passwords.extend(set_passwords(connection, row))
+    moving = set(id(item) for item in chosen.move)
+    for row in rows:
+        if any(id(item) in moving for item in row.every()):
+            _ask_about(connection, row, status, hello, done)
+    if chosen.move and not _confirmed(chosen.move, _typed, state,
+                                      _domain_numbers(rows)):
         print("Nothing will be moved.")
-        chosen = []
-    return _move_and_report(connection, state, notes, looked, hello, chosen,
-                            doing)
+        chosen.move = []
+    return _move_and_report(connection, state, notes, looked, hello,
+                            chosen.move, doing, passwords)
 
 
 def _live(args, connection, state, notes, doing=None, hello=None):
-    """The tool as people use it, with no subcommand: the dashboard, then a
-    prompt that stays up. Numbers move what they name, and the report of
-    that move is printed; r looks around again; q or the end of the input
-    leaves. After a move it looks around again, so what is on the screen is
-    what the new server really has by then. Returns the last Report, or
-    None when nothing was moved."""
+    """The tool as people use it, with no subcommand: the screen with one row
+    for each customer, and then a prompt that stays up. A number does that
+    customer's next step, a does the next step of every customer in turn,
+    "i 3" looks inside one, "p 3" gives one's accounts new passwords, r looks
+    around again, q or the end of the input leaves. The report of each move is
+    printed; after a move it looks around again, so what is on the screen is
+    what the new server really has by then. The screen is drawn again only
+    when it has changed, so an answer to the prompt does not push it off the
+    top. Returns the last Report, or None when nothing was moved."""
     doing = doing if doing is not None else [""]
     colour = _wanted_colour(args)
-    result, looked = None, None
+    result, looked, asked, passwords, draw = None, None, set(), [], True
     while True:
         if looked is None:
             del notes[:]
             looked = _inspect(args, connection, notes, doing, hello)
+            asked, draw = set(), True
         items, status = looked[4], looked[5]
-        lines = offered(items, status, state)
+        rows = customers(items, status, state)
+        if draw:
+            print()
+            print(_board(items, status, state, connection, hello,
+                         colour=colour, rows=rows, databases=_loose_of(looked)))
+        draw = True
         print()
-        print(_board(items, status, state, connection, hello, hint=False,
-                     colour=colour))
-        print()
-        doing[0] = "waiting for you to say what to move"
-        typed = _typed_line(_paint(LIVE_PROMPT, "bold", colour))
+        doing[0] = "waiting for you to say what to do"
+        typed = _typed_line(_live_prompt(colour))
         word = (typed or "").strip().lower()
         if typed is None or word in ("q", "quit"):
             return result
         if word == "r":
             looked = None
             continue
-        if not word:
+        if not word or word in ("?", "h", "help"):
             _say(LIVE_HELP)
+            draw = False
             continue
-        chosen = pick(lines, typed)
-        if not chosen:
+        chosen = picked(rows, typed)
+        for row in chosen.look:
+            _look_inside(connection, row, status, state, hello, asked, colour)
+        for row in chosen.passwords:
+            doing[0] = "setting new mail passwords"
+            passwords.extend(set_passwords(connection, row))
+        if not chosen.move:
+            draw = False  # the screen says the same as it did: it stays where it is
             continue
-        if not _confirmed(lines, chosen, _typed, state):
-            print("Nothing will be moved.")
-            continue
+        # A job is only asked about one customer at a time, so the jobs of
+        # what is about to move are asked about now: a job already there is
+        # not sent again.
+        moving = set(id(item) for item in chosen.move)
+        for row in rows:
+            if any(id(item) in moving for item in row.every()):
+                _ask_about(connection, row, status, hello, asked)
         result = _move_and_report(connection, state, notes, looked, hello,
-                                  chosen, doing)
+                                  chosen.move, doing, passwords)
         if result.interrupted:
             return result
         looked = None  # what the new server has has changed: look again
@@ -3585,17 +3853,13 @@ def _show_check(hello, host, colour):
                              + " (the new server is not built with this repository)"))
     for name, what in (("php", "PHP"), ("wp", "wp-cli")):
         print("%-10s  %s" % (what, hello.get(name) or "not found"))
-    mail = hello.get("mail") if isinstance(hello.get("mail"), dict) else {}
-    print("%-10s  %s" % ("mail", "%s, owned by %s:%s" % (
-        mail["path"], mail.get("owner") or "?", mail.get("group") or "?") if mail.get("path")
-        else _paint("it didn't say where it keeps mail", "yellow", colour)
-        + ", so mail messages can't be copied there"))
+
 
 
 def _result_from_notes(state):
     """A Report of what the notes say was done: no looking around, no new
     server. A site that was made and not filled is files still to copy."""
-    kinds = {"mail": "mail_domain", "mailbox": "mailbox", "site": "site", "cron": "cron"}
+    kinds = {"mail": "mail_domain", "site": "site", "cron": "cron"}
     result = Report()
     for key in sorted(state.items):
         word, _, name = key.partition(":")
@@ -3605,8 +3869,7 @@ def _result_from_notes(state):
                 "name": name if word != "cron" else "job " + name}
         status = state.items[key].get("status")
         if status == "moved":
-            result.moved.append((item, {"docroot": state.items[key].get("docroot"),
-                                        "messages": state.items[key].get("messages")}))
+            result.moved.append((item, {"docroot": state.items[key].get("docroot")}))
         elif status == "made":
             result.files_to_copy.append(item)
     return result
@@ -3626,11 +3889,6 @@ def _try_connecting(host):
 
 
 def _check_arguments(args):
-    if getattr(args, "address", None):
-        reason = _address_problem(args.address)
-        if reason:
-            raise Stopped("'%s' isn't a mail address I can look for: %s"
-                          % (args.address, reason))
     if args.domain and not _DOMAIN_ARGUMENT.fullmatch(args.domain):
         raise Stopped("'%s' isn't a domain name." % args.domain)
     if args.user and not args.domain:
@@ -3695,8 +3953,8 @@ def main(argv=None, geteuid=os.geteuid):
     args = _arguments(argv)
     colour = _wanted_colour(args)
     if geteuid() != 0:
-        print(_paint("Run me as root: I read other users' cron jobs and "
-                     "mailboxes.", "red", colour))
+        print(_paint("Run me as root: I read other users' cron jobs, mail "
+                     "settings and websites.", "red", colour))
         return 1
     doing = ["starting"]
     try:

@@ -7,10 +7,8 @@ mailctl and domainctl are only ever run as commands, never imported, so either m
 """
 
 import glob
-import grp
 import json
 import os
-import pwd
 import re
 import shutil
 import socket
@@ -20,14 +18,9 @@ import sys
 import tempfile
 import unicodedata
 
-PROTOCOL_VERSION = 3  # it goes up with every change to the requests or the answers; migrate.py refuses another
+PROTOCOL_VERSION = 4  # it goes up with every change to the requests or the answers; migrate.py refuses another
 TOOLS = ("mailctl", "domainctl")
 LIST_TIMEOUT = 60
-# What Dovecot's own settings call the place where mail is kept: mail_path is 2.4's, mail_location 2.3's.
-MAIL_SETTINGS = ("mail_path", "mail_location", "mail_home", "mail_driver")
-# Reading a big maildir in again takes long, and the old server waits half an hour for this request.
-RESYNC_TIMEOUT = 1500
-MOVE_DOMAIN_FIRST = "move its domain first"  # the words the old server's list shows; both halves say the same
 # OpenLiteSpeed's own PHP, where the web role installs it, for a server that has no php on the path at all.
 OLS_PHP = "/usr/local/lsws/lsphp*/bin/lsphp"
 # Where domainctl's own wordpress module runs wp-cli from, so a job that runs wp has somewhere to point here.
@@ -71,114 +64,6 @@ def _addresses():
     return found
 
 
-def _doveconf():
-    """What `doveconf -n` says here, of the settings in MAIL_SETTINGS. Empty when doveconf isn't installed or
-    can't be read: this server then says nothing about where mail goes, and the old one says it can't copy
-    rather than copying somewhere made up."""
-    if shutil.which("doveconf") is None:
-        return {}
-    try:
-        done = subprocess.run(["doveconf", "-n"], capture_output=True, text=True, timeout=LIST_TIMEOUT,
-                              stdin=subprocess.DEVNULL)
-    except (OSError, subprocess.SubprocessError):
-        return {}
-    if done.returncode != 0:
-        return {}
-    found = {}
-    for line in done.stdout.splitlines():
-        match = re.match(r"\s*(%s)\s*=\s*(\S.*)$" % "|".join(MAIL_SETTINGS), line)
-        if match and match.group(1) not in found:
-            found[match.group(1)] = match.group(2).strip()
-    return found
-
-
-def _setting_path(value):
-    """(the path a mail_path or mail_location setting names, the driver it names or None). mail_location is
-    'driver:path' and may carry options behind the path; mail_path is the path on its own."""
-    text = str(value or "").strip()
-    if not text:
-        return None, None
-    driver = None
-    head, found, rest = text.partition(":")
-    if found and not head.startswith(("/", "~", "%")):
-        driver, text = head.strip().lower(), rest.strip()
-    text = text.split(":")[0].strip()
-    return (text or None), driver
-
-
-_MAIL_VARIABLES = ((r"%\{user\s*\|\s*domain\}", "domain"), (r"%\{user\s*\|\s*username\}", "local"),
-                   (r"%\{user\}", "address"), (r"%d", "domain"), (r"%n", "local"), (r"%u", "address"))
-
-
-def _filled_in(template, address, home=None):
-    """A Dovecot path with one account filled in, the same way the old server fills it in. None when something
-    is left in it that this doesn't know: no path here is ever guessed."""
-    local, _, domain = str(address or "").partition("@")
-    if not local or not domain:
-        return None
-    text = str(template or "").strip()
-    if not text:
-        return None
-    if "%h" in text or text.startswith("~"):
-        home = _filled_in(home, address) if home else None
-        if not home:
-            return None
-        text = text.replace("%h", home)
-        if text.startswith("~"):
-            text = home + text[1:]
-    parts = {"domain": domain, "local": local, "address": address}
-    for pattern, part in _MAIL_VARIABLES:
-        text = re.sub(pattern, parts[part], text)
-    return None if "%" in text else text
-
-
-def _name_of_user(uid):
-    try:
-        return pwd.getpwuid(uid).pw_name
-    except KeyError:
-        return str(uid)
-
-
-def _name_of_group(gid):
-    try:
-        return grp.getgrgid(gid).gr_name
-    except KeyError:
-        return str(gid)
-
-
-def _mail_owner(template):
-    """The owner, group and mode a maildir that is already here has, found by looking at one: the template says
-    how deep they are, so nothing about the layout is assumed. {} when there is none to look at yet."""
-    text = str(template or "")
-    if not text.startswith("/"):
-        return {}
-    pattern = "/".join("*" if "%" in part else part for part in text.split("/"))
-    for place in sorted(glob.glob(pattern)):
-        try:
-            found = os.stat(place)
-        except OSError:
-            continue
-        return {"owner": _name_of_user(found.st_uid), "group": _name_of_group(found.st_gid),
-                "uid": found.st_uid, "gid": found.st_gid, "mode": "0%o" % stat.S_IMODE(found.st_mode)}
-    return {}
-
-
-def mail_place():
-    """Where this server keeps mail, for the old server to copy a maildir into: the path Dovecot itself is
-    configured with, the driver that goes with it, and the owner, group and mode of a maildir that is already
-    here. Nothing is written into this file: what can't be read is left out, and the old server then says it
-    can't copy."""
-    try:
-        settings = _doveconf()
-        path, driver = _setting_path(settings.get("mail_path") or settings.get("mail_location"))
-        found = {"path": path, "home": settings.get("mail_home"),
-                 "driver": (settings.get("mail_driver") or driver or "").strip().lower() or None}
-        found.update(_mail_owner(path))
-        return found
-    except OSError:
-        return {}
-
-
 def hello(request):
     return {
         "ok": True,
@@ -188,7 +73,6 @@ def hello(request):
         "php": _php(),
         "wp": _wp(),
         "addresses": _addresses(),
-        "mail": mail_place(),
     }
 
 
@@ -349,46 +233,8 @@ def _cron_state(item, cache):
     return "new", f"The crontab of {user} doesn't have this job yet."
 
 
-def _accounts_here(domain, cache):
-    """The addresses mailctl has for a domain here, in lower case."""
-    accounts = cache.setdefault("accounts", {})
-    if domain not in accounts:
-        accounts[domain] = {row[0].lower() for row in
-                            _table_rows(["mailctl", "address", "list", domain], f"the accounts of {domain}")}
-    return accounts[domain]
-
-
-def _messages(address):
-    """How many messages this server holds for an account, as doveadm counts them in every folder. After a copy
-    this count is the only honest proof the mail arrived."""
-    found = _run(["doveadm", "mailbox", "status", "-u", address, "messages", "*"],
-                 f"Counting the messages of {address}")
-    return sum(int(number) for number in re.findall(r"messages=([0-9]+)", found))
-
-
-def _mailbox_state(item, cache):
-    """What this server has for one account's mail. Its messages can only go where the account already is, so an
-    account that isn't here yet is refused with the one thing to do about it: move its domain first."""
-    address = _text(item, "name").strip().lower()
-    if len(address) > MAX_ADDRESS or not _ADDRESS.fullmatch(address):
-        raise ValueError(f"{address!r} isn't a valid mail address")
-    domain = address.partition("@")[2]
-    if domain not in {row[0] for row in _mail_domains(cache)}:
-        return "refused", f"{domain} is not on this server yet, so {MOVE_DOMAIN_FIRST}."
-    if address not in _accounts_here(domain, cache):
-        return "refused", f"{address} is not an account on this server yet, so {MOVE_DOMAIN_FIRST}."
-    try:
-        count = _messages(address)
-    except Failed as error:
-        return "new", f"{address} is here, but I couldn't count its messages: {error}"
-    if count == 0:
-        return "new", f"{address} has no messages yet."
-    return "new", f"{address} has {count} messages, and a copy only adds to them."
-
-
 KINDS = {  # kind -> (tool it needs, how to judge an item)
     "mail_domain": ("mailctl", _mail_domain_state),
-    "mailbox": ("doveadm", _mailbox_state),  # mailctl says whose account it is, doveadm what is in it
     "site": ("domainctl", _site_state),
     "cron": ("crontab", _cron_state),  # the command that reads it is the one that writes it
 }
@@ -789,62 +635,23 @@ def finish_site(request):
     return {"ok": True, "steps": [f"Gave the files in {docroot} to {user}.", "Updated the web server."]}
 
 
-def _owner_from_parent(place):
-    """(uid, gid, the mode folders get, the mode files get) of the folder the maildir sits in. Taking it from
-    there is what keeps this server's own user, group and modes, whatever they are, instead of numbers written
-    into this file."""
-    found = os.stat(os.path.dirname(place.rstrip("/")) or "/")
-    folders = stat.S_IMODE(found.st_mode)
-    return found.st_uid, found.st_gid, folders, folders & ~0o111
-
-
-def _give_to(place, uid, gid, folder_mode, file_mode):
-    """Gives a copied maildir and everything in it to that user and group, with those modes. Returns how many
-    things it changed. A link is given away but never chmodded: the mode would be the target's."""
-    def give(target, folder):
-        os.chown(target, uid, gid, follow_symlinks=False)
-        if not os.path.islink(target):
-            os.chmod(target, folder_mode if folder else file_mode)
-
-    give(place, True)
-    count = 1
-    for root, folders, files in os.walk(place):
-        for name in folders:
-            give(os.path.join(root, name), True)
-        for name in files:
-            give(os.path.join(root, name), False)
-        count += len(folders) + len(files)
-    return count
-
-
-def finish_mailbox(request):
-    """Finishes a maildir the old server has just copied in: gives it to the user Dovecot reads it as (the one
-    the folder above it belongs to), has Dovecot read it again, and answers with the number of messages that are
-    in it now. That number is what the old server's report says, and the only proof the mail is really there."""
+def password(request):
+    """Gives one account a new password, with mailctl, which hashes it. The password comes inside the request
+    and goes into mailctl's own standard input: it is never an argument of a command, so it is in no process
+    list and no shell history. Nothing is kept here: the old server is the one that shows it, once."""
     address = request.get("address")
     address = address.strip().lower() if isinstance(address, str) else ""
     if len(address) > MAX_ADDRESS or not _ADDRESS.fullmatch(address):
-        return {"ok": False, "error": f"{address!r} isn't a mail address I can finish a mailbox for."}
-    place = mail_place()
-    path = _filled_in(place.get("path"), address, place.get("home"))
-    if not path or not path.startswith("/"):
-        return {"ok": False, "error": "I can't say where this server keeps the mail of an account, so I can't "
-                                      "finish this mailbox off. Is Dovecot installed and configured here?"}
-    if not os.path.isdir(path):
-        return {"ok": False, "error": f"There is no mail folder at {path}, so there is nothing to finish off."}
+        return {"ok": False, "error": f"{address!r} isn't a mail address I can set a password for."}
+    secret = request.get("password")
+    if not isinstance(secret, str) or not secret.strip() or "\n" in secret:
+        return {"ok": False, "error": "A password request needs a password of its own, on one line."}
     try:
-        uid, gid, folder_mode, file_mode = _owner_from_parent(path)
-        changed = _give_to(path, uid, gid, folder_mode, file_mode)
-        _run(["doveadm", "force-resync", "-u", address, "*"],
-             f"Having Dovecot read the mail of {address} again", timeout=RESYNC_TIMEOUT)
-        count = _messages(address)
-    except (Failed, OSError) as error:
+        _run(["mailctl", "address", "password", address, "--password-stdin"],
+             f"Setting a new password for {address}", stdin=secret + "\n")
+    except Failed as error:
         return {"ok": False, "error": str(error)}
-    return {"ok": True, "messages": count, "steps": [
-        f"Gave the {changed} files and folders in {path} to {_name_of_user(uid)}:{_name_of_group(gid)}, "
-        f"with mode 0{folder_mode:o} for folders and 0{file_mode:o} for files.",
-        f"Had Dovecot read the mail of {address} again: it counts {count} message(s) now.",
-    ]}
+    return {"ok": True, "steps": [f"Set a new password for {address}."]}
 
 
 def dns(request):
@@ -863,7 +670,7 @@ def dns(request):
 
 
 HANDLERS = {"hello": hello, "status": status, "apply": apply, "finish_site": finish_site,
-            "finish_mailbox": finish_mailbox, "dns": dns}
+            "password": password, "dns": dns}
 
 
 def answer(request):
