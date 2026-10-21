@@ -20,6 +20,7 @@ import socket
 import subprocess
 import sys
 import textwrap
+import threading
 
 MAIL_TABLES = ("virtual_domains", "virtual_users", "virtual_aliases", "virtual_sender_aliases")
 SPAM_DATABASE = "spamassassin"
@@ -1070,9 +1071,9 @@ def cost(item):
         data = item.get("data") if isinstance(item.get("data"), dict) else {}
         accounts, forwards = data.get("addresses"), data.get("forwards")
         parts = []
-        if isinstance(accounts, list):
+        if isinstance(accounts, list) and accounts:
             parts.append(_plural(len(accounts), "mailbox", "mailboxes"))
-        if isinstance(forwards, list):
+        if isinstance(forwards, list) and forwards:
             parts.append(_plural(len(forwards), "forward", "forwards"))
         return " and ".join(parts) or "the mail settings"
     if kind == "cron":
@@ -1105,8 +1106,7 @@ def _verdict(item, status, notes=None):
         # Importing a mail domain only adds what is missing, which is how a
         # domain that is half there is finished. That is why the design asks
         # no question for it, so it must stay on the list.
-        return ("already there, can be sent again", True,
-                ("%s %s" % (detail or "", MAIL_MERGES)).strip())
+        return "already there, can be sent again", True, MAIL_MERGES
     if state == "exists":
         return "already on the new server", False, detail
     if state == "refused":
@@ -1120,9 +1120,94 @@ def _verdict(item, status, notes=None):
     return cost(item), True, None
 
 
+# ---- Colour, and a loader ---------------------------------------------------
+
+_CODES = {"bold": "1", "dim": "2", "red": "31", "green": "32", "yellow": "33"}
+
+
+def use_colour(stream=None):
+    """Colour only on a terminal, and never when NO_COLOR is set. Colour is
+    never what carries a meaning: every line reads the same without it."""
+    if "NO_COLOR" in os.environ:
+        return False
+    try:
+        return bool((stream or sys.stdout).isatty())
+    except (AttributeError, ValueError):
+        return False
+
+
+def _paint(text, style, on):
+    if not on or not text or style is None:
+        return text
+    return "\x1b[%sm%s\x1b[0m" % (_CODES[style], text)
+
+
+def _step(label, work, summary=None, out=None):
+    """Runs work() and prints 'label ... what came of it' as ONE finished
+    line. On a terminal a spinner turns after the dots while it runs; when
+    output is not a terminal there is no spinner and no carriage return, just
+    the finished line. Whatever happens in work(), the line is finished
+    ('failed', or 'stopped' for Ctrl-C) before the error goes on."""
+    out = out if out is not None else sys.stdout
+    try:
+        tty = bool(out.isatty())
+    except (AttributeError, ValueError):
+        tty = False
+    start = "%s ... " % label
+    stop, spinner = threading.Event(), None
+    if tty:
+        def spin():
+            frame = 0
+            while not stop.is_set():
+                try:
+                    out.write("\r%s%s" % (start, "|/-\\"[frame % 4]))
+                    out.flush()
+                except (OSError, ValueError):
+                    return
+                frame += 1
+                stop.wait(0.1)
+        spinner = threading.Thread(target=spin)
+        spinner.daemon = True
+        spinner.start()
+
+    def finish(text):
+        if spinner is not None:
+            stop.set()
+            spinner.join()
+        out.write(("\r%s%s\x1b[K\n" if tty else "%s%s\n") % (start, text))
+        out.flush()
+
+    try:
+        result = work()
+        text = summary(result) if summary else "done"
+    except BaseException as problem:
+        finish("stopped" if isinstance(problem, KeyboardInterrupt) else "failed")
+        raise
+    finish(text)
+    return result
+
+
+# ---- The dashboard -----------------------------------------------------------
+
+SECTIONS = (("mail_domain", "MAIL"), ("site", "WEBSITES"), ("cron", "CRON JOBS"))
+_INDENT = 7  # the width of the number column and the gap after it
+_DAYS = ("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+_AT_WORDS = {"@hourly": "every hour", "@daily": "daily at 00:00", "@midnight": "daily at 00:00",
+             "@weekly": "every Sunday at 00:00", "@monthly": "monthly, on the 1st at 00:00",
+             "@yearly": "every year on 1 January", "@annually": "every year on 1 January",
+             "@reboot": "when the server starts"}
+
+
+def _ordered(inventory):
+    """The inventory in the order the dashboard shows it: a section after a section, as it came inside one."""
+    rank = dict((kind, number) for number, (kind, _) in enumerate(SECTIONS))
+    return sorted((item for item in inventory if item.get("kind") != "aside"),
+                  key=lambda item: rank.get(item.get("kind"), len(rank)))
+
+
 def offered(inventory, status, notes=None):
     """The items that can be moved, in the order the dashboard numbers them."""
-    return [item for item in inventory if _verdict(item, status, notes)[1]]
+    return [item for item in _ordered(inventory) if _verdict(item, status, notes)[1]]
 
 
 def _fit(text, width, middle=False):
@@ -1136,40 +1221,253 @@ def _fit(text, width, middle=False):
     return text[:width - 3] + "..."
 
 
-def dashboard(inventory, status, remembered=None):
-    """The list as it is printed. 'status' is what the new server said, by item id: {id: {"state", "detail"}}.
-    Only an item that can be moved gets a number (the same order as offered()); the others show why not. What
-    the new server said about an item that can still be moved is shown too, under a heading of its own: it is
-    not a reason against it."""
-    rows, why_not, already, number = [], [], [], 0
-    for item in inventory:
-        info, movable, reason = _verdict(item, status, remembered)
-        label = ""
-        if movable:
-            number += 1
-            label = str(number)
-        rows.append("%3s  %-8s %-28s %s" % (label, KIND_NAMES.get(item.get("kind"), "Other"),
-                                           _fit(_title(item), 28, True), _fit(info, 36)))
+def _fit_left(text, width):
+    """Text cut from the LEFT, so the end of a command (the script) is what stays."""
+    text = " ".join(str(text).split())
+    return text if len(text) <= width else "..." + text[len(text) - (width - 3):]
+
+
+def _clock(minute, hour):
+    if re.fullmatch(r"[0-9]{1,2}", minute) and re.fullmatch(r"[0-9]{1,2}", hour) \
+            and int(minute) < 60 and int(hour) < 24:
+        return "%02d:%02d" % (int(hour), int(minute))
+    return None
+
+
+def schedule_in_words(fields):
+    """The five time fields of a cron line (or its one @word) as a short phrase; the raw fields when it cannot
+    be phrased plainly."""
+    raw = " ".join(fields)
+    if len(fields) == 1:
+        return _AT_WORDS.get(fields[0].lower(), raw)
+    if len(fields) != 5:
+        return raw
+    minute, hour, day, month, weekday = fields
+    step = re.fullmatch(r"\*/([1-9][0-9]*)", minute)
+    every = re.fullmatch(r"\*/([1-9][0-9]*)", hour)
+    if (day, month, weekday) == ("*", "*", "*"):
+        if (minute, hour) == ("*", "*"):
+            return "every minute"
+        if step and hour == "*":
+            return "every %s minutes" % step.group(1) if step.group(1) != "1" else "every minute"
+        if every and minute == "0":
+            return "every %s hours" % every.group(1) if every.group(1) != "1" else "every hour"
+        if hour == "*" and minute == "0":
+            return "every hour"
+        if _clock(minute, hour):
+            return "daily at %s" % _clock(minute, hour)
+    elif (day, month) == ("*", "*") and re.fullmatch(r"[0-7]", weekday) and _clock(minute, hour):
+        return "every %s at %s" % (_DAYS[int(weekday) % 7], _clock(minute, hour))
+    elif month == "*" and weekday == "*" and re.fullmatch(r"[0-9]{1,2}", day) \
+            and 1 <= int(day) <= 31 and _clock(minute, hour):
+        return "on day %d of each month at %s" % (int(day), _clock(minute, hour))
+    return raw
+
+
+def _cron_parts_of(item):
+    """(the time fields, the command) of a cron item, from its line."""
+    words = str(item.get("line") or "").split()
+    count = 1 if words and words[0].startswith("@") else 5
+    return words[:count], " ".join(words[count:])
+
+
+def _there_text(item, info, reason, said, short):
+    """(what the new server has, in a few words, its colour) for the column that is headed with its name."""
+    state = said.get("state") if isinstance(said, dict) else None
+    if state == "exists" and item.get("kind") == "mail_domain" and info == "already there, can be sent again":
+        counts = re.search(r"with ([0-9]+) accounts and ([0-9]+) forwards", str(said.get("detail") or ""))
+        text = (_counts(int(counts.group(1)), int(counts.group(2))).replace(" and ", ", ")
+                if counts else "already there")
+        return text + " - can be topped up", "green"
+    if state == "new":
+        if reason == GONE_THERE:
+            return "not there any more", "dim"
+        if item.get("kind") == "cron":
+            if not item.get("site"):
+                return "not checked", "dim"
+            return "not in %s's crontab" % (item.get("user") or item.get("old_user") or "its user"), "dim"
+        return "not there yet", "dim"
+    if info in ("already moved from here", "already on the new server"):
+        return info, "green"
+    return info, ("yellow" if info in TROUBLE else None)
+
+
+TROUBLE = ("needs a look first", "can't be moved", "the new server didn't say")
+
+
+def _here_text(item):
+    kind = item.get("kind")
+    if kind == "mail_domain":
+        data = item.get("data") if isinstance(item.get("data"), dict) else {}
+        accounts = data.get("addresses")
+        return _plural(len(accounts), "account", "accounts") if isinstance(accounts, list) else "mail"
+    if kind == "site":
+        return "WordPress" if item.get("wordpress", True) else "not WordPress"
+    return schedule_in_words(_cron_parts_of(item)[0])
+
+
+def _copy_text(item):
+    if item.get("kind") != "site":
+        return ""
+    if not item.get("database"):
+        return "files"
+    size = _size(item.get("size"))
+    return "%s + files" % size if size else "database + files"
+
+
+def _table(kind, group, numbers, status, remembered, short, colour):
+    """The lines of one section. 'group' is [(item, verdict)], 'numbers' {id(item): its number or None}."""
+    if kind == "cron":
+        heads = ["For", "Runs", "On " + short]
+    elif kind == "site":
+        heads = ["Domain", "Here", "On " + short, "To copy"]
+    else:
+        heads = ["Domain", "Here", "On " + short]
+    rows = []
+    for item, (info, movable, reason) in group:
+        said = status.get(item.get("id")) if isinstance(status, dict) else None
+        there, style = _there_text(item, info, reason, said, short)
+        first = _title(item) if kind != "cron" else str(item.get("site") or item.get("old_user")
+                                                        or item.get("user") or "?")
+        cells = [(first, None), (_here_text(item), None), (there, style)]
+        if kind == "site":
+            cells.append((_copy_text(item) if movable else "-", None if movable else "dim"))
+        rows.append((item, numbers.get(id(item)), cells, reason, movable, info))
+    shared = {}
+    for item, number, cells, reason, movable, info in rows:
         if reason:
-            (already if movable else why_not).append("%s: %s" % (_title(item), reason))
-    if not rows:
-        return "Nothing was found on this server to move."
-    out = ["No.  What     Name                         What it takes"]
-    out.extend(row.rstrip() for row in rows)
-    for title, notes in (("Why some can't be moved:", why_not),
-                         ("Worth knowing before you pick:", already)):
-        if not notes:
-            continue
+            shared.setdefault(reason, []).append(cells[0][0])
+    shared = dict((reason, names) for reason, names in shared.items() if len(names) > 1)
+    fields = len(heads)
+    widths = [max([len(heads[i])] + [len(" ".join(str(row[2][i][0]).split())) for row in rows])
+              for i in range(fields)]
+    room = _WIDTH - _INDENT - 2 * (fields - 1)
+    total = sum(widths)
+    for i in [0, fields - 1] + list(range(1, fields - 1)):
+        cut = min(total - room, widths[i] - (24 if i == 0 else len(heads[i])))
+        if cut > 0:
+            widths[i] -= cut
+            total -= cut
+    out = ["%s%s" % (" " * 2 + _paint("No.", "bold", colour) + "  ",
+                     "  ".join(_paint(h, "bold", colour) + " " * (w - len(h))
+                               for h, w in zip(heads, widths)).rstrip())]
+    for item, number, cells, reason, movable, info in rows:
+        label = "%4s" % (number if number else "-")
+        line = _paint(label, "bold" if number else "dim", colour) + "   "
+        extra = []
+        parts = []
+        for i, (text, style) in enumerate(cells):
+            text = " ".join(str(text).split())
+            shown = _fit(text, widths[i], middle=(i == 0)) if len(text) > widths[i] else text
+            if i and shown != text:
+                extra.append(text)
+            pad = "" if i == fields - 1 else " " * (widths[i] - len(shown))
+            parts.append(_paint(shown, style, colour) + pad)
+        out.append(line + "  ".join(parts))
+        if kind == "cron":
+            command = _cron_parts_of(item)[1]
+            if command:
+                out.append(" " * _INDENT + _fit_left(command, _WIDTH - _INDENT))
+        notes = ([(reason, "yellow" if info in TROUBLE else None)]
+                 if reason and reason not in shared else []) \
+            + [(text, None) for text in extra]
+        for text, style in notes:
+            for piece in textwrap.wrap(text, _WIDTH - _INDENT, break_long_words=True):
+                out.append(" " * _INDENT + _paint(piece, style, colour))
+    for reason, names in sorted(shared.items(), key=lambda pair: -len(pair[1])):
         out.append("")
-        out.append(title)
-        for note in notes:
-            out.extend(textwrap.wrap(note, _WIDTH, initial_indent="  ", subsequent_indent="    ",
-                                     break_long_words=True))
+        for piece in textwrap.wrap(reason, _WIDTH - 2, break_long_words=True):
+            out.append("  " + _paint(piece, "yellow", colour))
+        for piece in textwrap.wrap("Applies to: " + ", ".join(names),
+                                   _WIDTH - 2, break_long_words=True):
+            out.append("  " + piece)
+    return out
+
+
+def _short_name(name):
+    if not name:
+        return "the new server"
+    if re.fullmatch(r"[0-9.]+|[0-9a-fA-F:]+", name):
+        return name
+    return name.split(".")[0]
+
+
+def _loose_job(item, colour):
+    """One line for a job that belongs to no site."""
+    fields, command = _cron_parts_of(item)
+    head = "  %s: %s  " % (item.get("old_user") or item.get("user") or "?", schedule_in_words(fields))
+    return _fit_line(head + _fit_left(command, max(_WIDTH - len(head), 10)))
+
+
+def dashboard(inventory, status, remembered=None, colour=False, old_server=None, new_server=None,
+              addresses=None, hint=True, detail=False):
+    """The list as it is printed: a section for each kind, with the columns that kind needs. 'status' is what the
+    new server said about each item, by id: {id: {"state", "detail"}}. Only an item that can be moved gets a
+    number (the same order as offered()); the others get a dash and a line under them saying why. A reason that
+    several rows share is said once, with their names. A cron job that belongs to no site gets no row: they are
+    counted in one line (and listed, one line each, with 'detail'). The old server's own webmail and autodiscover
+    addresses ('aside' items) are one line with a count. 'hint' ends it with the command to type."""
+    asides = [item for item in inventory if item.get("kind") == "aside"]
+    inventory = [item for item in inventory if item.get("kind") != "aside"]
+    if not inventory and not asides:
+        return "Nothing was found on this server to move."
+    short = _fit(_short_name(new_server), 16)
+    ordered = _ordered(inventory)
+    numbers, count = {}, 0
+    verdicts = [(item, _verdict(item, status, remembered)) for item in ordered]
+    for item, (_, movable, _) in verdicts:
+        if movable:
+            count += 1
+            numbers[id(item)] = count
+    there = _fit(new_server or "(not known)", 50) + (" (%s)" % ", ".join(addresses) if addresses else "")
+    out = [_paint("Old server", "bold", colour) + "  " + _fit(old_server or socket.gethostname(), 60, True),
+           _paint("New server", "bold", colour) + "  " + there]
+    kinds = [kind for kind, _ in SECTIONS] + [None]
+    total = len(inventory)
+    for kind in kinds:
+        group = [pair for pair in verdicts if (pair[0].get("kind") == kind if kind else
+                                               pair[0].get("kind") not in dict(SECTIONS))]
+        loose = []
+        if kind == "cron":
+            loose = [pair[0] for pair in group if not pair[0].get("site")]
+            group = [pair for pair in group if pair[0].get("site")]
+            total -= len(loose)
+        if not group and not loose:
+            continue
+        out.extend(["", _paint(dict(SECTIONS).get(kind, "OTHER"), "bold", colour)])
+        if group:
+            out.extend(_table(kind, group, numbers, status, remembered, short, colour))
+        if loose:
+            if group:
+                out.append("")
+            out.extend("  " + piece for piece in textwrap.wrap(
+                "%s no site here, so %s only reported, and the new server has its own%s."
+                % (_plural(len(loose), "more job belongs to" if group else "job belongs to",
+                           "more jobs belong to" if group else "jobs belong to"),
+                   "it is" if len(loose) == 1 else "they are",
+                   "" if detail else ". migrate.py list shows them"), _WIDTH - 2))
+            if detail:
+                out.extend(_loose_job(item, colour) for item in loose)
+    if asides:
+        out.extend([""] + textwrap.wrap(
+            "Not sites: %s of this server's own webmail, autodiscover and autoconfig are left out; the new "
+            "server has its own." % _plural(len(asides), "address", "addresses"), _WIDTH))
+    out.append("")
+    if not count:
+        out.append("None of the %d can be moved." % total if total > 1
+                   else "Nothing here can be moved." if not total else "It can't be moved.")
+    else:
+        line = "%d of %d can be moved." % (count, total)
+        if hint:
+            line += " Type: migrate.py move %s" % ("1-%d" % count if count > 1 else "1")
+        out.append(line)
     return "\n".join(_fit_line(line) for line in out)
 
 
 def _fit_line(line):
-    return line if len(line) <= _WIDTH else line[:_WIDTH - 3] + "..."
+    """A line cut to the width; colour codes do not count towards it."""
+    plain = re.sub(r"\x1b\[[0-9;]*[mK]", "", line)
+    return line if len(plain) <= _WIDTH else _fit(plain, _WIDTH)
 
 
 def pick(lines, typed, say=print):
@@ -1482,7 +1780,8 @@ def site_items(found, owner_of=_owner_of, users=None):
             "aliases": site.get("aliases") or [], "docroot": docroot,
             "database": site.get("database"),
             "db_user": site.get("db_user"), "db_host": site.get("db_host"),
-            "size": site.get("size"), "problem": problem})
+            "size": site.get("size"), "problem": problem,
+            "wordpress": bool(site.get("wordpress"))})
     _one_user_per_site(items, given)
     return items
 
@@ -2200,15 +2499,40 @@ def _same_item(one, other):
     return one.get("id") is not None and one.get("id") == other.get("id")
 
 
+def _cron_by_hand(item):
+    return item.get("kind") == "cron" and item.get("problem") == NO_SITE_JOB
+
+
+def _inventory_lists(found_sites, databases, mail_database, jobs, notes):
+    """The lists about the whole server, as lines: (cron jobs that belong to
+    no site, sites that are not WordPress, databases that belong to no site,
+    what could not be read)."""
+    others = [s for s in (found_sites or []) if not s.get("wordpress")]
+    known = set(SYSTEM_DATABASES) | {SPAM_DATABASE}
+    known.update(d for d in (mail_database,) if d)
+    known.update(s["database"] for s in (found_sites or [])
+                 if s.get("database"))
+    return (["%s (user %s)" % (j["line"], j.get("old_user") or j.get("user"))
+             for j in jobs],
+            ["%s (files in %s)" % (s["name"], s.get("docroot")
+                                   or "an unknown place") for s in others],
+            sorted(name for name in (databases or {}) if name not in known),
+            list(notes or []))
+
+
 def report(result, connection=None, old_server=None, found_sites=None,
            mail=None, databases=None, items=None, notes=None,
-           extra_notes=None, mail_database=None, addresses=None):
+           extra_notes=None, mail_database=None, addresses=None,
+           everything=False):
     """What a run did and what is still to do by hand, as text of at most
     79 columns. 'connection' is asked for the DNS records; 'found_sites' is
     sites(), 'databases' is database_sizes(), 'items' everything the
     dashboard offered, 'mail' the Mail from mail_inventory(), 'notes'
     what the discovery could not read and 'addresses' the addresses the new
-    server says it has, for the sites' DNS records."""
+    server says it has, for the sites' DNS records. It is about the move that
+    just happened; only with 'everything' does it go on to the lists about
+    the whole server (what is not WordPress, loose databases, jobs of no
+    site, what could not be read), which 'list' shows too."""
     new_name = getattr(connection, "host", None) or "the new server"
     old_name = old_server or socket.gethostname()
     moved = list(result.moved)
@@ -2232,8 +2556,7 @@ def report(result, connection=None, old_server=None, found_sites=None,
                  "%s (Linux user %s)" % (_what(i), i.get("user") or
                                          site_user(i["name"])) for i in undone))
 
-    def cron_by_hand(item):
-        return item.get("kind") == "cron" and item.get("problem") == NO_SITE_JOB
+    cron_by_hand = _cron_by_hand
 
     failed = [(i, why) for i, why in result.failed if not cron_by_hand(i)]
     _section(out, "Did not work:", _bullets(
@@ -2301,11 +2624,16 @@ def report(result, connection=None, old_server=None, found_sites=None,
             jobs.append(item)
     if any(i.get("kind") == "cron" for i, _ in moved + list(result.already)):
         out.extend([""] + textwrap.wrap(BOTH_RUN_JOBS, 79))
-    _section(out, "Cron jobs that belong to no site, so they were not moved:",
-             _bullets("%s (user %s)" % (j["line"], j.get("old_user")
-                                        or j.get("user")) for j in jobs))
+    lists = _inventory_lists(found_sites, databases, mail_database, jobs, notes)
+    if everything:
+        _section(out, "Cron jobs that belong to no site, so they were not "
+                 "moved:", _bullets(lists[0]))
 
     mail_left = list(getattr(mail, "left_out", None) or [])
+    if not everything:
+        wanted = [d.lower() for d in domains]
+        mail_left = [t for t in mail_left
+                     if any(d and d in t.lower() for d in wanted)]
     catch_alls = [t for t in mail_left if "catch-all" in t
                   or (t.startswith("The forward from") and "catch" in t)]
     send_as = [t for t in mail_left if "may send as" in t]
@@ -2322,20 +2650,13 @@ def report(result, connection=None, old_server=None, found_sites=None,
              "to carry it. Set it on the new server by hand:",
              _bullets(send_as))
     _section(hand, "Other mail settings that were left out:", _bullets(rest))
-    others = [s for s in (found_sites or []) if not s.get("wordpress")]
-    _section(hand, "Sites that are not WordPress. They are not moved; copy "
-             "them by hand:", _bullets(
-                 "%s (files in %s)" % (s["name"], s.get("docroot") or
-                                       "an unknown place") for s in others))
-    known = set(SYSTEM_DATABASES) | {SPAM_DATABASE}
-    known.update(d for d in (mail_database,) if d)
-    known.update(s["database"] for s in (found_sites or [])
-                 if s.get("database"))
-    loose = sorted(name for name in (databases or {}) if name not in known)
-    _section(hand, "Databases that belong to no site. They are not moved:",
-             _bullets(loose))
-    _section(hand, "What the server could not read while looking around:",
-             _bullets(notes or []))
+    if everything:
+        _section(hand, "Sites that are not WordPress. They are not moved; "
+                 "copy them by hand:", _bullets(lists[1]))
+        _section(hand, "Databases that belong to no site. They are not "
+                 "moved:", _bullets(lists[2]))
+        _section(hand, "What the server could not read while looking around:",
+                 _bullets(lists[3]))
     if hand:
         out.extend(["", "Still to do by hand", "-------------------"])
         out.extend(hand[1:] if hand[0] == "" else hand)
@@ -2355,11 +2676,14 @@ HELP_DESCRIPTION = """Moves the mail, WordPress sites and cron jobs of this serv
 How to use it:
   1. Copy this one file to the OLD server, for example from your own machine:
        scp migrate.py root@OLD-SERVER:
-  2. On the old server, run it as root:
-       python3 migrate.py --host NEW-SERVER
-  3. It prints a key. Paste that line into /home/ansible/.ssh/authorized_keys
-     on the new server (once), then run it again.
-  4. It shows a list of what it found. Type the numbers to move.
+  2. On the old server, as root, get the key:
+       python3 migrate.py key
+     Paste that line into /home/ansible/.ssh/authorized_keys on the new
+     server (once).
+  3. See what it found and what the new server already has:
+       python3 migrate.py list --host NEW-SERVER
+  4. Move what you pick, by the numbers on that list:
+       python3 migrate.py move 1-3 --host NEW-SERVER
 
 What it needs on the old server: Python 3.6 or newer, the ssh and ssh-keygen
 programs and rsync. To find things it also uses the mysql or mariadb client,
@@ -2371,24 +2695,76 @@ migrate_key.pub) and the known-hosts file beside it (migrate_known_hosts), in
 the .ssh folder of the user running it, and its notes in
 /var/lib/migrate/state.json."""
 
+COMMANDS = (
+    ("key", "print the key to paste on the new server, and where"),
+    ("check", "connect, and say which server answered and what it has"),
+    ("list", "look around and show what can be moved (changes nothing)"),
+    ("move", "move what the numbers name (asks which, with none given)"),
+    ("again", "catch up a site that already moved: files and database"),
+    ("report", "print the report of what has been done so far"),
+)
 
-def _arguments(argv):
+
+def _options(parser, host=True, domain=True, user=True):
+    if host:
+        parser.add_argument("--host", metavar="NEW",
+                            help="the name or address of the new server")
+    if domain:
+        parser.add_argument("--domain", metavar="example.nl",
+                            help="look at only this mail domain and its sites")
+    if user:
+        parser.add_argument("--user", metavar="NAME",
+                            help="the Linux user to give the site on the new "
+                            "server, instead of the name taken from its "
+                            "domain; goes with --domain, for a site whose "
+                            "name would clash with another one's")
+
+
+def _parser():
     parser = argparse.ArgumentParser(
         prog="migrate.py", description=HELP_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--host", metavar="NEW",
-                        help="the name or address of the new server")
-    parser.add_argument("--domain", metavar="example.nl",
-                        help="move only this mail domain and its sites")
-    parser.add_argument("--again", action="store_true",
-                        help="catch up a site that already moved: copy its "
-                        "files again and replace its database")
-    parser.add_argument("--user", metavar="NAME",
-                        help="the Linux user to give the site on the new "
-                        "server, instead of the name taken from its domain; "
-                        "goes with --domain, for a site whose name would "
-                        "clash with another one's")
-    return parser.parse_args(argv)
+    commands = parser.add_subparsers(dest="command", metavar="COMMAND",
+                                     title="commands")
+    helps = dict(COMMANDS)
+    commands.add_parser("key", help=helps["key"], description=helps["key"])
+    every = commands.add_parser("report", help=helps["report"],
+                                description=helps["report"])
+    every.add_argument("--all", action="store_true", dest="everything",
+                       help="also look around this server and add the lists "
+                       "about all of it: what is not WordPress, databases and "
+                       "jobs of no site, what could not be read")
+    _options(commands.add_parser("check", help=helps["check"],
+                                 description=helps["check"]),
+             domain=False, user=False)
+    _options(commands.add_parser("list", help=helps["list"],
+                                 description=helps["list"]))
+    move = commands.add_parser("move", help=helps["move"],
+                               description=helps["move"] + ". Numbers, ranges "
+                               "like 2-5, commas and 'all' work.")
+    move.add_argument("numbers", nargs="*", metavar="NUMBERS",
+                      help="the numbers on the list, like 1 3, 2-5 or all")
+    _options(move)
+    again = commands.add_parser("again", help=helps["again"],
+                                description=helps["again"] + ". Copies its "
+                                "files again and replaces its database, after "
+                                "asking.")
+    again.add_argument("domain", metavar="DOMAIN",
+                       help="the site that already moved")
+    _options(again, domain=False)
+    return parser
+
+
+def _arguments(argv):
+    args = _parser().parse_args(argv)
+    args.again = args.command == "again"
+    if not hasattr(args, "numbers"):
+        args.numbers = []
+    for name, value in (("host", None), ("domain", None), ("user", None),
+                        ("everything", False)):
+        if not hasattr(args, name):
+            setattr(args, name, value)
+    return args
 
 
 def _domain_items(mail):
@@ -2461,26 +2837,73 @@ def _question(text):
     return _typed("Type yes or no: ")
 
 
+# The old server's own mail and groupware addresses. The new server gives its own webmail and autodiscover, so
+# these are not sites to move, and they are not listed as sites at all.
+_PLUMBING_NAMES = ("webmail.", "autodiscover.", "autoconfig.", "mail.")
+_PLUMBING_PLACES = ("/var/lib/roundcube", "/usr/share/z-push", "/usr/share/roundcube")
+
+
+def is_plumbing(site):
+    name = str(site.get("name") or "").lower()
+    docroot = str(site.get("docroot") or "").rstrip("/") + "/"
+    return name.startswith(_PLUMBING_NAMES) or any(
+        docroot.startswith(place + "/") for place in _PLUMBING_PLACES)
+
+
 def _look_around(args, notes, run=run_command):
     """(mail, mail_database, sites, databases, items) of this server. What
-    could not be read goes into notes."""
+    could not be read goes into notes. Each step says what it is doing, and
+    what it found."""
     domain = args.domain.lower() if args.domain else None
     wanted_user = getattr(args, "user", None)
-    database = mail_database(run, notes)
-    mail = mail_inventory(run, database, domain) if database else None
-    if mail is not None:
-        notes.extend(mail.notes)
-    found = sites(run, notes)
-    sizes = database_sizes(run, notes)
-    jobs = cron_jobs(run, found, notes)
+
+    def look_at_mail():
+        database = mail_database(run, notes)
+        mail = mail_inventory(run, database, domain) if database else None
+        if mail is not None:
+            notes.extend(mail.notes)
+        return database, mail
+
+    def mail_summary(found):
+        mail = found[1]
+        if mail is None:
+            return "none found"
+        return "%s, %s" % (_plural(len(mail.file["domains"]), "domain", "domains"),
+                           _plural(len(mail.file["addresses"]), "account", "accounts"))
+
+    def look_at_sites():
+        found = sites(run, notes)
+        return ([s for s in found if not is_plumbing(s)],
+                database_sizes(run, notes), [s for s in found if is_plumbing(s)])
+
+    def site_summary(found):
+        text = "%s, %d WordPress" % (_plural(len(found[0]), "site", "sites"),
+                                     len([s for s in found[0] if s.get("wordpress")]))
+        if found[2]:
+            text += " (and %d webmail and similar, left out)" % len(found[2])
+        return text
+
+    database, mail = _step("Looking at the mail", look_at_mail, mail_summary)
+    every, sizes, plumbing = _step("Looking at the websites", look_at_sites,
+                                   site_summary)
+
+    def look_at_jobs():
+        return cron_jobs(run, every, notes)
+
+    jobs = _step("Looking at the cron jobs", look_at_jobs,
+                 lambda found: _plural(len(found), "job", "jobs"))
+    found = every
     if domain:
         found = [s for s in found if _in_domain(s["name"], domain)
                  or any(_in_domain(a, domain) for a in s.get("aliases") or [])]
         names = set(s["name"] for s in found)
         jobs = [j for j in jobs if j.get("site") in names]
+        plumbing = [s for s in plumbing if _in_domain(s["name"], domain)]
     items = _domain_items(mail) if mail else []
     minted = site_items(found, users=_user_for(found, domain, wanted_user))
     items += minted + cron_items(jobs, minted)
+    items += [{"id": "aside:" + s["name"], "kind": "aside", "name": s["name"]}
+              for s in plumbing]
     return mail, database, found, (None if domain else sizes), items
 
 
@@ -2500,7 +2923,8 @@ def _user_for(found, domain, user):
 
 
 def _status_of(connection, items):
-    answer = connection.ask({"request": "status", "items": items})
+    answer = connection.ask({"request": "status", "items": [
+        item for item in items if item.get("kind") != "aside"]})
     if not answer.get("ok") or not isinstance(answer.get("items"), dict):
         raise Stopped("The new server could not say what it already has: %s"
                       % (answer.get("error") or "no reason given"))
@@ -2522,6 +2946,99 @@ def _to_do_again(items, state, status):
             and (status.get(item["id"]) or {}).get("state") == "exists"]
 
 
+def _new_name(connection, hello):
+    return (hello or {}).get("server") or getattr(connection, "host", None)
+
+
+def _inspect(args, connection, notes, doing, hello):
+    """Looks around this server and asks the new one what it has. Returns
+    (mail, database, sites, databases, items, status)."""
+    doing[0] = "looking around this server"
+    mail, database, found, sizes, items = _look_around(args, notes)
+    doing[0] = "asking the new server what it already has"
+    name = _short_name(_new_name(connection, hello))
+    status = _step("Asking %s what it has" % name,
+                   lambda: _status_of(connection, items), lambda said: "answered")
+    return mail, database, found, sizes, items, status
+
+
+def _board(items, status, state, connection, hello, hint=True, detail=False):
+    return dashboard(items, status, state, colour=use_colour(), detail=detail,
+                     old_server=socket.gethostname(),
+                     new_server=_new_name(connection, hello),
+                     addresses=(hello or {}).get("addresses"), hint=hint)
+
+
+def _lay_of_the_land(found, sizes, database, items, notes):
+    """The lists about the whole server that a move does not print: what is
+    not WordPress, databases of no site, and what could not be read."""
+    jobs = [item for item in items if _cron_by_hand(item)]
+    _, others, loose, unread = _inventory_lists(found, sizes, database, jobs, notes)
+    out = []
+    _section(out, "Sites that are not WordPress. They are not moved; copy "
+             "them by hand:", _bullets(others))
+    _section(out, "Databases that belong to no site. They are not moved:",
+             _bullets(loose))
+    _section(out, "What the server could not read while looking around:",
+             _bullets(unread))
+    return out[1:] if out and out[0] == "" else out
+
+
+def _list(args, connection, state, notes, doing=None, hello=None):
+    """Looks around and prints the dashboard. Changes nothing."""
+    doing = doing if doing is not None else [""]
+    mail, database, found, sizes, items, status = _inspect(
+        args, connection, notes, doing, hello)
+    print()
+    print(_board(items, status, state, connection, hello, detail=True))
+    lines = _lay_of_the_land(found, sizes, database, items, notes)
+    if lines:
+        print("\n" + "\n".join(lines))
+
+
+def _counts(accounts, forwards):
+    parts = []
+    if accounts:
+        parts.append(_plural(accounts, "account", "accounts"))
+    if forwards:
+        parts.append(_plural(forwards, "forward", "forwards"))
+    return " and ".join(parts) or "no accounts or forwards"
+
+
+def _will_happen(item, state=None):
+    """What moving this item will do, in a sentence."""
+    kind = item.get("kind")
+    if kind == "mail_domain":
+        data = item.get("data") if isinstance(item.get("data"), dict) else {}
+        return ("the domain with %s; their filters and spam settings come too"
+                % _counts(len(data.get("addresses") or []), len(data.get("forwards") or [])))
+    if kind == "site":
+        size = _size(item.get("size"))
+        if state is not None and state.outstanding(item):
+            return "made already; now its files and database are copied"
+        return ("its files%s are copied to the new server, as the user %s"
+                % (" and its database of %s" % size if size else " and its database"
+                   if item.get("database") else "", item.get("user") or site_user(item["name"])))
+    if kind == "cron":
+        command = _cron_parts_of(item)[1]
+        return "%s: %s, goes into the crontab of %s on the new server" % (
+            schedule_in_words(_cron_parts_of(item)[0]), _fit_left(command, 40),
+            item.get("user") or item.get("old_user") or "its user")
+    return "moved"
+
+
+def _confirmed(lines, chosen, ask, state=None):
+    """Says what each picked item is and what will happen to it, then asks.
+    True when it got a yes."""
+    print("You picked:")
+    for item in chosen:
+        text = "%d. %s %s: %s" % (lines.index(item) + 1,
+                                  KIND_NAMES.get(item.get("kind"), "Other"),
+                                  _fit(_title(item), 40, True), _will_happen(item, state))
+        print("\n".join(textwrap.wrap(text, _WIDTH, subsequent_indent="   ")))
+    return _is_yes(ask("Go ahead? Type yes or no: "))
+
+
 def _work(args, connection, state, notes, doing=None, hello=None):
     """Does the whole run after the connection works and returns its Report.
     'doing' is a list whose one place always holds what is being done.
@@ -2529,13 +3046,12 @@ def _work(args, connection, state, notes, doing=None, hello=None):
     PHP and wp-cli it has, for the cron jobs, and its own addresses, for the
     DNS records in the report."""
     doing = doing if doing is not None else [""]
-    doing[0] = "looking around this server"
-    mail, database, found, sizes, items = _look_around(args, notes)
-    doing[0] = "asking the new server what it already has"
-    status = _status_of(connection, items)
+    mail, database, found, sizes, items, status = _inspect(
+        args, connection, notes, doing, hello)
     doing[0] = "moving what you picked"
     extra = []
     moved_domains = []
+    print()
     if args.again:
         chosen = _to_do_again(items, state, status)
         if not chosen:
@@ -2551,12 +3067,19 @@ def _work(args, connection, state, notes, doing=None, hello=None):
         ask = _question
         result = do_again(connection, chosen, state, ask, extra)
     else:
-        print(dashboard(items, status, state))
+        numbers = getattr(args, "numbers", None)
         lines = offered(items, status, state)
         chosen = []
-        if lines:
-            chosen = _choose(lines, "Numbers to move (like 1 3, 2-5, all; "
-                             "Enter for none): ")
+        if numbers:
+            chosen = pick(lines, " ".join(numbers))
+        else:
+            print(_board(items, status, state, connection, hello, hint=False))
+            if lines:
+                chosen = _choose(lines, "Numbers to move (like 1 3, 2-5, all; "
+                                 "Enter for none): ")
+        if chosen and not _confirmed(lines, chosen, _typed, state):
+            print("Nothing will be moved.")
+            chosen = []
         move = mover(connection, state, _question, extra)
         result = run(connection, chosen, _question, move=move, notes=state,
                      status=status, php=(hello or {}).get("php"),
@@ -2575,52 +3098,122 @@ def _work(args, connection, state, notes, doing=None, hello=None):
     return result
 
 
+def _show_check(hello, host, colour):
+    """What the new server said about itself."""
+    tools = hello.get("tools") if isinstance(hello.get("tools"), dict) else {}
+    print("%s answered." % _paint(str(hello.get("server") or host), "bold", colour))
+    addresses = [a for a in hello.get("addresses") or [] if isinstance(a, str)]
+    if addresses:
+        print("Addresses:  %s" % ", ".join(addresses))
+    print("This file and the new server speak the same release (%s)."
+          % hello.get("version"))
+    for name in ("mailctl", "domainctl"):
+        have = tools.get(name)
+        print("%-10s  %s" % (name, _paint("there", "green", colour) if have
+                             else _paint("NOT there", "red", colour)
+                             + " (the new server is not built with this repository)"))
+    for name, what in (("php", "PHP"), ("wp", "wp-cli")):
+        print("%-10s  %s" % (what, hello.get(name) or "not found"))
+
+
+def _result_from_notes(state):
+    """A Report of what the notes say was done: no looking around, no new
+    server. A site that was made and not filled is files still to copy."""
+    kinds = {"mail": "mail_domain", "site": "site", "cron": "cron"}
+    result = Report()
+    for key in sorted(state.items):
+        word, _, name = key.partition(":")
+        if word not in kinds or not name:
+            continue
+        item = {"id": key, "kind": kinds[word],
+                "name": name if word != "cron" else "job " + name}
+        status = state.items[key].get("status")
+        if status == "moved":
+            result.moved.append((item, {"docroot": state.items[key].get("docroot")}))
+        elif status == "made":
+            result.files_to_copy.append(item)
+    return result
+
+
+def _check_arguments(args):
+    if args.domain and not _DOMAIN_ARGUMENT.fullmatch(args.domain):
+        raise Stopped("'%s' isn't a domain name." % args.domain)
+    if args.user and not args.domain:
+        raise Stopped("--user is the Linux user of one site, so it goes "
+                      "with --domain: run me again with --domain "
+                      "example.nl --user %s." % args.user)
+    if args.user and not (len(args.user) <= MAX_USER_NAME
+                          and _NEW_NAME.fullmatch(args.user)):
+        raise Stopped("'%s' isn't a user name the new server takes: use "
+                      "lower case letters, digits, - and _, starting "
+                      "with a letter or a digit, at most %d characters."
+                      % (args.user, MAX_USER_NAME))
+
+
 def main(argv=None, geteuid=os.geteuid):
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if not args.command:
+        parser.print_help()
+        return 0
     args = _arguments(argv)
+    colour = use_colour()
     if geteuid() != 0:
-        print("Run me as root: I read other users' cron jobs and mailboxes.")
+        print(_paint("Run me as root: I read other users' cron jobs and "
+                     "mailboxes.", "red", colour))
         return 1
     doing = ["starting"]
     try:
-        if args.domain and not _DOMAIN_ARGUMENT.fullmatch(args.domain):
-            raise Stopped("'%s' isn't a domain name." % args.domain)
-        if args.user and not args.domain:
-            raise Stopped("--user is the Linux user of one site, so it goes "
-                          "with --domain: run me again with --domain "
-                          "example.nl --user %s." % args.user)
-        if args.user and not (len(args.user) <= MAX_USER_NAME
-                              and _NEW_NAME.fullmatch(args.user)):
-            raise Stopped("'%s' isn't a user name the new server takes: use "
-                          "lower case letters, digits, - and _, starting "
-                          "with a letter or a digit, at most %d characters."
-                          % (args.user, MAX_USER_NAME))
+        _check_arguments(args)
+        if args.command == "report":
+            if not args.everything:
+                print(report(_result_from_notes(State())))
+                return 0
+            notes = []
+            _, database, found, sizes, items = _look_around(args, notes)
+            print()
+            print(report(_result_from_notes(State()), found_sites=found,
+                         databases=sizes, items=items, notes=notes,
+                         mail_database=database, everything=True))
+            return 0
+        doing[0] = "making the key"
+        if args.command == "key":
+            print("The new server must have this key (one line) in\n%s:\n\n%s\n"
+                  % (AUTHORIZED_KEYS, own_key()))
+            return 0
         host = args.host or _typed("Name or address of the new server: ").strip()
         if not host:
             raise Stopped("I need the name or address of the new server: run "
                           "me again with --host NEW-SERVER.")
-        doing[0] = "making the key"
-        key = own_key()
-        print("The new server must have this key (one line) in\n%s:\n\n%s\n"
-              % (AUTHORIZED_KEYS, key))
+        own_key()
         doing[0] = "connecting to the new server"
         connection = Connection(host)
-        hello = check(connection, show_key=False)
-        result = _work(args, connection, State(), [], doing, hello)
+        hello = _step("Connecting to %s" % host, lambda: check(connection),
+                      lambda said: "answered")
+        print()
+        if args.command == "check":
+            _show_check(hello, host, colour)
+            return 0
+        state = State()
+        if args.command == "list":
+            _list(args, connection, state, [], doing, hello)
+            return 0
+        result = _work(args, connection, state, [], doing, hello)
         if result.interrupted:
             print("You stopped the run; the report above says what moved.")
             return 1
     except Stopped as problem:
-        print(problem.message)
+        print(_paint(problem.message, "red", colour))
         return 1
     except KeyboardInterrupt:
-        print("\nStopped by you while %s. What was already moved stays "
-              "moved; run me again to carry on." % doing[0])
+        print(_paint("\nStopped by you while %s. What was already moved stays "
+                     "moved; run me again to carry on." % doing[0], "red", colour))
         return 1
     except Exception as problem:
-        print("\n".join(textwrap.wrap(
+        print(_paint("\n".join(textwrap.wrap(
             "Stopped by an error while %s: %s: %s. What was already moved "
             "stays moved; run me again." % (doing[0], type(problem).__name__,
-                                           problem), 79)))
+                                           problem), 79)), "red", colour))
         return 1
     return 0
 

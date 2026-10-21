@@ -57,7 +57,7 @@ def test_what_was_left_out_is_named_with_the_reason():
                           found_sites=[{"name": "plain.nl", "docroot": "/var/www/plain", "wordpress": False},
                                        {"name": "shop.nl", "wordpress": True, "database": "shopdb"}],
                           databases={"mysql": 1, "shopdb": 2, "stray": 3, "mailserver": 4},
-                          mail_database="mailserver", extra_notes=[migrate.NO_DELETE_NOTE])
+                          mail_database="mailserver", extra_notes=[migrate.NO_DELETE_NOTE], everything=True)
     assert text.count("broken.nl") == 1 and "disk full" in " ".join(text.split())
     assert "later.nl" in text
     assert "catch-all" in text and "may send as info@example.nl" in text

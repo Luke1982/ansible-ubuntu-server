@@ -569,14 +569,14 @@ def test_a_cron_job_follows_its_sites_user_whatever_it_is_called():
 
 
 def test_user_without_domain_and_a_name_the_new_server_would_refuse_are_both_stopped(capsys):
-    assert migrate.main(["--host", "new", "--user", "example"], geteuid=lambda: 0) == 1
+    assert migrate.main(["list", "--host", "new", "--user", "example"], geteuid=lambda: 0) == 1
     assert "goes with --domain" in capsys.readouterr().out
-    assert migrate.main(["--host", "new", "--domain", "a.nl", "--user", "Example Site"], geteuid=lambda: 0) == 1
+    assert migrate.main(["list", "--host", "new", "--domain", "a.nl", "--user", "Example Site"], geteuid=lambda: 0) == 1
     assert "isn't a user name" in capsys.readouterr().out
 
 
 def test_user_needs_to_know_which_site_it_is_for():
-    args = migrate._arguments(["--domain", "a.nl", "--user", "one"])
+    args = migrate._arguments(["list", "--domain", "a.nl", "--user", "one"])
     assert migrate._user_for(_found("a.nl"), "a.nl", "one") == {"a.nl": "one"}
     assert migrate._user_for(_found("shop.a.nl"), "a.nl", "one") == {"shop.a.nl": "one"}
     with pytest.raises(migrate.Stopped) as stopped:
@@ -674,8 +674,9 @@ def test_a_site_that_is_not_wordpress_is_listed_and_left_alone():
     # It is named once in the report, under the hand work, and never as moved.
     result = migrate.Report()
     result.moved = [(items[1], {"ok": True, "docroot": "/home/shop/public_html/www"})]
-    text = migrate.report(result, found_sites=found, items=items)
+    text = migrate.report(result, found_sites=found, items=items, everything=True)
     assert text.count("static.nl") == 1
+    assert "static.nl" not in migrate.report(result, found_sites=found, items=items)
     assert "static.nl (files in /var/www/static)" in text
 
 

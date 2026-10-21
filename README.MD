@@ -495,10 +495,14 @@ Do the same with `tests/requirements-26.04.txt` (ideally on Python 3.14) for Ubu
 For moving a hand-built server onto one built with this repository. Run it from the old server, as root; the new server only has to be built.
 
 1. Copy [`shared/migrate/migrate.py`](shared/migrate/migrate.py) to the old server.
-2. On the old server, as root: `python3 migrate.py --host <new-server>`
-3. It makes a key for itself and prints it. Paste that line into `/home/ansible/.ssh/authorized_keys` on the new server, then run `migrate.py` again.
-4. It shows what it found, and what the new server already has. Type the numbers to move, like `1 3`, a range like `2-5`, or `all`.
-5. When it is done it prints a report of what moved and what you still have to do by hand.
+2. On the old server, as root: `python3 migrate.py key`. It prints a key. Paste that line into `/home/ansible/.ssh/authorized_keys` on the new server (once).
+3. `python3 migrate.py list --host <new-server>` looks around and shows what it found, grouped into mail, websites and cron jobs, with what the new server already has next to each. Only what can be moved has a number. It changes nothing.
+4. `python3 migrate.py move 1-3 --host <new-server>` moves what the numbers name (numbers, ranges like `2-5`, commas and `all` work). With no numbers it shows the list and asks. Either way it says what each pick is and asks to go ahead before it starts.
+5. When it is done it prints a report of what moved, with the `imapsync` lines and DNS records for it, and what you still have to do by hand.
+
+The other commands: `migrate.py check --host <new-server>` says which server answered and whether `mailctl` and `domainctl` are there. `migrate.py report` prints the report for what has been done so far, from its notes; `migrate.py report --all` adds the lists about the whole server (sites that are not WordPress, databases and cron jobs that belong to no site, what could not be read), which `list` also shows. `migrate.py` alone prints the help.
+
+The old server's own webmail, autodiscover and autoconfig addresses are not listed as sites: the new server has its own. Cron jobs that belong to no site, like the system's own, are counted in one line.
 
 It moves:
 
@@ -515,7 +519,7 @@ It does not move:
 
 The report ends with what is still yours to do by hand: catch-all addresses and send-as permissions that could not move, sites that are not WordPress, databases and cron jobs that belong to no site, and anything the tool could not read.
 
-`--domain example.nl` looks at one mail domain and its sites only. `--user name`, with `--domain`, gives that site another Linux user on the new server: two domains of one company, like `example.nl` and `example.com`, would otherwise come down to the same user, and the second is shown and not offered. `--again` is for a site that has already moved: it copies the files once more and replaces the new server's database, after asking. Run it again as often as you like; it offers only what has not moved yet.
+`--domain example.nl` (for `list` and `move`) looks at one mail domain and its sites only. `--user name`, with `--domain`, gives that site another Linux user on the new server: two domains of one company, like `example.nl` and `example.com`, would otherwise come down to the same user, and the second is shown and not offered. `migrate.py again example.nl` is for a site that has already moved: it copies the files once more and replaces the new server's database, after asking. Run `move` again as often as you like; it offers only what has not moved yet.
 
 Once the DNS of a site points at the new server, run `domainctl add <domain>` on the new server to get its certificate. Until the DNS moves, both servers run the same cron jobs.
 
