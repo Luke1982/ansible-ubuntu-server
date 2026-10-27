@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 from domainctl import cli, session
 from domainctl.core import acl, certificates, dnsnames, layout, serving, sites, users
 from domainctl.core.sites import Site
-from serverctl import certbot, openlitespeed, system
+from serverctl import certbot, openlitespeed, system, ui
 
 HERE = {ip_address("81.4.127.10")}
 
@@ -447,3 +447,35 @@ def test_list_shows_a_site_that_has_its_directories_and_no_virtual_host(server, 
     assert result.exit_code == 0, result.output
     assert "example" in result.output and "waiting for the DNS" in result.output
     assert "domainctl add DOMAIN" in result.output
+
+
+def test_the_transip_login_is_asked_for_before_the_spinner_starts(server, monkeypatch):
+    """A question underneath a spinner is one nobody can see: on a server with no TransIP key it looked like
+    the tool had hung, while it was waiting for a login to be typed."""
+    from domainctl.commands import dns as dns_commands
+    from serverctl.errors import CtlError as _CtlError
+
+    spinning = []
+
+    class _Status:
+        def __enter__(self):
+            spinning.append(True)
+            return self
+
+        def __exit__(self, *rest):
+            spinning.pop()
+            return False
+
+    monkeypatch.setattr(ui.console, "status", lambda *args, **kwargs: _Status())
+    asked_while = []
+
+    def fake_client(session, read_only):
+        asked_while.append(list(spinning))
+        raise _CtlError("There is no TransIP login and key on this server yet.")
+
+    monkeypatch.setattr(dns_commands, "client", fake_client)
+    monkeypatch.setattr(_Resolver, "answers", {"example.nl": {ip_address("45.87.2.9")}})
+
+    run("add", "example.nl", "--yes")
+
+    assert asked_while == [[]], "the login was asked for underneath a spinner"

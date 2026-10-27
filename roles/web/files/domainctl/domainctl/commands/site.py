@@ -400,11 +400,14 @@ def _resolve(session: Session, name: str, no_dns: bool, yes: bool) -> NameCheck:
     if not ui.decide(question, True if yes else None, "--yes", default=not moving):
         return found
     try:
+        # The login and key are asked for before the spinner starts: a question underneath it is one nobody
+        # can see, so it looks like the tool has hung while it waits for an answer.
+        client = dns.client(session, read_only=False)
         with ui.console.status(f"Changing {name} at TransIP…"):
             if moving:
-                zone, replaced, added = dnsnames.repoint(dns.client(session, read_only=False), name, ips)
+                zone, replaced, added = dnsnames.repoint(client, name, ips)
             else:
-                zone, added = dnsnames.publish(dns.client(session, read_only=False), name, ips)
+                zone, added = dnsnames.publish(client, name, ips)
                 replaced = ()
     except (CtlError, NotInAccount) as problem:
         ui.warn(f"Couldn't change {name}: {problem.message}")
