@@ -5,6 +5,7 @@ test_migrate_dashboard.py; these are about the customers, the four words their c
 and the new mail passwords.
 """
 
+import os
 import re
 
 import pytest
@@ -541,3 +542,178 @@ def test_a_customer_with_no_website_has_no_dns_to_move():
     connection, said = Connection(), []
     assert migrate._point_dns(connection, row, ask=lambda question: True, say=said.append) == []
     assert connection.requests == [] and "no website here" in " ".join(said)
+
+
+# ---- Stopping this server from keeping a moved domain's mail ----------------
+
+NEW_ADDRESS = "187.126.5.158"
+OLD_ADDRESS = "178.21.114.195"
+
+
+class Postfix(object):
+    """The commands this server's Postfix answers, and what its DNS says about the mail of example.nl."""
+
+    def __init__(self, mail_at=NEW_ADDRESS, maps="", answers=None, dig=True, host=True):
+        self.calls, self.maps, self.mail_at = [], maps, mail_at
+        self.dig, self.host = dig, host
+        self.answers = answers or {}
+
+    def __call__(self, *args, **named):
+        self.calls.append(args)
+        if args[0] == "dig":
+            if not self.dig:
+                raise migrate.CommandFailed("dig isn't installed", missing=True)
+            return "10 mail.example.nl.\n"
+        if args[0] == "host":
+            if not self.host:
+                raise migrate.CommandFailed("host isn't installed", missing=True)
+            return "example.nl mail is handled by 10 mail.example.nl.\n"
+        if args[:3] == ("postconf", "-h", "transport_maps"):
+            return self.maps + "\n"
+        if args[:2] == ("postmap", "-q"):
+            return self.answers.get(args[3], "")
+        if args[0] == "postconf" and args[1] == "-e":
+            self.maps = args[2].split("=", 1)[1].strip()
+            return ""
+        return ""
+
+    def ran(self, program):
+        return [call for call in self.calls if call[0] == program]
+
+
+@pytest.fixture
+def dns_says(monkeypatch):
+    """What mail.example.nl resolves to here, which is how the tool tells where the mail goes now."""
+    def point_at(address):
+        monkeypatch.setattr(migrate, "_addresses_of", lambda name, look=None: {address})
+    return point_at
+
+
+def _done_customer():
+    """A customer whose mail is all on the new server already."""
+    return migrate.customers([_mail("example.nl", accounts=2)],
+                             {"mail:example.nl": _there("example.nl", accounts=2)})[0]
+
+
+def test_the_menu_offers_to_stop_keeping_the_mail_here():
+    keys = dict((key, (what, note)) for key, what, note in migrate.customer_menu(_done_customer()))
+    assert keys["7"] == ("stop keeping this domain's mail here", "")
+    half = migrate.customers(_one_customer(), _status())[0]
+    assert dict((key, note) for key, _, note in migrate.customer_menu(half))["7"] == "move the mail first"
+    assert migrate.customer_action(_done_customer(), "7")[1] == "handover"
+
+
+def test_handing_a_domain_over_writes_the_transport_and_reloads_postfix(tmp_path):
+    """One line, read before any map Postfix already reads, and Postfix told to read it again."""
+    run = Postfix(maps="mysql:/etc/postfix/mysql-transport.cf")
+    path = str(tmp_path / "migrate-transport")
+    maps = migrate.hand_mail_over("example.nl", "new.example.nl", run=run, path=path)
+    assert maps == "hash:%s mysql:/etc/postfix/mysql-transport.cf" % path
+    text = open(path).read()
+    assert "example.nl\tsmtp:[new.example.nl]" in text and "postmap %s" % migrate.TRANSPORT_FILE in text
+    assert run.ran("postmap")[0] == ("postmap", path)
+    assert run.ran("postfix") == [("postfix", "reload")]
+
+
+def test_handing_the_same_domain_over_twice_leaves_one_line(tmp_path):
+    run = Postfix()
+    path = str(tmp_path / "migrate-transport")
+    migrate.hand_mail_over("example.nl", "first.example.nl", run=run, path=path)
+    migrate.hand_mail_over("example.nl", "new.example.nl", run=run, path=path)
+    lines = [line for line in open(path).read().splitlines() if line and not line.startswith("#")]
+    assert lines == ["example.nl\tsmtp:[new.example.nl]"]
+
+
+def test_a_domain_whose_mail_still_comes_here_is_not_handed_over(tmp_path, dns_says, monkeypatch):
+    """The customer is still reading it here, so sending it on would hide every message from them."""
+    dns_says(OLD_ADDRESS)
+    monkeypatch.setattr(migrate, "TRANSPORT_FILE", str(tmp_path / "migrate-transport"))
+    run, said, asked = Postfix(), [], []
+    done = migrate._hand_over_domains(Connection(), ["example.nl"], {"server": "new.nl",
+                                                                     "addresses": [NEW_ADDRESS]},
+                                      ask=lambda question: asked.append(question) or True,
+                                      say=said.append, run=run)
+    assert done == [] and asked == []
+    assert "still delivered to this server" in " ".join(" ".join(said).split())
+    assert run.ran("postfix") == [] and not os.path.exists(str(tmp_path / "migrate-transport"))
+
+
+def test_the_offer_after_a_mail_move_asks_once_the_dns_is_moved(tmp_path, dns_says, monkeypatch):
+    dns_says(NEW_ADDRESS)
+    path = str(tmp_path / "migrate-transport")
+    monkeypatch.setattr(migrate, "TRANSPORT_FILE", path)
+    run, said, asked = Postfix(), [], []
+    done = migrate._offer_handover(Connection(), ["example.nl"], {"server": "new.nl",
+                                                                  "addresses": [NEW_ADDRESS]},
+                                   ask=lambda question: asked.append(question) or True,
+                                   say=said.append, run=run)
+    assert done == ["example.nl"] and len(asked) == 1
+    assert "example.nl\tsmtp:[new.nl]" in open(path).read()
+
+
+def test_the_offer_after_a_mail_move_only_names_a_domain_that_has_to_wait(dns_says):
+    """Nothing to decide yet: the question would have one safe answer, so it isn't asked."""
+    dns_says(OLD_ADDRESS)
+    said, asked = [], []
+    done = migrate._offer_handover(Connection(), ["example.nl"], {"server": "new.nl",
+                                                                  "addresses": [NEW_ADDRESS]},
+                                   ask=lambda question: asked.append(question) or True,
+                                   say=said.append, run=Postfix())
+    assert done == [] and asked == []
+    text = " ".join(" ".join(said).split())
+    assert "lands in the old mailbox here" in text and "once its DNS has been moved" in text
+
+
+def test_the_offer_after_a_mail_move_asks_nothing_it_cannot_look_up(dns_says):
+    """Without dig and without host there is no way to see where the mail goes, and a question nobody can
+    answer from the screen is how mail ends up in a mailbox nobody reads."""
+    dns_says(NEW_ADDRESS)
+    said, asked = [], []
+    run = Postfix(dig=False, host=False)
+    done = migrate._offer_handover(Connection(), ["example.nl"], {"server": "new.nl",
+                                                                  "addresses": [NEW_ADDRESS]},
+                                   ask=lambda question: asked.append(question) or True,
+                                   say=said.append, run=run)
+    assert done == [] and asked == []
+    assert "can't look up the MX" in " ".join(" ".join(said).split())
+
+
+def test_a_customer_whose_mail_is_only_half_there_is_not_handed_over():
+    row = migrate.customers(_one_customer(), _status())[0]
+    said = []
+    assert migrate._hand_over(Connection(), row, {"server": "new.nl"}, say=said.append, run=Postfix()) == []
+    assert "isn't all on the new server yet" in " ".join(" ".join(said).split())
+
+
+def test_a_map_that_answers_before_ours_is_said_out_loud(tmp_path, dns_says, monkeypatch):
+    """Postfix goes by the first map that answers, so a transport already there wins and this says so."""
+    dns_says(NEW_ADDRESS)
+    path = str(tmp_path / "migrate-transport")
+    monkeypatch.setattr(migrate, "TRANSPORT_FILE", path)
+    run = Postfix(maps="hash:/etc/postfix/transport",
+                  answers={"hash:/etc/postfix/transport": "smtp:[somewhere.else]"})
+    said = []
+    done = migrate._hand_over_domains(Connection(), ["example.nl"], {"server": "new.nl",
+                                                                     "addresses": [NEW_ADDRESS]},
+                                      ask=lambda question: True, say=said.append, run=run)
+    text = " ".join(" ".join(said).split())
+    assert done == [] and "somewhere.else" in text and "not to the new server" in text
+
+
+def test_without_dig_it_asks_but_says_it_could_not_look(tmp_path, dns_says, monkeypatch):
+    dns_says(NEW_ADDRESS)
+    monkeypatch.setattr(migrate, "TRANSPORT_FILE", str(tmp_path / "migrate-transport"))
+    run = Postfix(dig=False)
+    said = []
+    done = migrate._hand_over_domains(Connection(), ["example.nl"], {"server": "new.nl",
+                                                                     "addresses": [NEW_ADDRESS]},
+                                      ask=lambda question: True, say=said.append, run=run)
+    assert done == ["example.nl"]  # host answered instead
+    assert run.ran("host")
+
+
+def test_the_mail_hosts_of_both_dig_and_host_are_read():
+    assert migrate._mx_hosts("10 mail.example.nl.\n20 mail2.example.nl.\n") == ["mail.example.nl",
+                                                                                "mail2.example.nl"]
+    assert migrate._mx_hosts("example.nl mail is handled by 10 mail.example.nl.") == ["mail.example.nl"]
+    assert migrate._mx_hosts("") == [] and migrate._mx_hosts("not found: 3(NXDOMAIN)") == []

@@ -2039,6 +2039,186 @@ def _point_dns(connection, row, doing=None, ask=None, say=print):
     return done
 
 
+# ---- Handing a mail domain over to the new server ---------------------------
+
+# Postfix here keeps delivering a domain it has in its own tables, whatever the DNS says, so a message sent
+# from a mailbox on this server to a moved domain never leaves the building: it lands in the old mailbox and
+# the customer, reading their mail on the new server, sees nothing. One line per moved domain puts a stop to
+# it. Every other mail server in the world looks the domain up and finds the new server by itself.
+TRANSPORT_FILE = "/etc/postfix/migrate-transport"
+TRANSPORT_HEADER = ("# Written by migrate: the domains this server no longer keeps itself. Each is sent on to\n"
+                    "# the new server instead. To have this server keep one again, take its line away, run\n"
+                    "# 'postmap %s' and then 'postfix reload'.\n" % TRANSPORT_FILE)
+
+HANDOVER_WARNING = ("Postfix on this server still has %(domain)s in its own tables, so mail sent from a "
+                    "mailbox here to that domain is dropped in the old mailbox here instead of going to the "
+                    "new server. This tells Postfix here to send everything for %(domain)s to %(new)s. "
+                    "Nothing is deleted: the mail already in the mailboxes here stays where it is, and the "
+                    "one line that does it is in %(file)s.")
+
+
+def _mx_hosts(text):
+    """The mail hosts in the answer to an MX lookup, as both dig and host print it."""
+    out = []
+    for line in (text or "").splitlines():
+        words = line.split()
+        if not words:
+            continue
+        name = words[-1].rstrip(".")
+        if "." in name and re.match(r"^[A-Za-z0-9.-]+$", name):
+            out.append(name)
+    return out
+
+
+def _addresses_of(name, look=None):
+    look = look or socket.getaddrinfo
+    try:
+        found = look(name, None)
+    except (socket.gaierror, OSError):
+        return set()
+    return set(str(entry[4][0]) for entry in found)
+
+
+def mail_answered_there(domain, addresses, run=None, look=None):
+    """Whether the mail of this domain is delivered to the new server now, as this server's own DNS sees it.
+    None when there is no way to look up an MX record here, which is not the same as no."""
+    run = run or run_command
+    for command in (("dig", "+short", "MX", domain), ("host", "-t", "MX", domain)):
+        try:
+            hosts = _mx_hosts(run(*command))
+        except CommandFailed:
+            continue
+        if not hosts:
+            continue
+        wanted = set(str(one) for one in (addresses or []))
+        return any(found in wanted for host in hosts for found in _addresses_of(host, look))
+    return None
+
+
+def hand_mail_over(domain, target, run=None, path=None):
+    """Postfix here sends the domain on to the new server from now on. Returns the maps it reads for a
+    transport, our own first."""
+    run = run or run_command
+    path = path or TRANSPORT_FILE
+    lines = []
+    if os.path.exists(path):
+        with open(path) as handle:
+            lines = [line for line in handle.read().splitlines()
+                     if line.strip() and not line.startswith("#") and line.split()[0] != domain]
+    lines.append("%s\tsmtp:[%s]" % (domain, target))
+    with open(path, "w") as handle:
+        handle.write(TRANSPORT_HEADER + "\n".join(lines) + "\n")
+    os.chmod(path, 0o644)
+    run("postmap", path)
+    maps = _transport_maps(run, path)
+    run("postfix", "reload")
+    return maps
+
+
+def _transport_maps(run, path):
+    """Postfix reads our file, before any other map it reads already: what is in ours is only the domains this
+    server has handed over, and for those ours is the answer that counts."""
+    now = " ".join((run("postconf", "-h", "transport_maps") or "").split())
+    ours = "hash:%s" % path
+    maps = [one for one in re.split(r"[,\s]+", now) if one and one != ours]
+    wanted = " ".join([ours] + maps)
+    if wanted != now:
+        run("postconf", "-e", "transport_maps = %s" % wanted)
+    return wanted
+
+
+def _answers_for(domain, maps, run=None):
+    """Which of Postfix's transport maps answers for the domain, and with what. The first one that answers is
+    the one Postfix goes by, so it is the one to look at."""
+    run = run or run_command
+    for one in (maps or "").split():
+        try:
+            found = (run("postmap", "-q", domain, one) or "").strip()
+        except CommandFailed:
+            continue
+        if found:
+            return one, found
+    return None, None
+
+
+def _hand_over(connection, row, hello=None, doing=None, ask=None, say=print, run=None):
+    """The number on a customer's screen: hands over every mail domain of that customer. Only for a customer
+    whose mail is all on the new server; the domains it is still half of would bounce there."""
+    domains = [item["name"] for item in row.items["mail"] if item.get("name")]
+    if not domains:
+        _say("%s has no mail domain on this server, so there is nothing to hand over." % row.name, say)
+        return []
+    if row.word("mail") != DONE:
+        _say("The mail of %s isn't all on the new server yet, so the new server can't take it over. Move the "
+             "mail first." % row.name, say)
+        return []
+    return _hand_over_domains(connection, domains, hello, doing=doing, ask=ask, say=say, run=run)
+
+
+LATER_NOTE = ("Mail sent from a mailbox on this server to %s still lands in the old mailbox here, because "
+              "this server has the domain in its own tables. Hand it over with the number for it on %s's "
+              "screen once its DNS has been moved.")
+
+
+def _offer_handover(connection, domains, hello=None, doing=None, ask=None, say=print, run=None):
+    """Offered the moment a mail domain is across, which is when the question comes up. A domain whose mail is
+    still delivered here, or one this server can't look up, is only named: nothing is asked that this tool
+    can't see the answer to, and the number on the customer's screen does it later."""
+    run = run or run_command
+    ready = []
+    for name in domains:
+        answered = mail_answered_there(name, (hello or {}).get("addresses"), run=run)
+        if answered is True:
+            ready.append(name)
+            continue
+        if answered is None:
+            _say("I can't look up the MX of %s here, so I can't tell whether the new server answers for its "
+                 "mail yet." % name, say)
+        _say(LATER_NOTE % (name, name), say)
+    if not ready:
+        return []
+    return _hand_over_domains(connection, ready, hello, doing=doing, ask=ask, say=say, run=run)
+
+
+def _hand_over_domains(connection, domains, hello=None, doing=None, ask=None, say=print, run=None):
+    """Stops this server keeping these domains itself, each after the question for it. A domain whose mail is
+    still delivered here is left alone: until the DNS is moved, this is where it is read."""
+    doing = doing if doing is not None else [""]
+    ask = ask or _question
+    run = run or run_command
+    target = _new_name(connection, hello)
+    addresses = (hello or {}).get("addresses")
+    done = []
+    for name in domains:
+        _say(HANDOVER_WARNING % {"domain": name, "new": target, "file": TRANSPORT_FILE}, say)
+        answered = mail_answered_there(name, addresses, run=run)
+        if answered is False:
+            _say("Not yet: the mail of %s is still delivered to this server, so this is where it is read. "
+                 "Move its DNS first, with 'mailctl repair %s' on the new server." % (name, name), say)
+            continue
+        if answered is None:
+            _say("I can't look up the MX of %s here, so I can't tell whether the new server answers for it "
+                 "yet. Only say yes if its DNS has been moved." % name, say)
+        if not ask("Send the mail of %s to the new server from now on? [y/N] " % name):
+            _say("%s is still kept on this server." % name, say)
+            continue
+        doing[0] = "handing the mail of %s over" % name
+        try:
+            maps = hand_mail_over(name, target, run=run)
+        except (CommandFailed, OSError, IOError) as problem:
+            _say("Postfix here wouldn't have it: %s" % problem, say)
+            continue
+        where, found = _answers_for(name, maps, run=run)
+        if found and where != "hash:%s" % TRANSPORT_FILE:
+            _say("Careful: Postfix reads %s for %s before our own file, and that one says %s. The mail goes "
+                 "there, not to the new server." % (where, name, found), say)
+            continue
+        done.append(name)
+        _say("Postfix here sends everything for %s to %s from now on. Send a message from a mailbox on this "
+             "server to an address at %s to see it arrive there." % (name, target, name), say)
+    return done
+
+
 def customer_menu(row):
     """The lines of the menu, as (key, what it does, the note beside it). A part that is already on the new
     server is offered again instead: a website whose files changed since it moved is copied over the old one,
@@ -2057,6 +2237,9 @@ def customer_menu(row):
     out.append(("5", "give an account its own password on the new server", ""))
     out.append(("6", "point the DNS at the new server and finish the site",
                 "" if row.items["site"] else "no website"))
+    out.append(("7", "stop keeping this domain's mail here",
+                "" if row.word("mail") == DONE else
+                ("no mail" if not row.items["mail"] else "move the mail first")))
     out.append(("b", "back to the list", ""))
     out.append(("q", "leave", ""))
     return out
@@ -2082,6 +2265,8 @@ def customer_action(row, word):
         return [], "passwords", False
     if word == "6":
         return row.items["site"], "dns", False
+    if word == "7":
+        return row.items["mail"], "handover", False
     return None, None, False
 
 
@@ -3858,6 +4043,10 @@ def _open_customer(name, args, connection, state, notes, doing, hello, colour, a
             _point_dns(connection, row, doing)
             looked = None  # the new server has the site finished now
             continue
+        if what == "handover":
+            # Nothing on the new server changes, so there is nothing to ask it again.
+            _hand_over(connection, row, hello, doing)
+            continue
         if what == "passwords":
             doing[0] = "setting new mail passwords"
             set_passwords(connection, row, database=looked[1], ask=_question,
@@ -4003,6 +4192,10 @@ def _move_and_report(connection, state, notes, looked, hello, chosen,
                  items=items, notes=notes, extra_notes=extra,
                  mail_database=database, passwords=passwords,
                  addresses=(hello or {}).get("addresses")))
+    if moved_domains:
+        # The domain is on the new server now, and this server still has it in its own tables: the one thing
+        # left to do with it is to stop keeping it here, so it is offered here and not only on a menu.
+        _offer_handover(connection, moved_domains, hello, doing)
     return result
 
 
