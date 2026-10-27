@@ -514,3 +514,30 @@ def test_giving_a_password_works_with_nothing_faked_but_the_two_servers(monkeypa
                                  old_server="old.nl", new_server="new.nl")
     assert done == ["a0@a.nl"]
     assert connection.requests[-1]["password"] == "W8woord!"
+
+
+def test_the_dns_move_asks_first_and_says_what_it_does():
+    """The one thing this tool does that the whole internet sees, so it is never a keystroke on its own."""
+    items = _one_customer()
+    row = migrate.customers(items, _status(**{"mail:example.nl": "new", "site:example.nl": "exists"}))[0]
+    connection, said = Connection(), []
+    done = migrate._point_dns(connection, row, ask=lambda question: True, say=said.append)
+    assert done == ["example.nl"]
+    assert connection.requests[-1] == {"request": "point_dns", "domain": "example.nl"}
+    text = " ".join(" ".join(said).split())  # it is wrapped to the width
+    assert "Visitors go to the new server" in text and "domainctl dns credentials" in text
+
+
+def test_saying_no_to_the_dns_move_sends_nothing():
+    row = migrate.customers(_one_customer(), _status(**{"site:example.nl": "exists"}))[0]
+    connection, said = Connection(), []
+    assert migrate._point_dns(connection, row, ask=lambda question: False, say=said.append) == []
+    assert connection.requests == []
+    assert "left alone" in " ".join(said)
+
+
+def test_a_customer_with_no_website_has_no_dns_to_move():
+    row = migrate.customers([_mail("a.nl")], _status(**{"mail:a.nl": "new"}))[0]
+    connection, said = Connection(), []
+    assert migrate._point_dns(connection, row, ask=lambda question: True, say=said.append) == []
+    assert connection.requests == [] and "no website here" in " ".join(said)

@@ -49,7 +49,7 @@ SITES_ENABLED = "/etc/apache2/sites-enabled"
 APACHE_ROOT = "/etc/apache2"
 # Of the talk with migratectl on the new server; both halves must come from the same release. It goes up whenever
 # the requests or the answers change, so a mismatch is found at the handshake and not in the middle of a site.
-PROTOCOL_VERSION = 4
+PROTOCOL_VERSION = 5
 KEY_NAME = "migrate_key"
 KNOWN_HOSTS_NAME = "migrate_known_hosts"
 AUTHORIZED_KEYS = "/home/ansible/.ssh/authorized_keys"
@@ -2003,6 +2003,42 @@ def customer_screen(row, status, remembered=None, colour=False, new_server=None)
     return "\n".join(_fit_line(line) for line in out)
 
 
+DNS_WARNING = ("This moves the DNS of %s to the new server at TransIP and then finishes the site there: it "
+               "waits until the name resolves at the new server and asks Let's Encrypt for its certificate. "
+               "Visitors go to the new server as soon as the old record has expired, so do it when the site "
+               "and its database are across. The TransIP login has to be saved on the new server already "
+               "(domainctl dns credentials there); there is no terminal here to type it in.")
+
+
+def _point_dns(connection, row, doing=None, ask=None, say=print):
+    """Has the new server move the DNS of this customer's site and finish it. The one thing this tool does
+    that the whole internet sees, so it says what it will do and asks first."""
+    doing = doing if doing is not None else [""]
+    ask = ask or _question
+    sites = [item for item in row.items["site"] if item.get("name")]
+    if not sites:
+        _say("%s has no website here, so there is no DNS of a site to move." % row.name, say)
+        return []
+    done = []
+    for item in sites:
+        name = item["name"]
+        _say(DNS_WARNING % name, say)
+        if not ask("Move the DNS of %s to the new server now? [y/N] " % name):
+            _say("The DNS of %s was left alone." % name, say)
+            continue
+        doing[0] = "moving the DNS of %s" % name
+        answer = connection.ask({"request": "point_dns", "domain": name})
+        if answer.get("ok"):
+            done.append(name)
+            _say("The DNS of %s now points at the new server, and the site is finished there." % name, say)
+            for line in (answer.get("text") or "").splitlines():
+                say("  " + line)
+        else:
+            _say("The DNS of %s was not moved: %s" % (name, answer.get("error") or "the new server gave no "
+                                                      "reason"), say)
+    return done
+
+
 def customer_menu(row):
     """The lines of the menu, as (key, what it does, the note beside it). A part that is already on the new
     server is offered again instead: a website whose files changed since it moved is copied over the old one,
@@ -2019,6 +2055,8 @@ def customer_menu(row):
             out.append((str(number), what, "nothing to do"))
     out.append(("4", "everything that is left", "" if row.to_move() else "nothing to do"))
     out.append(("5", "give an account its own password on the new server", ""))
+    out.append(("6", "point the DNS at the new server and finish the site",
+                "" if row.items["site"] else "no website"))
     out.append(("b", "back to the list", ""))
     out.append(("q", "leave", ""))
     return out
@@ -2042,6 +2080,8 @@ def customer_action(row, word):
         return row.to_move(), "everything that is left", False
     if word == "5":
         return [], "passwords", False
+    if word == "6":
+        return row.items["site"], "dns", False
     return None, None, False
 
 
@@ -3813,6 +3853,10 @@ def _open_customer(name, args, connection, state, notes, doing, hello, colour, a
         if what is None:
             _say("I don't know '%s'. Type one of the numbers above, b to go back to the list, or q to leave."
                  % word)
+            continue
+        if what == "dns":
+            _point_dns(connection, row, doing)
+            looked = None  # the new server has the site finished now
             continue
         if what == "passwords":
             doing[0] = "setting new mail passwords"

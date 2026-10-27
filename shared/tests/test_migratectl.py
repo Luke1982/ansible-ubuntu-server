@@ -820,5 +820,6 @@ def test_a_mailctl_that_refuses_the_password_is_an_answer_and_not_a_crash(monkey
 
 
 def test_the_requests_it_takes_are_the_ones_the_old_server_sends():
-    assert sorted(migratectl.HANDLERS) == ["apply", "dns", "finish_site", "hello", "password", "status"]
+    assert sorted(migratectl.HANDLERS) == ["apply", "dns", "finish_site", "hello", "password",
+                                           "point_dns", "status"]
     assert sorted(migratectl.KINDS) == ["cron", "mail_domain", "site"]

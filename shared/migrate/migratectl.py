@@ -18,7 +18,7 @@ import sys
 import tempfile
 import unicodedata
 
-PROTOCOL_VERSION = 4  # it goes up with every change to the requests or the answers; migrate.py refuses another
+PROTOCOL_VERSION = 5  # it goes up with every change to the requests or the answers; migrate.py refuses another
 TOOLS = ("mailctl", "domainctl")
 LIST_TIMEOUT = 60
 # OpenLiteSpeed's own PHP, where the web role installs it, for a server that has no php on the path at all.
@@ -278,6 +278,7 @@ STUB_MARK = "// put here by migratectl; the site's own wp-config.php replaces it
 OWN_FILES = (".well-known",)
 PLACEHOLDER_SENTENCES = ("put here by domainctl", "This site is set up and waiting for its files.")
 OWN_INDEXES = ("index.php", "index.htm", "index.xhtml", "default.php")
+DNS_TIMEOUT = 900  # it waits for the name to resolve here, then for Let's Encrypt
 COMMAND_TIMEOUT = 600
 # A mail import makes every account, filter and spam setting one at a time, so a big domain legitimately takes
 # long: it gets the half hour the old server gives an apply, less a little, so this answer still reaches it.
@@ -669,8 +670,26 @@ def dns(request):
     return {"ok": True, "text": text}
 
 
+def point_dns(request):
+    """Moves a site's DNS to this server at TransIP and finishes the site: `domainctl add DOMAIN --yes`,
+    which changes the records, waits until the name resolves here, and then asks Let's Encrypt for the real
+    certificate. It is the one request that changes something the whole internet sees, so the old server asks
+    before it sends it. The TransIP login has to be saved here already (domainctl dns credentials): there is
+    no terminal to ask for it in."""
+    domain = request.get("domain")
+    domain = domain.strip().lower() if isinstance(domain, str) else ""
+    if len(domain) > 253 or not _DOMAIN.fullmatch(domain):
+        return {"ok": False, "error": f"{domain!r} isn't a valid domain name."}
+    try:
+        text = _run(["domainctl", "add", domain, "--yes"], f"Moving the DNS of {domain} and finishing the site",
+                    timeout=DNS_TIMEOUT, env=dict(os.environ, COLUMNS="80"))
+    except Failed as error:
+        return {"ok": False, "error": str(error)}
+    return {"ok": True, "text": text, "steps": [f"Moved the DNS of {domain} to this server and finished the site."]}
+
+
 HANDLERS = {"hello": hello, "status": status, "apply": apply, "finish_site": finish_site,
-            "password": password, "dns": dns}
+            "password": password, "dns": dns, "point_dns": point_dns}
 
 
 def answer(request):
