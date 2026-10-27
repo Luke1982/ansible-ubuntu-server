@@ -6,6 +6,8 @@ import pytest
 from conftest import FAKE_KEY_RECORD_START, FakeCommand, make_certificate
 
 from mailctl import ui
+from mailctl.commands import autodiscover as autodiscover_command
+from mailctl.commands import webmail as webmail_command
 from mailctl.core import dns_check, openlitespeed, reach, system
 from mailctl.core.dns_check import Srv
 
@@ -432,6 +434,48 @@ def test_repair_offers_each_step_a_domain_still_needs(mailctl, healthy_dns, db_c
     assert "The certificate doesn't include mail.example.nl" in output
     assert "Postfix and Dovecot serve a certificate" in output
     assert "See how it stands now with: mailctl doctor example.nl" in output
+
+
+def test_repair_gives_webmail_and_autodiscover_to_a_domain_being_moved_here(mailctl, transip_account, db_config,
+                                                                            monkeypatch):
+    """Its mail still goes to the old server for as long as the old records are remembered, so the checks say
+    nothing about webmail or autodiscover; repair publishes the records itself and offers them all the same."""
+    class OldServer(FakeDns):
+        def addresses(self, name):
+            return {ip_address("198.51.100.80")} if name == "mail.example.nl" else super().addresses(name)
+
+    monkeypatch.setattr(dns_check, "SystemResolver", OldServer)
+    make_certificate(db_config.certificate(), "server.hosting.example", "mail.example.nl")
+    (db_config.ols_root / "conf" / "templates").mkdir(parents=True)
+    openlitespeed.config_file(db_config.ols_root).write_text("listener HTTP {\n  address *:80\n  secure 0\n}\n")
+    done = []
+    monkeypatch.setattr(webmail_command, "sync", lambda **named: done.append("webmail"))
+    monkeypatch.setattr(autodiscover_command, "publish", lambda *args, **named: done.append("autodiscover"))
+
+    output = mailctl.ok("repair", "example.nl", "--yes")
+
+    assert "which isn't this server" in output
+    assert done == ["webmail", "autodiscover"]
+
+
+def test_repair_leaves_the_sites_alone_when_the_records_arent_published(mailctl, transip_account, db_config,
+                                                                        terminal, monkeypatch):
+    """Saying no to the records says the mail isn't coming here, and then neither is the webmail."""
+    class OldServer(FakeDns):
+        def addresses(self, name):
+            return {ip_address("198.51.100.80")} if name == "mail.example.nl" else super().addresses(name)
+
+    monkeypatch.setattr(dns_check, "SystemResolver", OldServer)
+    make_certificate(db_config.certificate(), "server.hosting.example", "mail.example.nl")
+    (db_config.ols_root / "conf" / "templates").mkdir(parents=True)
+    openlitespeed.config_file(db_config.ols_root).write_text("listener HTTP {\n  address *:80\n  secure 0\n}\n")
+    done = []
+    monkeypatch.setattr(webmail_command, "sync", lambda **named: done.append("webmail"))
+    monkeypatch.setattr(autodiscover_command, "publish", lambda *args, **named: done.append("autodiscover"))
+
+    mailctl.ok("repair", "example.nl", stdin="n\n")
+
+    assert done == []
 
 
 def test_repair_says_when_a_domain_needs_nothing(mailctl, healthy_dns, db_config, monkeypatch):

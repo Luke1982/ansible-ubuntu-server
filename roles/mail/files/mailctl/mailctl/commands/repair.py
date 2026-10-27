@@ -41,13 +41,18 @@ def repair(domain: Domain = None, yes: Yes = False) -> None:
         with ui.console.status(f"Checking {domain}…"):
             facts = checks.server(session)
             found = checks.domain_checks(session, facts, domain, now)
+        missing = checks.missing_sites(session, domain)
     checks.show(found, everything=False)
     todo = _what_to_do(found)
     if not todo:
         ui.success(f"{domain} needs nothing: everything is set up.")
         return
     if "the DNS records" in todo and _agreed("Publish the DNS records at TransIP?", yes):
-        _step(lambda: dns_command.publish(domain, dry_run=False, yes=yes))
+        if _step(lambda: dns_command.publish(domain, dry_run=False, yes=yes)) and missing:
+            # The records now send the mail here, so its webmail and autodiscover belong here as well. The
+            # checks said nothing about them because the mail is still delivered where it was, and it is until
+            # the old records are forgotten: nobody wants to come back an hour later for the rest of this.
+            todo = _what_to_do(found, missing)
     if "the certificate" in todo and _agreed(f"Put mail.{domain} in this server's certificate?", yes):
         _step(lambda: certificate_command.sync(dry_run=False, yes=True))
     if "webmail" in todo and _agreed(f"Give {domain} webmail?", yes):
@@ -57,20 +62,23 @@ def repair(domain: Domain = None, yes: Yes = False) -> None:
     ui.note(f"See how it stands now with: mailctl doctor {domain}")
 
 
-def _step(run: Callable[[], None]) -> None:
-    """One step. A step that can't be done says why and the next one is still offered: they are separate jobs,
-    and the one that failed is often waiting for something outside this server."""
+def _step(run: Callable[[], None]) -> bool:
+    """One step, and whether it was done. A step that can't be done says why and the next one is still offered:
+    they are separate jobs, and the one that failed is often waiting for something outside this server."""
     try:
         run()
     except MailctlError as problem:
         ui.warn(problem.message)
         if problem.hint:
             ui.note(problem.hint)
+        return False
+    return True
 
 
-def _what_to_do(found: list) -> list[str]:
-    """The steps worth offering, in order, without repeating one."""
-    needs = {check.name for check in found if check.status is not Status.OK}
+def _what_to_do(found: list, also: set[str] = frozenset()) -> list[str]:
+    """The steps worth offering, in order, without repeating one. 'also' names checks that didn't come back
+    needing anything but are to be offered anyway."""
+    needs = {check.name for check in found if check.status is not Status.OK} | set(also)
     steps = []
     for name, step in _STEPS:
         if name in needs and step not in steps:

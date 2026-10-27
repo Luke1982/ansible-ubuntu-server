@@ -93,6 +93,21 @@ def _not_set_up(session: Session, domain: str, checks: list[Check], site: Check 
     return found
 
 
+def missing_sites(session: Session, domain: str) -> set[str]:
+    """Which of webmail and autodiscover this server hasn't made for the domain yet, whatever its DNS says.
+
+    The domain checks leave both out while the mail is still delivered elsewhere, which is just what a domain
+    halfway through a move here looks like: 'repair' publishes its records itself, and from then on the sites
+    belong here too, long before the old records are forgotten everywhere.
+    """
+    try:
+        there = {"Webmail": webmail.host(domain) in webmail.sites(session.config),
+                 "Autodiscover": autodiscover.has_site(session.config, domain)}
+    except MailctlError:
+        return set()  # OpenLiteSpeed's config can't be read; the checks say so, and nothing is offered on a guess
+    return {name for name, found in there.items() if not found}
+
+
 def _how_to_fix(domain: str) -> dict[str, str]:
     """Which command takes a record away, per name: mailctl publishes the mail names, and the domain itself is
     the website's, which is domainctl's on a server that has it."""
