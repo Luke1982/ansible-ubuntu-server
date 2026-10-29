@@ -7,7 +7,7 @@ from serverctl.dns import Check, Status
 from serverctl.errors import CtlError
 from serverctl.transip import NotInAccount
 
-from ..core import certificates, dnsnames, hostsite, layout, serving, sites, template, users
+from ..core import certificates, dnsnames, hostsite, layout, serving, signage, sites, template, users
 from ..core.dnsnames import NameCheck, State
 from ..core.sites import Site
 from ..session import Session, open_session
@@ -424,7 +424,7 @@ def _resolve(session: Session, name: str, no_dns: bool, yes: bool) -> NameCheck:
 def _reserve(config, site: Site, is_retry: bool, existing_user: bool) -> None:
     """Checks that nothing else on this server already answers to the site's names."""
     lines = sites.read(config)
-    clash = sites.taken_by_another(config, site.names, site.user, lines)
+    clash = sites.taken_by_another(config, site.names, site.user, lines) or signage.serving(config, site.names)
     if clash:
         raise CtlError(clash, hint="Remove it first, or choose another domain.")
     if is_retry or existing_user or not users.exists(site.user) or layout.made_by_domainctl(config, site.user):

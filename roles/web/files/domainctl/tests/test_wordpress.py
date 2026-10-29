@@ -18,6 +18,7 @@ class _Server:
     def __init__(self, config):
         self.config = config
         self.databases: set[str] = set()
+        self.users: set[str] = set()  # MariaDB users, which a database need not share a name with
         self.installed: set[str] = set()
         self.plugins: dict[str, str] = {}  # site user: WP fail2ban's status
         self.calls: list[tuple[str, ...]] = []
@@ -65,11 +66,18 @@ class _Server:
     def _sql(self, statements):
         if statements.startswith("SELECT"):
             name = statements.split("'")[1]
-            return f"{int(name in self.databases)}\n0\n"
+            if "mysql.user" in statements and "SCHEMATA" not in statements:
+                return f"{int(name in self.users)}\n"
+            return f"{int(name in self.databases)}\n{int(name in self.users)}\n"
         if statements.startswith("CREATE DATABASE"):
             self.databases.add(statements.split("`")[1])
         if statements.startswith("DROP DATABASE"):
             self.databases.discard(statements.split("`")[1])
+        for line in statements.splitlines():
+            if line.startswith("CREATE USER"):
+                self.users.add(line.split("'")[1])
+            if line.startswith("DROP USER"):
+                self.users.discard(line.split("'")[1])
         return ""
 
 
@@ -405,3 +413,56 @@ def test_adopt_still_refuses_a_user_that_domainctl_did_not_make(server, fake, mo
     monkeypatch.setattr(users, "exists", lambda name: True)
     result = adopt()
     assert result.exit_code == 1 and "There is no site example" in result.output
+
+
+# --- domainctl database: a database for a site that is not WordPress -----------------------------------------
+
+def _database(*extra):
+    return run("database", "add", "example", *extra)
+
+
+def test_database_add_makes_one_with_a_user_of_the_same_name(server, fake):  # noqa: F811
+    site(server)
+    result = _database()
+
+    assert result.exit_code == 0, result.output
+    assert fake.databases == {"example"} and fake.users == {"example"}
+    assert "password" in result.output and "host" in result.output
+
+
+def test_database_add_can_make_the_login_the_site_already_uses(server, fake):  # noqa: F811
+    """The site's own settings came over with its files; making exactly those means it needs no editing."""
+    site(server)
+    result = _database("--db-user", "boersma", "--password", "the-one-in-its-config")
+
+    assert result.exit_code == 0, result.output
+    assert fake.users == {"boersma"} and fake.databases == {"example"}
+    assert any("GRANT" in (stdin or "") and "boersma" in (stdin or "") for stdin in fake.stdin)
+    assert "the-one-in-its-config" in result.output and "already fit" in result.output
+
+
+def test_a_second_site_of_the_same_customer_keeps_the_login_the_first_one_uses(server, fake):  # noqa: F811
+    """One customer logs into both their databases with one name. Taking that name away from the first site to
+    give it to the second would stop the first working."""
+    site(server)
+    fake.databases.add("example_crm")
+    fake.users.add("boersma")
+
+    result = _database("--database", "example_crm", "--db-user", "boersma", "--password", "x", "--replace",
+                       "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert "boersma" in fake.users  # it was never dropped
+    touched = [line for stdin in fake.stdin for line in (stdin or "").splitlines()
+               if line.startswith("DROP USER") or line.startswith("REVOKE")]
+    assert not any("'boersma'" in line for line in touched)
+    assert "its password is the one it had" in " ".join(result.output.split())
+
+
+def test_a_database_that_shares_its_name_with_another_sites_user_is_not_called_taken(server, fake):  # noqa: F811
+    """Only a database of that name means there is something to empty."""
+    site(server)
+    fake.users.add("example_crm")  # somebody else's login, no database of that name
+    result = _database("--database", "example_crm", "--db-user", "boersma")
+    assert result.exit_code == 0, result.output
+    assert fake.databases == {"example_crm"}

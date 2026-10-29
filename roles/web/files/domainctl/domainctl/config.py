@@ -35,6 +35,11 @@ class Config:
     # The TransIP login and key, shared with mailctl so they're entered once per server.
     transip_settings: Path = Path("/etc/transip/transip.json")
     transip_key: Path = Path("/etc/transip/transip.key")
+    # piSignage (domainctl signage): where its code comes from, which branch, and where each server's port and
+    # database are kept for systemd.
+    signage_repo: str = "https://github.com/colloqi/pisignage-server.git"
+    signage_version: str = "master"
+    signage_settings: Path = Path("/etc/pisignage")
 
     def home(self, user: str) -> Path:
         return self.home_root / user

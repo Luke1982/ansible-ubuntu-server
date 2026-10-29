@@ -1,0 +1,25 @@
+# One piSignage server, for one customer: "systemctl status pisignage@USER".
+#
+# Written by Ansible (roles/web/templates/pisignage@.service.j2). "domainctl signage add DOMAIN" makes the user,
+# fetches piSignage into its home, writes its settings and starts it.
+[Unit]
+Description=piSignage server %i
+After=network.target mongod.service
+Wants=mongod.service
+
+[Service]
+User=%i
+Group=%i
+WorkingDirectory={{ web_home_root }}/%i/pisignage-server
+# DOMAIN, and the PORT and MONGOLAB_URI piSignage reads.
+EnvironmentFile={{ pisignage_settings }}/%i.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

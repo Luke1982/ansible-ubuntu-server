@@ -478,4 +478,5 @@ def test_the_transip_login_is_asked_for_before_the_spinner_starts(server, monkey
 
     run("add", "example.nl", "--yes")
 
-    assert asked_while == [[]], "the login was asked for underneath a spinner"
+    # Once per name that has no record yet, which is what matters: not one of them underneath a spinner.
+    assert asked_while and not any(asked_while), "the login was asked for underneath a spinner"

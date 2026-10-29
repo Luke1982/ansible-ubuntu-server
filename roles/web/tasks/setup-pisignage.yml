@@ -1,0 +1,54 @@
+---
+# piSignage: a server per customer for the screens of that customer's players. "domainctl signage add DOMAIN" sets
+# one up; this installs what they all run on. Each is a Node.js app with a MongoDB database of its own, run by
+# systemd as pisignage@USER, with OpenLiteSpeed in front of it for HTTPS.
+
+# The key is kept in the repo, so the server never trusts a key it downloaded.
+- name: Add MongoDB's package signing key
+  copy:
+    src: "{{ mongodb_key }}"
+    dest: "/etc/apt/keyrings/{{ mongodb_key }}"
+    mode: 0644
+
+- name: Add MongoDB's package repository
+  apt_repository:
+    repo: "deb [arch=amd64,arm64 signed-by=/etc/apt/keyrings/{{ mongodb_key }}] https://repo.mongodb.org/apt/ubuntu {{ ansible_distribution_release }}/mongodb-org/{{ mongodb_version }} multiverse"
+    filename: mongodb-org
+
+# ffmpeg converts the uploaded videos and ImageMagick makes the thumbnails. git fetches piSignage, and npm the one
+# package it takes straight from GitHub.
+- name: Install MongoDB, Node.js and the tools piSignage uses
+  apt:
+    pkg:
+      - mongodb-org
+      - nodejs
+      - npm
+      - ffmpeg
+      - imagemagick
+      - git
+    state: present
+
+# MongoDB listens on 127.0.0.1 only (its own /etc/mongod.conf), so only the programs on this server reach it.
+- name: Start MongoDB, now and at boot
+  service:
+    name: mongod
+    state: started
+    enabled: yes
+
+- name: Create the directory for the piSignage servers' settings
+  file:
+    path: "{{ pisignage_settings }}"
+    state: directory
+    mode: 0755
+
+- name: Install the systemd unit the piSignage servers run as
+  template:
+    src: pisignage@.service.j2
+    dest: /etc/systemd/system/pisignage@.service
+    mode: 0644
+  register: pisignage_unit
+
+- name: Have systemd read the piSignage unit
+  systemd:
+    daemon_reload: yes
+  when: pisignage_unit.changed

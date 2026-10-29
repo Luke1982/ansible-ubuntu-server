@@ -191,13 +191,31 @@ def database_taken(name: str) -> str | None:
     return None
 
 
-def create_database(name: str, password: str) -> None:
-    """A database with a user of the same name that may only use it, only over the local socket."""
-    user = f"{_string(name)}@'localhost'"
+def user_taken(name: str) -> bool:
+    """Whether MariaDB already has this user."""
+    found = _sql(f"SELECT COUNT(*) FROM mysql.user WHERE User = {_string(name)};\n").split()
+    return bool(found) and found[0] != "0"
+
+
+def create_database(name: str, password: str, db_user: str | None = None) -> None:
+    """A database with a user that may only use it, only over the local socket. The user has the database's own
+    name unless another is given: a site that came from another server keeps the user name its settings hold,
+    so its own configuration still fits.
+
+    A user that is already there keeps its password and whatever else it may use: one customer with two sites
+    logs into both with one name, and taking that name away from the first to give it to the second would stop
+    the first working.
+    """
+    user = f"{_string(db_user or name)}@'localhost'"
     _sql(f"CREATE DATABASE {_name(name)} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\n"
-         f"CREATE USER {user} IDENTIFIED BY {_string(password)};\n"
+         f"CREATE USER IF NOT EXISTS {user} IDENTIFIED BY {_string(password)};\n"
          f"GRANT ALL PRIVILEGES ON {_name(name)}.* TO {user};\n")
 
 
-def drop_database(name: str) -> None:
+def drop_database(name: str, db_user: str | None = None) -> None:
+    """The database and the user of the same name. A user of another name is only taken off this database:
+    it may be the login of other sites of the same customer, and nothing here may break those."""
+    # Only the database and the user that shares its name. A user of another name is left alone altogether:
+    # it may be the login of other sites of this customer, and the grant it has on this database is the one
+    # that is handed out again the moment the database is made anew.
     _sql(f"DROP DATABASE IF EXISTS {_name(name)};\nDROP USER IF EXISTS {_string(name)}@'localhost';\n")

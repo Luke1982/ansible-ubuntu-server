@@ -30,7 +30,12 @@ def exists(config: Config, user: str) -> bool:
 
 def obtain(config: Config, site: Site) -> None:
     """Gets or extends the site's certificate. Raises CtlError with what Let's Encrypt said when it refuses."""
-    with _redirect_off(config):
+    # The certificate domainctl signed itself, so the site could be served while its domain still pointed
+    # elsewhere, is in the very directory certbot wants. Certbot refuses a live directory that isn't its own
+    # and takes the next free name instead (live/<user>-0001), which the template never looks at: the site
+    # would keep serving the one no browser trusts. So it goes aside first, and comes back if certbot makes
+    # nothing.
+    with _redirect_off(config), certbot.placeholders_aside(config.letsencrypt_dir, site.user):
         certbot.obtain(config.letsencrypt_dir, config.letsencrypt_email, site.user,
                        config.docroot_of(site.user), site.names, dry_run=True)
         certbot.obtain(config.letsencrypt_dir, config.letsencrypt_email, site.user,

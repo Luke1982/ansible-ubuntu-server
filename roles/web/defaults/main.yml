@@ -37,3 +37,17 @@ letsencrypt_dir: /etc/letsencrypt
 # Where domainctl and the shared library are installed, and where the shared source lives in this repository.
 domainctl_lib: /usr/local/lib/domainctl
 serverctl_src: "{{ role_path }}/../../shared/serverctl"
+
+# --- piSignage ---------------------------------------------------------------
+# A piSignage server per customer, each at a name of its own: "domainctl signage add andre.milocast.nl". Off
+# unless a server's playbook turns it on, since it needs MongoDB, Node.js, ffmpeg and ImageMagick, which the sites
+# don't.
+web_pisignage: false
+# Where "domainctl signage add" fetches piSignage from, and which branch or tag.
+pisignage_repo: https://github.com/colloqi/pisignage-server.git
+pisignage_version: master
+# Each one's port and database, written by domainctl and handed to it by systemd.
+pisignage_settings: /etc/pisignage
+# MongoDB's own packages: 9.0 is the first with any for Ubuntu 26.04. The key that signs them is in files/.
+mongodb_version: "9.0"
+mongodb_key: mongodb-server-9.asc

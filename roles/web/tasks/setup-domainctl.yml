@@ -133,3 +133,6 @@
       template_file: "{{ web_template_file }}"
       letsencrypt_dir: "{{ letsencrypt_dir }}"
       letsencrypt_email: "{{ web_admin_email }}"
+      signage_repo: "{{ pisignage_repo }}"
+      signage_version: "{{ pisignage_version }}"
+      signage_settings: "{{ pisignage_settings }}"

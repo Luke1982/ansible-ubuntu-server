@@ -95,6 +95,9 @@
       [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
 - include_tasks: setup-domainctl.yml
 
+- include_tasks: setup-pisignage.yml
+  when: web_pisignage | bool
+
 - name: Install move-wordpress, which copies a WordPress site and its database to another server
   copy:
     src: move-wordpress.sh
