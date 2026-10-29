@@ -61,7 +61,7 @@ Create the required variable files for the roles you are deploying. Each role ha
 | `basic` | `roles/basic/vars/private/linuxusers.yml` |
 | `mail` | `roles/mail/vars/private/mailvars.yml` |
 
-A mail server can start with the Bayes learning of an older one: put a dump of its `bayes` database at `roles/mail/files/private/bayes_dump.sql` and the first run restores it, as long as this server has learned nothing yet. See [`roles/mail/files/private/README.md`](roles/mail/files/private/README.md).
+A mail server can start with the Bayes learning of an older one. `migrate.py spam` (or `s` in the tool) sends it straight across; see [Moving a server over](#moving-a-server-over). Or put a dump of its `bayes` database at `roles/mail/files/private/bayes_dump.sql` and the first run restores it, as long as this server has learned nothing yet. See [`roles/mail/files/private/README.md`](roles/mail/files/private/README.md).
 
 ### 5. Create a playbook
 
@@ -144,7 +144,7 @@ Each server has its own playbook (e.g. `web01.whservice.nl.yml`) in the project 
 | `basic` | Hostname, base packages, unattended-upgrades, Linux users, SSH hardening, iptables firewall (applied at boot), fail2ban |
 | `web` | OpenLiteSpeed with LiteSpeed's PHP 8.3, PHP-FPM and CLI from Ubuntu (8.3 on Ubuntu 24.04, 8.5 on 26.04), Composer (global), wp-cli, nvm (system-wide), Redis with the PHP extension for it (object caching), certbot, fail2ban jails for WordPress password guessing, Let's Encrypt directory, the shared virtual host template, and `domainctl` (below) |
 | `db` | MariaDB, phpMyAdmin on a site of its own at `pma.<hostname>`, and a gzipped dump of every database every night (below) |
-| `mail` | Postfix, Dovecot with full-text IMAP search (fts-xapian) and login tracking, OpenDKIM, SpamAssassin, SOGo (webmail, calendars, address books and ActiveSync), per-user sending limits (postfwd), fail2ban jails for SMTP, IMAP and webmail brute force, and `mailctl` (below) |
+| `mail` | Postfix, Dovecot with full-text IMAP search (fts-xapian) and login tracking, OpenDKIM, SpamAssassin, SOGo (webmail, calendars, address books and ActiveSync), per-user and per-website sending limits (postfwd), a warning mail when the queue gets long, fail2ban jails for SMTP, IMAP and webmail brute force, and `mailctl` (below) |
 
 ## Database backups
 
@@ -267,6 +267,7 @@ Web servers get `domainctl`, a command-line tool for the sites on the server. Ru
 | `domainctl dns credentials` | The TransIP login, shared with mailctl |
 | `domainctl wp install USER` | Installs WordPress on a site with wp-cli: its own database and MariaDB user, and the WP fail2ban plugin |
 | `domainctl wp check [--fix]` | Which WordPress sites have WP fail2ban active; `--fix` installs and activates it where it isn't |
+| `domainctl database add USER` | A MariaDB database and a user of the same name for a site that is not WordPress, with `--dump FILE` read into it. It says the password once and writes it nowhere: such a site keeps its settings in a file of its own, which nothing here can read. A dump inside the web root is moved out of it afterwards, since everything there can be downloaded |
 
 `domainctl wp install` runs wp-cli as the site's user and only in an empty web root (domainctl's placeholder page
 aside). The database and its MariaDB user are named after the site, and only `wp-config.php` knows the password.
@@ -322,6 +323,33 @@ The redirect lives in the shared template, between the markers `# BEGIN https-re
 
 If a run is killed at exactly the wrong moment, the next `domainctl sync` switches the redirect back on and says it did.
 
+### piSignage servers
+
+A server with `web_pisignage: true` in its playbook gets MongoDB, Node.js, ffmpeg and ImageMagick, and can run a
+piSignage server per customer, each at a name of its own:
+
+| Command | What it does |
+|---------|-------------|
+| `domainctl signage add andre.milocast.nl` | A Linux user with piSignage in its home, its own MongoDB database and port (the first free one from 3000 up), run as `pisignage@USER`, with OpenLiteSpeed in front of it for HTTPS and the players' WebSockets. Run it again once the name points here to get the certificate |
+| `domainctl signage list` | The piSignage servers with their domain, port, whether they run, and their certificate |
+| `domainctl signage delete NAME` | Stops it and removes its virtual host and certificate; the media and database stay until it is deleted again (or `--purge`) |
+| `domainctl signage restore NAME` | Reads a database from another server in, for `migrate.py signage` |
+
+Each one has a virtual host of its own rather than a template member, because each sends its requests to another
+port. The port and database are in `/etc/pisignage/USER.env`. A new one's login is pi with the password pi.
+
+To move them from an old server, run `python3 migrate.py signage` there. It finds each piSignage server behind
+Apache's `ProxyPass`, sets it up on the new server, copies its media and data folder, reads its MongoDB database in
+(the old server needs `mongodump`), and points the DNS at the new server when you say yes. Run it again before
+saying yes to copy what changed in the meantime.
+
+The same move is a key on the customer's own screen in `migrate.py`: a name that Apache does nothing with but hand it
+on to a piSignage server here is known for one. Its row says `signage` rather than `by hand`, its next step is "move
+the piSignage server", the row of its own table is called `piSignage` and holds the port instead of saying "not
+WordPress", the number that copies a website is not offered for it, and `g` moves it. The new server is asked whether it has that piSignage server already — `domainctl signage list`, not the
+list of sites, since it is not one — so the row turns `done` once it is across. Its DNS is not moved before the
+server is: the screens would be sent at a machine that hasn't got the thing they talk to.
+
 OpenLiteSpeed's config is changed by reading it and renaming a new file into place, so two commands doing that at once would lose one another's changes. Both tools take a lock first, `/run/serverctl-openlitespeed.lock`, and hold it for the whole of the change: `domainctl add` including certbot, and `mailctl webmail sync`, `mailctl certificate sync` and `mailctl autodiscover publish` over their read and write. The second command waits; after five minutes it gives up and says another command is still busy.
 
 ### The code
@@ -353,6 +381,7 @@ Mail servers get `mailctl`, a command-line tool for the mail domains, addresses,
 | `mailctl certificate sync` | Puts the hostname and every `mail.DOMAIN` that points here in one certificate, and makes Postfix and Dovecot read it (below). Run it by hand; the playbook only says to |
 | `mailctl spam set example.nl required_score 4` | Changes a spam setting for an account, a domain or the whole server |
 | `mailctl spam learn` | Teaches SpamAssassin from everybody's Junk folder and inbox; runs every night by itself (below) |
+| `mailctl queue check` | Mails `mail_queue_warn_to` who sends the mail waiting in Postfix's queue once 100 messages or more are waiting; runs every 10 minutes by itself |
 | `mailctl filters show info@example.nl` | Shows an account's mail filters |
 | `mailctl filters import mailserver.json` | Takes only the filters from another server's file, into webmail's list (below) |
 | `mailctl filters run info@example.nl` | Runs an account's filters over the mail that is already in a folder (below) |
@@ -494,10 +523,10 @@ Do the same with `tests/requirements-26.04.txt` (ideally on Python 3.14) for Ubu
 
 For moving a hand-built server onto one built with this repository. Run it from the old server, as root; the new server only has to be built.
 
-1. Copy [`shared/migrate/migrate.py`](shared/migrate/migrate.py) to the old server.
+1. Copy [`shared/migrate/migrate.py`](shared/migrate/migrate.py) and [`migratectl.py`](shared/migrate/migratectl.py) beside it to the old server: `scp shared/migrate/migrate.py shared/migrate/migratectl.py root@<old-server>:`. When the new server's migratectl is older than that one, or another file of the same release, migrate.py puts its own there when it connects, so the new server's half is never copied by hand.
 2. On the old server, as root: `python3 migrate.py key`. It prints a key. Paste that line into `/home/ansible/.ssh/authorized_keys` on the new server (once).
-3. On the old server, as root: `python3 migrate.py`. That is the tool. It asks for the new server's name the first time and writes it down, looks around, and shows **one row for each customer**: where its mail, its website and its cron jobs stand (`to do`, `part`, `done` or `-`) and, at the end of the row, the next step for it in plain words.
-4. It then stays up and asks what to do. A number does that customer's next step and nothing more; `a` does the next step of every customer in turn; `3 all` does every step customer 3 has left; `i 3` says in sentences what customer 3 holds and why a part is not moved; `p 3` gives customer 3's mail accounts new passwords; `r` looks around again, `q` or Ctrl-D leaves. After each step it prints the report of it and draws the screen again, so what is on it is what the new server really has.
+3. On the old server, as root: `python3 migrate.py`. That is the tool. It asks for the new server's name the first time and writes it down, looks around, and shows **one row for each customer**: where its mail, its website and its cron jobs stand (`to do`, `part`, `done` or `-`) and, at the end of the row, the next step for it in plain words. A customer with nothing left to move is not called finished while the world still comes here for it: the look around asks the public resolver, once per name, where each customer's website and mail are sent now, and the last column says `point the mail's DNS`, `point the website's DNS` or `stop keeping the mail here` instead. That customer is counted with the ones still to go.
+4. It then stays up and asks what to do. A number does that customer's next step and nothing more; `a` does the next step of every customer in turn; `3 all` does every step customer 3 has left; `i 3` says in sentences what customer 3 holds and why a part is not moved; `p 3` gives customer 3's mail accounts new passwords; **`t` prints what is still to do over every customer** — mail that is not all there, messages that are still only here, redirects that are not set up, mail this server still delivers itself although the world sends it on, and names that still point here, each with its customer's number in front of it; `s` moves the spam learning; `r` looks around again, `q` or Ctrl-D leaves. On a customer's own screen, `c` counts the messages of each of its mailboxes on both servers with imapsync itself, folder by folder, `f` copies a site that is not WordPress, and `g` moves its piSignage server when it has one. The table's own "next step" is about what can be **moved**, so a customer it calls "nothing to move" may still be in that list. After each step it prints the report of it and draws the screen again, so what is on it is what the new server really has.
 5. Each report says what moved, the DNS records for it, and what you still have to do by hand.
 
 Everything the tool never moves — names with nothing to move, sites that are not WordPress, the server's own cron jobs, its webmail names, databases that belong to no site — is counted in one sentence under the table, never as a row of its own. `migrate.py list` shows all of those, item by item.
@@ -510,14 +539,17 @@ It moves:
 
 - Mail domains, with their accounts and passwords, forwards, filters, and the spam settings of the domain and of each account.
 - WordPress sites, with their files and database.
+- Domains that are nothing but a redirect, whole and without copying a byte. Their `Redirect`, `RedirectMatch` and `RewriteRule` lines are read from Apache, nginx and OpenLiteSpeed, written as Apache rules, and put in the new site's own `.htaccess`: every site on the new server is an instance of one shared OpenLiteSpeed template, which no site may change, and that template loads each site's `.htaccess` (`autoLoadHtaccess`). What a name does besides redirecting — a `ProxyPass`, a rewrite inside the site, an nginx rule with variables that have no Apache equivalent — is never guessed at: it is named on the customer's screen and in the report, to set up by hand.
+- Sites that are not WordPress, with `f` on the customer's screen. It offers the databases on this server, the ones that belong to no site first, and dumps the one you pick into the site's own directory with `mysqldump --single-transaction --quick`; the files and the dump go over in one rsync, and the new server makes the database and reads it in (`domainctl database add`). What it cannot do is write the new password into the site: such a site keeps its database settings in a file of its own, and nothing here can read which. So the new server says the password once and the screen shows it with the database, the user and the host, to put in place by hand. The dump is then moved out of the web root there, where anyone could have downloaded it. Until that is done the customer's row says `copy it`, and its next step is "copy its files".
 - The cron jobs that belong to a site, with their paths and their PHP rewritten for the new server. A job that uses something outside the site is shown and skipped.
+- What SpamAssassin has learned about spam (its `bayes` database), with `s` at the prompt or `migrate.py spam`. It is added to what the new server learned itself, after asking when that is anything at all: per token the counts of both are added up, and a message both have already learned from is not counted twice. It goes into a database beside the new server's own first, and is merged into it in one transaction once all of it is there.
+- The messages in the mailboxes, with `9` on a customer's own screen. imapsync runs on the new server and reads the mailbox here over IMAP, one account at a time, and asks for that account's own password; nothing here is deleted and no message is copied twice, so a copy that was stopped and started again brings over what is new since. A copy of tens of gigabytes keeps running on the new server when the tool is closed. The customer's screen holds how much the mailboxes hold here beside how much of it the new server has, so you can see which mail is across already. What settles it is imapsync's own word: after each copy it says how many messages it found here that the new server hasn't got, and the screen reads that, not the files. A maildir holds files dovecot doesn't serve as messages, so the two servers never add up to the same number, and counting them was inventing messages that were never missing. Where imapsync has never run the files are still counted, by message and not by size. Mail that landed here after the last copy counts as still to come: both servers say how long ago, never when, so a clock that differs can't hide it. Those numbers are read off the maildirs here and there, which is quick and needs no password; `c` on the customer's screen asks imapsync itself instead (`--justfoldersizes`), which opens both mailboxes with the account's own password and counts every folder on each side, so you see exactly which folder is short. It copies nothing. A mailbox that was moved between servers before carries more than one name for the same folder: its sent mail opens as `Sent` and as `Verzonden items` and as `INBOX.Sent`, all three the one folder here. imapsync's `--automap` knows `Sent` and `Drafts` and `Trash` and `Junk` by those names but not with `INBOX.` in front of them, so a `--regextrans2` beside it says that those belong in the folder of that name on the new server; without it the copy makes a second folder there and the mailbox keeps its sent mail twice, in two folders, for ever. Only those names lose the prefix: another folder under `INBOX` is the only copy of that mail there is, and taking it out from under `INBOX` would put it where the customer doesn't look. `c` folds those names back together as well, and counts a folder that answers to three names once: counting it three times said three times as much was missing as really was.
 
 `p 3` at the prompt gives every mail account of customer 3 a new password: one strong password per account, made on the old server and set with `mailctl address password --password-stdin` on the new one, so it is never an argument of a command and never in the notes. The addresses and their new passwords are printed once and go into the report of that run, under a heading saying they are written down nowhere else. It is never automatic: an account whose password the customer already knows keeps working until somebody asks for this.
 
 It does not move:
 
-- **The mail messages themselves.** The accounts, filters and spam settings move; what is in the mailboxes does not. Move that with the tool of your choice once the accounts are there.
-- Sites that are not WordPress.
+- Sites that are not WordPress and are not a redirect either.
 - DNS. The report prints the records each mail domain needs, and the addresses a site's A and AAAA records must point at.
 - The server's own spam settings. The new server keeps its own; the report lists the old server's.
 

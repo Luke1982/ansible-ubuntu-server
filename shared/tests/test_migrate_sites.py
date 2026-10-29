@@ -750,3 +750,364 @@ def test_every_command_that_looks_something_up_runs_with_the_time_limit(monkeypa
     monkeypatch.setattr(migrate.subprocess, "Popen", lambda *args, **kwargs: Fake())
     migrate.run_command("mariadb", "--batch", "-e", "SELECT 1")
     assert seen == [migrate.LOOK_TIMEOUT] and migrate.LOOK_TIMEOUT == 120
+
+
+# ---- The sites of the other web servers ----
+
+NGINX_T = """# configuration file /etc/nginx/nginx.conf:
+http {
+    server {
+        listen 80;
+        server_name _;
+        root /var/www/html;
+    }
+    server {
+        listen 443 ssl;
+        server_name winkel.example.nl www.winkel.example.nl;
+        root /home/winkel/public_html;
+        location /static/ { root /var/cache/static; }
+    }
+}
+"""
+
+OLS_CONFIG = """serverName                web03
+virtualhost Example {
+  vhRoot                  Example/
+  configFile              conf/vhosts/Example/vhconf.conf
+  note                    the one OpenLiteSpeed installs
+}
+virtualhost club.example.nl {
+  vhRoot                  /home/club/club.example.nl
+  configFile              $SERVER_ROOT/conf/vhosts/club.example.nl/vhconf.conf
+  rewrite  <<<END_rewrite
+virtualhost not-a-host { }
+END_rewrite
+}
+listener HTTPS{
+  address                 *:443
+  map                     Example example.test
+  map                     club.example.nl club.example.nl, www.club.example.nl
+}
+"""
+
+
+def _lsws(tmp_path, vhconf="docRoot                 $VH_ROOT/html/\n"):
+    root = tmp_path / "lsws"
+    _write(root / "conf" / "httpd_config.conf", OLS_CONFIG)
+    _write(root / "conf" / "vhosts" / "Example" / "vhconf.conf", "docRoot $VH_ROOT/html/\n")
+    _write(root / "conf" / "vhosts" / "club.example.nl" / "vhconf.conf", vhconf)
+    return str(root)
+
+
+def test_the_sites_of_nginx_are_found_as_well(tmp_path):
+    shop, plain = tmp_path / "shop", tmp_path / "plain"
+    server = _server(_conf(tmp_path, shop, plain), **{"nginx": NGINX_T})
+    found = migrate.sites(server)
+    winkel = [site for site in found if site["name"] == "winkel.example.nl"][0]
+    assert winkel["aliases"] == ["www.winkel.example.nl"]
+    assert winkel["docroot"] == "/home/winkel/public_html"
+    assert winkel["server"] == migrate.NGINX
+    assert winkel["wordpress"] is False
+    # A server block for whatever is asked for belongs to nobody, so it is no site.
+    assert [site["name"] for site in found if site["docroot"] == "/var/www/html"] == []
+
+
+def test_without_nginx_t_the_files_of_sites_enabled_are_read(tmp_path):
+    _write(tmp_path / "nginx" / "winkel", NGINX_T)
+    server = Server({"apache2ctl": migrate.CommandFailed("not installed", missing=True),
+                     "information_schema": ""})
+    notes = []
+    found = migrate.sites(server, notes, sites_dir=str(tmp_path / "none"),
+                          nginx_dir=str(tmp_path / "nginx"))
+    assert [site["name"] for site in found] == ["winkel.example.nl"]
+    assert any("nginx -T" in note for note in notes)
+
+
+def test_the_sites_of_openlitespeed_are_found_with_the_names_its_listeners_map(tmp_path):
+    server = Server({"apache2ctl": migrate.CommandFailed("not installed", missing=True),
+                     "information_schema": ""})
+    found = migrate.sites(server, sites_dir=str(tmp_path / "none"), lsws_root=_lsws(tmp_path))
+    assert [(site["name"], site["aliases"]) for site in found] == [
+        ("example.test", []), ("club.example.nl", ["www.club.example.nl"])]
+    # Example's paths don't start at the root of the machine, so they start at OpenLiteSpeed's own directory.
+    assert found[0]["docroot"] == str(tmp_path / "lsws" / "Example" / "html")
+    assert found[1]["docroot"] == "/home/club/club.example.nl/html"
+    assert found[1]["server"] == migrate.LITESPEED
+
+
+def test_an_openlitespeed_site_with_a_docroot_of_its_own_keeps_it(tmp_path):
+    server = Server({"apache2ctl": migrate.CommandFailed("not installed", missing=True),
+                     "information_schema": ""})
+    root = _lsws(tmp_path, vhconf="docRoot                 /var/www/club\n")
+    found = migrate.sites(server, sites_dir=str(tmp_path / "none"), lsws_root=root)
+    assert [site["docroot"] for site in found if site["name"] == "club.example.nl"] == ["/var/www/club"]
+
+
+def test_a_name_two_web_servers_serve_is_one_site(tmp_path):
+    shop, plain = tmp_path / "shop", tmp_path / "plain"
+    nginx = NGINX_T.replace("winkel.example.nl www.winkel.example.nl", "plain.example.nl rooted.example.nl")
+    server = _server(_conf(tmp_path, shop, plain), **{"nginx": nginx})
+    found = migrate.sites(server)
+    plain_sites = [site for site in found if site["name"] == "plain.example.nl"]
+    assert len(plain_sites) == 1
+    assert plain_sites[0]["docroot"] == str(plain)  # Apache's, which was found first
+    assert plain_sites[0]["aliases"] == ["rooted.example.nl"]
+
+
+# ---- Sites that are nothing but a redirect ----------------------------------
+
+REDIRECT_VHOST = """<VirtualHost *:80>
+    ServerName oud.example.nl
+    ServerAlias www.oud.example.nl
+    Redirect 301 / https://nieuw.example.nl/
+</VirtualHost>
+"""
+
+REWRITE_VHOST = """<VirtualHost *:443>
+    ServerName shop.example.nl
+    DocumentRoot /var/www/shop
+    RewriteEngine On
+    RewriteCond %{HTTP_HOST} ^winkel\\.example\\.nl$ [NC]
+    RewriteRule ^(.*)$ https://shop.example.nl/$1 [R=301,L]
+    RedirectMatch 301 ^/oud/(.*)$ https://shop.example.nl/nieuw/$1
+    RewriteRule ^intern/(.*)$ /binnen/$1 [L]
+    ProxyPass /api http://127.0.0.1:8080/api
+</VirtualHost>
+"""
+
+
+def _redirect_conf(tmp_path, text, name="redirect.conf"):
+    _write(tmp_path / "sites-enabled" / name, text)
+    server = Server({"apache2ctl": migrate.CommandFailed("no apache2ctl", missing=True),
+                     "information_schema": ""})
+    return migrate.sites(server, [], sites_dir=str(tmp_path / "sites-enabled"))
+
+
+def test_a_domain_that_only_redirects_is_a_site_to_move_and_not_a_problem(tmp_path):
+    """It has no files and no DocumentRoot, and neither is anything missing: the rules are the whole site."""
+    found = _redirect_conf(tmp_path, REDIRECT_VHOST)
+
+    assert [site["name"] for site in found] == ["oud.example.nl"]
+    assert found[0]["problem"] is None and migrate.redirect_only(found[0])
+    assert found[0]["redirect"]["to"] == "https://nieuw.example.nl/"
+    assert found[0]["redirect"]["rules"] == ["Redirect 301 / https://nieuw.example.nl/"]
+
+
+def test_the_rules_of_a_real_site_are_read_but_it_stays_a_wordpress_site(tmp_path):
+    """A site with files keeps its own .htaccess when they are copied, so its rules are not moved twice."""
+    _wp_config(tmp_path / "shop")
+    _write(tmp_path / "sites-enabled" / "shop.conf",
+           REWRITE_VHOST.replace("/var/www/shop", str(tmp_path / "shop")))
+    server = Server({"apache2ctl": migrate.CommandFailed("none", missing=True),
+                     "information_schema": "shopdb\t10\n"})
+
+    found = migrate.sites(server, [], sites_dir=str(tmp_path / "sites-enabled"))
+
+    assert found[0]["wordpress"] is True and not migrate.redirect_only(found[0])
+    assert migrate.site_items(found, owner_of=lambda path: "shop")[0]["redirect"] is None
+
+
+def test_what_a_redirect_does_besides_redirecting_is_named_and_not_guessed_at(tmp_path):
+    found = _redirect_conf(tmp_path, REWRITE_VHOST)
+    rules, by_hand = found[0]["redirect"]["rules"], found[0]["redirect"]["by_hand"]
+
+    # The conditional one keeps its condition, and the rule about one path comes too.
+    assert rules == ["RewriteCond %{HTTP_HOST} ^winkel\\.example\\.nl$ [NC]",
+                     "RewriteRule ^(.*)$ https://shop.example.nl/$1 [R=301,L]",
+                     "RedirectMatch 301 ^/oud/(.*)$ https://shop.example.nl/nieuw/$1"]
+    # A rule with a condition in front of it says nothing about where the domain as a whole has gone.
+    assert found[0]["redirect"]["to"] is None
+    assert by_hand == [migrate.NOT_A_REDIRECT % ("RewriteRule", "^intern/(.*)$ /binnen/$1"),
+                       migrate.PROXIES % ("ProxyPass", "/api http://127.0.0.1:8080/api")]
+
+
+def test_an_nginx_redirect_is_written_as_the_apache_rules_a_htaccess_holds(tmp_path):
+    text = """
+    server {
+        listen 80;
+        server_name oud.example.nl www.oud.example.nl;
+        return 301 https://nieuw.example.nl$request_uri;
+    }
+    server {
+        server_name pad.example.nl;
+        rewrite ^/oud/(.*)$ https://nieuw.example.nl/nieuw/$1 permanent;
+        location /api { proxy_pass http://127.0.0.1:8080; }
+    }
+    """
+    _write(tmp_path / "nginx" / "sites.conf", text)
+    server = Server({"apache2ctl": migrate.CommandFailed("none", missing=True), "information_schema": ""})
+
+    found = migrate.sites(server, [], sites_dir=str(tmp_path / "none"),
+                          nginx_dir=str(tmp_path / "nginx"))
+
+    whole = [site for site in found if site["name"] == "oud.example.nl"][0]
+    assert whole["redirect"]["rules"] == ["RewriteRule ^(.*)$ https://nieuw.example.nl/$1 [R=301,L]"]
+    assert whole["redirect"]["to"] == "https://nieuw.example.nl/$1"
+    path = [site for site in found if site["name"] == "pad.example.nl"][0]
+    assert path["redirect"]["rules"] == ["RewriteRule ^oud/(.*)$ https://nieuw.example.nl/nieuw/$1 [R=301,L]"]
+    assert path["redirect"]["by_hand"] == [migrate.PROXIES % ("proxy_pass", "http://127.0.0.1:8080")]
+
+
+def test_a_redirect_is_an_item_that_moves_with_no_files_and_no_database(tmp_path):
+    found = _redirect_conf(tmp_path, REDIRECT_VHOST)
+
+    item = migrate.site_items(found, owner_of=lambda path: None)[0]
+
+    assert item["problem"] is None and item["database"] is None and item["wordpress"] is False
+    assert item["redirect"]["rules"] == ["Redirect 301 / https://nieuw.example.nl/"]
+    assert migrate.cost(item) == "a redirect, and no files"
+
+
+SITE_WITH_A_RULE = """<VirtualHost *:80>
+    ServerName renard.nl
+    DocumentRoot {root}
+    RedirectMatch 301 ^/oud/(.*)$ https://renard.nl/nieuw/$1
+    RewriteRule ^shop/(.*)$ https://shop.renard.nl/$1 [R=301,L]
+</VirtualHost>
+"""
+
+
+def test_a_site_with_files_and_a_rule_is_a_site_to_copy_and_not_a_redirect(tmp_path):
+    """Rules on their own are no redirect. Taking a site that is not WordPress for one would move the rule and
+    quietly leave the site itself behind, with the screen calling it done."""
+    root = tmp_path / "renard"
+    _write(root / "index.php", "<?php echo 1;")
+
+    found = _redirect_conf(tmp_path, SITE_WITH_A_RULE.format(root=root))
+
+    assert migrate.redirect_only(found[0]) is False
+    # Its rules are in the web server's configuration, which nobody copies with the files.
+    assert found[0]["redirect"]["by_hand"][0].startswith(
+        "its redirect is in the web server's own configuration here")
+    item = migrate.site_items(found, owner_of=lambda path: "renard")[0]
+    assert item["redirect"] is None
+    assert item["problem"] == migrate.NOT_WORDPRESS % str(root)
+    assert "RedirectMatch" in item["leftover"] and "RewriteRule" in item["leftover"]
+
+
+def test_a_web_root_with_nothing_in_it_is_still_only_a_redirect(tmp_path):
+    """A name whose files are gone, or that never had any, is the ordinary parked domain."""
+    root = tmp_path / "parked"
+    _write(root / "index.html", "<html>moved</html>")
+
+    found = _redirect_conf(tmp_path, SITE_WITH_A_RULE.format(root=root))
+
+    assert migrate.redirect_only(found[0]) is True and found[0]["problem"] is None
+
+
+def test_a_rule_that_catches_everything_makes_the_files_beside_it_beside_the_point(tmp_path):
+    """The old files are still on disk, and not one request ever reaches them."""
+    root = tmp_path / "oud"
+    _write(root / "index.php", "<?php echo 1;")
+    text = SITE_WITH_A_RULE.format(root=root).replace(
+        "    RedirectMatch 301 ^/oud/(.*)$ https://renard.nl/nieuw/$1\n",
+        "    Redirect 301 / https://renard.nl/\n")
+
+    found = _redirect_conf(tmp_path, text)
+
+    assert migrate.redirect_only(found[0]) is True
+    assert found[0]["redirect"]["to"] == "https://renard.nl/"
+
+
+def test_the_plain_http_to_https_redirect_is_not_a_redirect(tmp_path):
+    """Every virtual host has it, it sends visitors to the name they asked for, and the new server's own
+    template does it for every site there. Taking it for a redirect made every site look like one."""
+    text = """<VirtualHost *:80>
+    ServerName renard.nl
+    DocumentRoot {root}
+    RewriteEngine On
+    RewriteCond %{{HTTPS}} off
+    RewriteRule .* https://%{{HTTP_HOST}}%{{REQUEST_URI}} [L,R=301]
+</VirtualHost>
+""".format(root=tmp_path / "renard")
+    _write(tmp_path / "renard" / "index.php", "<?php")
+
+    found = _redirect_conf(tmp_path, text)
+
+    assert found[0]["redirect"] is None and migrate.redirect_only(found[0]) is False
+
+
+def test_an_nginx_host_that_only_sends_visitors_to_https_is_not_a_redirect_either(tmp_path):
+    _write(tmp_path / "nginx" / "sites.conf", """
+    server { server_name a.nl; return 301 https://$host$request_uri; }
+    server { server_name b.nl; rewrite ^ https://$server_name$request_uri permanent; }
+    """)
+    server = Server({"apache2ctl": migrate.CommandFailed("none", missing=True), "information_schema": ""})
+
+    found = migrate.sites(server, [], sites_dir=str(tmp_path / "none"), nginx_dir=str(tmp_path / "nginx"))
+
+    assert [site["redirect"] for site in found] == [None, None]
+
+
+# ---- A database name the new server already has ----------------------------
+
+class Applies:
+    """The new server, for which some database names are taken already."""
+
+    def __init__(self, taken=("together",)):
+        self.taken, self.sent = set(taken), []
+
+    def ask(self, request, timeout=None):
+        self.sent.append(dict(request))
+        item = request["item"]
+        database = item.get("new_database") or item.get("database")
+        if database in self.taken and (request.get("answers") or {}).get("database") != "yes":
+            free = next(name for name in ("%s_%d" % (database, n) for n in range(2, 9))
+                        if name not in self.taken)
+            return {"ok": False, "ask": {
+                "about": "database",
+                "question": "The database %s is already on this server. Going on empties it and puts the "
+                            "site's data in its place. Go on? Or give the site a database of another name "
+                            "here; %s is free." % (database, free)}}
+        return {"ok": True, "docroot": "/home/together/public_html/www", "database": database, "steps": []}
+
+
+SITE_ITEM = {"id": "site:together.nl", "kind": "site", "name": "together.nl", "user": "together",
+             "database": "together"}
+
+
+def _applied(server, answers):
+    """The database question is the only one here, and these are the answers to it, in order."""
+    return migrate._apply_with_questions(
+        server, SITE_ITEM, ask=lambda text: "no", report=migrate.Report(),
+        ask_name=lambda text: answers.pop(0))
+
+
+def test_a_database_name_that_is_taken_can_be_answered_with_another_name():
+    """Emptying the one that is there is one answer; the site having a database of its own is the other, and
+    before this the only way to that was to stop and start again."""
+    server = Applies()
+
+    answer, left = _applied(server, ["together_2"])
+
+    assert left is None and answer["ok"] is True
+    # The dump goes into the name that was given, and the old server is told to use it.
+    assert answer["database"] == "together_2"
+    assert [request["item"].get("new_database") for request in server.sent] == [None, "together_2"]
+    assert all(not (request.get("answers") or {}) for request in server.sent)
+
+
+def test_a_name_the_new_server_also_has_is_asked_about_again():
+    server = Applies(taken=("together", "together_2"))
+
+    answer, left = _applied(server, ["together_2", "together_3"])
+
+    assert left is None and answer["ok"] is True and answer["database"] == "together_3"
+    assert [request["item"].get("new_database") for request in server.sent] == [None, "together_2", "together_3"]
+
+
+def test_the_same_name_twice_stops_instead_of_asking_for_ever():
+    server = Applies(taken=("together", "together_2"))
+
+    answer, left = _applied(server, ["together_2", "together_2"])
+
+    assert answer["ok"] is False and left is not None and left["about"] == "database"
+
+
+def test_yes_still_empties_the_database_that_is_there():
+    server = Applies()
+
+    answer, left = _applied(server, ["yes"])
+
+    assert left is None and answer["ok"] is True and answer["database"] == "together"
+    assert server.sent[-1]["answers"] == {"database": "yes"}

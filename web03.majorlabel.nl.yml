@@ -1,0 +1,26 @@
+---
+- name: Deploy and configure web03.majorlabel.nl
+  become: yes
+  hosts: web03.majorlabel.nl
+  roles:
+    - basic
+    - web
+  vars_files:
+    - roles/basic/vars/private/linuxusers.yml
+  vars:
+    # The milocast.nl customers' piSignage servers (domainctl signage).
+    web_pisignage: true
+
+- name: Deploy database server on web03.majorlabel.nl
+  become: yes
+  hosts: web03.majorlabel.nl
+  roles:
+    - db
+
+- name: Deploy mailserver on web03.majorlabel.nl
+  become: yes
+  hosts: web03.majorlabel.nl
+  roles:
+    - mail
+  vars_files:
+    - roles/mail/vars/private/mailvars.yml

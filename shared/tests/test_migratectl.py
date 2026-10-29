@@ -205,6 +205,17 @@ def test_a_site_that_was_made_here_and_waits_for_its_dns_is_exists(lists):
     assert "waiting for the DNS" in answer["detail"] and "example.nl" in answer["detail"]
 
 
+def test_a_site_the_list_shows_as_waiting_for_its_dns_is_exists_not_another_site(lists):
+    """domainctl list now has a row for such a site, with a dash where its domain goes; that dash is not some
+    other domain the user serves."""
+    lists["domainctl"] = (" Site                 Domain   Also   Certificate         \n"
+                          f" {BAR} \n"
+                          " cateringwestbetuwe   –        –      waiting for the DNS \n")
+    lists["domainctl state"] = "made\n"
+    answer = site("cateringwestbetuwe.nl", "cateringwestbetuwe")
+    assert answer["state"] == "exists" and "waiting for the DNS" in answer["detail"]
+
+
 def test_a_site_nothing_is_known_about_is_new_and_domainctl_is_asked_about_its_user(lists):
     lists["domainctl"] = NO_SITES
     assert site("example.nl", "example")["state"] == "new"
@@ -433,6 +444,27 @@ def test_a_web_root_with_only_what_domainctl_left_there_is_not_asked_about(machi
     assert migratectl.answer(APPLY_SITE)["ok"] is True
 
 
+def test_the_question_about_a_taken_database_offers_a_name_that_is_free(machine):
+    machine.databases = {"example", "example_2"}
+
+    answer = migratectl.answer(APPLY_SITE)
+
+    assert answer["ask"]["about"] == "database"
+    assert "example_3 is free" in answer["ask"]["question"]
+
+
+def test_another_name_for_the_database_is_the_one_it_makes(machine):
+    """The site keeps its own name in its own wp-config here; the database it gets there is the one given."""
+    machine.databases = {"example"}
+    item = dict(APPLY_SITE["item"], new_database="example_2")
+
+    answer = migratectl.answer({"request": "apply", "item": item})
+
+    assert answer["ok"] is True and answer["database"] == "example_2" and answer["db_user"] == "example_2"
+    assert ["domainctl", "wp", "adopt", "example", "--database", "example_2", "--replace",
+            "--yes"] in machine.calls
+
+
 def test_a_database_that_is_already_there_asks_before_anything_is_made(machine):
     machine.databases.add("example")
     answer = migratectl.answer(APPLY_SITE)
@@ -555,6 +587,7 @@ class Server:
         self.doveadm = "SHA512-CRYPT SHA256-CRYPT MD5-CRYPT PLAIN\n"
         self.refuse = False
         self.crontab_error = None
+        self.signage = []  # the piSignage servers here, each (user, domain, port)
 
     def run(self, command, **kwargs):
         self.calls.append(command)
@@ -574,6 +607,22 @@ class Server:
             if not found:
                 return ok(f"{command[3]} has no accounts yet.\n")
             return ok(f" Address  Disk usage\n {BAR}\n" + "".join(f" {a}  0 B\n" for a in found))
+        if command[:3] == ["domainctl", "database", "add"]:
+            if self.refuse:
+                return types.SimpleNamespace(returncode=1, stdout="", stderr="Error: no good")
+            return ok("Made the database.\n")
+        if command[:3] == ["domainctl", "signage", "list"]:
+            if self.break_lists:
+                return types.SimpleNamespace(returncode=1, stdout="", stderr="broken")
+            if not self.signage:
+                return ok("There are no piSignage servers on this server yet.\n")
+            width = [max([len(head)] + [len(one[i]) for one in self.signage])
+                     for i, head in enumerate(("Name", "Domain", "Port"))]
+            head = " %s  %s  %s  Running  Certificate \n" % tuple(
+                word.ljust(width[i]) for i, word in enumerate(("Name", "Domain", "Port")))
+            return ok(head + f" {BAR} \n" + "".join(
+                " %s  %s  %s  yes      valid \n" % tuple(one[i].ljust(width[i]) for i in range(3))
+                for one in self.signage))
         if command[:2] == ["mailctl", "import"]:
             self.import_file = command[2]
             self.import_mode = os.stat(command[2]).st_mode & 0o777
@@ -820,6 +869,690 @@ def test_a_mailctl_that_refuses_the_password_is_an_answer_and_not_a_crash(monkey
 
 
 def test_the_requests_it_takes_are_the_ones_the_old_server_sends():
-    assert sorted(migratectl.HANDLERS) == ["apply", "dns", "finish_site", "hello", "password",
-                                           "point_dns", "status"]
+    assert sorted(migratectl.HANDLERS) == ["adopt_database", "apply", "bayes", "bayes_prepare", "bayes_swap",
+                                           "compare_mail", "copy_mail", "copy_mail_status", "dns",
+                                           "finish_site", "hello", "mail_sizes", "password", "point_dns",
+                                           "repair", "status"]
     assert sorted(migratectl.KINDS) == ["cron", "mail_domain", "site"]
+
+
+REPAIR_FOUND_AND_FIXED = """\
+  ✗ MX           example.nl has no MX record.
+  ✗ Certificate  mail.example.nl isn't in this server's certificate.
+  ✓ Published the mail records of example.nl at TransIP.
+  ✓ Postfix and Dovecot serve a certificate for 17 names.
+See how it stands now with: mailctl doctor example.nl
+"""
+
+DOCTOR_SAYS_RIGHT = """\
+Server web03.majorlabel.nl
+  ✗ Reverse DNS  178.21.114.195 has no name.
+✓ example.nl  everything is set up.
+
+✗ Found 1 problem.
+"""
+
+DOCTOR_SAYS_WRONG = """\
+example.nl
+  ✗ Certificate  mail.example.nl isn't in this server's certificate.
+
+✗ Found 1 problem.
+"""
+
+
+def _repairs(monkeypatch, doctor=DOCTOR_SAYS_RIGHT, code=1, blow_up=False):
+    """mailctl repair, and the doctor that is asked after it how the domain stands now."""
+    ran = []
+
+    def fake(command, **named):
+        ran.append(command)
+        if command[1] == "doctor":
+            if blow_up:
+                raise OSError("no mailctl here")
+            return types.SimpleNamespace(returncode=code, stdout=doctor, stderr="")
+        return types.SimpleNamespace(returncode=0, stdout=REPAIR_FOUND_AND_FIXED, stderr="")
+
+    monkeypatch.setattr(migratectl.subprocess, "run", fake)
+    return ran
+
+
+def test_repair_runs_mailctl_repair_with_yes_and_then_asks_how_the_domain_stands(monkeypatch):
+    """The repair prints what it found before it puts it right, so its own output says a fixed check is wrong.
+    What comes back is the check made afterwards."""
+    ran = _repairs(monkeypatch)
+
+    answer = migratectl.answer({"request": "repair", "domain": " Example.NL "})
+
+    assert ran == [["mailctl", "repair", "example.nl", "--yes"], ["mailctl", "doctor", "example.nl"]]
+    assert answer["ok"] is True and answer["right"] is True
+    # Not the catalogue of what it found and fixed: that is what made the old server call a repaired domain broken.
+    assert "✗ MX" not in answer["text"] and "everything is set up" in answer["text"]
+    assert migratectl.answer({"request": "repair", "domain": "not a domain"})["ok"] is False
+
+
+def test_a_domain_that_is_still_not_right_comes_back_with_what_is_wrong_with_it(monkeypatch):
+    _repairs(monkeypatch, doctor=DOCTOR_SAYS_WRONG)
+
+    answer = migratectl.answer({"request": "repair", "domain": "example.nl"})
+
+    assert answer["ok"] is True and answer["right"] is False
+    assert "mail.example.nl isn't in this server's certificate" in answer["text"]
+
+
+def test_a_problem_of_this_server_is_not_laid_at_the_domains_door(monkeypatch):
+    """Doctor's exit status covers the server too; the domain's own line is what is asked about here."""
+    _repairs(monkeypatch, doctor=DOCTOR_SAYS_RIGHT, code=1)
+    assert migratectl.answer({"request": "repair", "domain": "example.nl"})["right"] is True
+
+
+def test_a_doctor_that_cannot_be_asked_claims_nothing_either_way(monkeypatch):
+    _repairs(monkeypatch, blow_up=True)
+    answer = migratectl.answer({"request": "repair", "domain": "example.nl"})
+    assert answer["ok"] is True and answer["right"] is None and answer["text"] == ""
+
+
+# ---- copying the messages of one mailbox over --------------------------------
+
+LOG_OF_A_FINISHED_COPY = """\
+Host1: imap.old.nl says it has 2 messages
+msg INBOX/1 copied to INBOX/1 1.0 msgs/s 2 KiB/s 2 KiB copied 0:00
+msg INBOX/2 copied to INBOX/2 1.0 msgs/s 2 KiB/s 4 KiB copied 0:00
+The sync looks good, all 2 identified messages in host1 are on host2.
+Detected 0 errors
+Messages transferred                    : 2
+Exiting with return value 0 (EX_OK: successful termination) 0/50 nb_errors/max_errors PID 20332
+"""
+
+
+class Imapsync(object):
+    """A stand-in for imapsync: it says how it was started and pretends to go on running."""
+
+    def __init__(self):
+        self.commands, self.named, self.pid = [], {}, 4321
+
+    def __call__(self, command, **named):
+        self.commands.append(list(command))
+        self.named = named
+        named["stdout"].write("Host1: connecting\n")
+        return types.SimpleNamespace(pid=self.pid)
+
+
+@pytest.fixture
+def imapsync(monkeypatch, tmp_path):
+    """imapsync installed, with a place of its own to write, and nothing really started."""
+    binary = tmp_path / "imapsync"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    monkeypatch.setattr(migratectl, "IMAPSYNC", str(binary))
+    monkeypatch.setattr(migratectl, "COPY_ROOT", str(tmp_path / "mail"))
+    started = Imapsync()
+    monkeypatch.setattr(migratectl.subprocess, "Popen", started)
+    return started
+
+
+def _copy(**more):
+    return migratectl.answer(dict({"request": "copy_mail", "address": "Old@A.nl",
+                                   "password": "Kw7mRt2xPqL9sVbn", "host": "178.21.114.195"}, **more))
+
+
+def test_copying_a_mailbox_starts_imapsync_with_the_password_in_a_file_of_its_own(server, imapsync, tmp_path):
+    """A password in a command would stand in the process list for everyone on the server to read."""
+    server.here = {"a.nl": ["old@a.nl"]}
+    answer = _copy()
+    assert answer["ok"] is True and answer["started"] is True and answer["pid"] == 4321
+    command = imapsync.commands[0]
+    assert "Kw7mRt2xPqL9sVbn" not in " ".join(command)
+    assert command[0] == str(tmp_path / "imapsync")
+    assert command[command.index("--host1") + 1] == "178.21.114.195"
+    assert command[command.index("--host2") + 1] == "localhost"
+    assert [command[command.index(flag) + 1] for flag in ("--user1", "--user2")] == ["old@a.nl"] * 2
+    passfile = command[command.index("--passfile1") + 1]
+    assert command[command.index("--passfile2") + 1] == passfile
+    assert open(passfile).read() == "Kw7mRt2xPqL9sVbn\n"
+    assert os.stat(passfile).st_mode & 0o777 == 0o600
+    # Its own session, or it would be killed with the ssh connection the old server asked through.
+    assert imapsync.named["start_new_session"] is True
+    assert open(str(tmp_path / "mail" / "old@a.nl.pid")).read().strip() == "4321"
+    assert "copying old@a.nl from 178.21.114.195" in open(str(tmp_path / "mail" / "old@a.nl.log")).read()
+
+
+def test_a_mailbox_that_is_not_on_this_server_yet_is_not_copied_into(server, imapsync):
+    """Copying into a mailbox that isn't here is a pile of errors and nothing else."""
+    server.here = {}
+    answer = _copy()
+    assert answer["ok"] is False and "Move the mail of its domain first" in answer["error"]
+    assert imapsync.commands == []
+
+
+def test_a_copy_without_imapsync_on_the_server_says_to_run_the_playbook(server, monkeypatch, tmp_path):
+    server.here = {"a.nl": ["old@a.nl"]}
+    monkeypatch.setattr(migratectl, "IMAPSYNC", str(tmp_path / "no-imapsync-here"))
+    answer = _copy()
+    assert answer["ok"] is False and "playbook" in answer["error"]
+
+
+def test_a_copy_that_is_already_running_is_not_started_a_second_time(server, imapsync, monkeypatch):
+    server.here = {"a.nl": ["old@a.nl"]}
+    assert _copy()["started"] is True
+    monkeypatch.setattr(migratectl, "_running_copy", lambda pidfile: 4321)
+    answer = _copy()
+    assert answer["ok"] is True and answer["started"] is False and answer["running"] is True
+    assert len(imapsync.commands) == 1
+
+
+def test_a_copy_request_that_makes_no_sense_is_refused(server, imapsync):
+    server.here = {"a.nl": ["old@a.nl"]}
+    for request in ({"address": "not an address"}, {"password": ""}, {"password": "two\nlines"},
+                    {"host": ""}, {"host": "not a host name"}):
+        assert _copy(**request)["ok"] is False
+    assert imapsync.commands == []
+
+
+def test_the_status_of_a_copy_says_how_far_imapsync_got(imapsync, tmp_path):
+    (tmp_path / "mail").mkdir()
+    (tmp_path / "mail" / "old@a.nl.log").write_text(LOG_OF_A_FINISHED_COPY)
+    passfile = tmp_path / "mail" / "old@a.nl.password"
+    passfile.write_text("Kw7mRt2xPqL9sVbn\n")
+    answer = migratectl.answer({"request": "copy_mail_status", "address": "old@a.nl"})
+    assert answer["ok"] is True and answer["started"] is True and answer["running"] is False
+    assert answer["copied"] == 2 and answer["transferred"] == 2 and answer["errors"] == 0
+    assert answer["exit"] == 0 and answer["good"] is True
+    assert answer["last"].startswith("Exiting with return value 0")
+    assert "msg INBOX/2 copied" in answer["text"]
+    # Only imapsync reads it, and only while it runs.
+    assert not passfile.exists()
+
+
+def test_the_status_of_a_mailbox_nothing_was_copied_for_says_so(imapsync):
+    assert migratectl.answer({"request": "copy_mail_status", "address": "old@a.nl"}) == \
+        {"ok": True, "started": False, "running": False}
+    assert migratectl.answer({"request": "copy_mail_status", "address": "nonsense"})["ok"] is False
+
+
+# ---- Counting a mailbox on both servers with imapsync ----
+
+
+def _sizes_line(side, counter, folder, size=None, messages=None):
+    """A line as imapsync prints it under --justfoldersizes."""
+    held = (" does not exist" if size is None
+            else "Size: %9s Messages: %5s Biggest: %9s" % (size, messages, size))
+    return "Host%d folder %7s %-35s %s" % (side, counter, folder, held)
+
+
+COUNTED = "\n".join([
+    "Folders sizes before the synchronization. It can take some time. Be patient.",
+    _sizes_line(1, "1/3", "INBOX", 3221225472, 2674),
+    _sizes_line(2, "1/3", "INBOX", 3200000000, 2630),
+    "Host2-Host1  1/3  INBOX                                  -21225472             -44          0",
+    _sizes_line(1, "2/3", "INBOX.Verzonden items", 2048, 2),
+    _sizes_line(2, "2/3", "INBOX.Sent", 2048, 2),
+    _sizes_line(1, "3/3", "INBOX.Oud archief", 512, 1),
+    _sizes_line(2, "3/3", "INBOX.Oud archief"),
+    "",
+    "Host1 Nb messages:                 2677 messages",
+    "Host2 Nb messages:                 2632 messages",
+    "Host1 Total size:            3221228032 bytes (3.000 GiB)",
+    "Host2 Total size:            3200002048 bytes (2.980 GiB)",
+    "Exiting because of --justfoldersizes",
+])
+
+
+class Counter(object):
+    """A stand-in for imapsync counting: it says how it was run and gives back a listing. Everything else the
+    server runs goes on to the stand-in that was there before it."""
+
+    def __init__(self, inner, text=COUNTED, code=0):
+        self.inner, self.commands, self.text, self.code = inner, [], text, code
+        self.passwords = []
+
+    def __call__(self, command, **named):
+        if "--justfoldersizes" not in list(command):
+            return self.inner(command, **named)
+        self.commands.append(list(command))
+        passfile = command[command.index("--passfile1") + 1]
+        self.passwords.append(open(passfile).read())
+        return types.SimpleNamespace(stdout=self.text.encode(), returncode=self.code)
+
+
+@pytest.fixture
+def counting(monkeypatch, tmp_path, server):
+    binary = tmp_path / "imapsync"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    monkeypatch.setattr(migratectl, "IMAPSYNC", str(binary))
+    monkeypatch.setattr(migratectl, "COPY_ROOT", str(tmp_path / "mail"))
+    counter = Counter(migratectl.subprocess.run)
+    monkeypatch.setattr(migratectl.subprocess, "run", counter)
+    return counter
+
+
+def _compare(**more):
+    return migratectl.answer(dict({"request": "compare_mail", "address": "Old@A.nl",
+                                   "password": "Kw7mRt2xPqL9sVbn", "host": "178.21.114.195"}, **more))
+
+
+def test_counting_a_mailbox_asks_imapsync_itself_what_each_folder_holds(server, counting, tmp_path):
+    """The same program that copies, reading the same two mailboxes: what it counts is what it would copy."""
+    server.here = {"a.nl": ["old@a.nl"]}
+    answer = _compare()
+
+    command = counting.commands[0]
+    assert "--justfoldersizes" in command and "--automap" in command
+    assert "Kw7mRt2xPqL9sVbn" not in " ".join(command)
+    assert counting.passwords == ["Kw7mRt2xPqL9sVbn\n"]
+    assert answer["ok"] is True
+    assert answer["here"] == {"bytes": 3221228032, "messages": 2677}
+    assert answer["there"] == {"bytes": 3200002048, "messages": 2632}
+    assert [folder["name"] for folder in answer["folders"]] == \
+        ["INBOX", "INBOX.Verzonden items", "INBOX.Oud archief"]
+    inbox = answer["folders"][0]
+    assert inbox["here"] == {"bytes": 3221225472, "messages": 2674}
+    assert inbox["there"] == {"bytes": 3200000000, "messages": 2630}
+    # --automap gives a folder another name on this server; the two are paired by the number in front of them.
+    assert answer["folders"][1]["name_there"] == "INBOX.Sent"
+    # A folder that isn't on this server at all says so, instead of counting as empty.
+    assert answer["folders"][2]["there"] is None
+
+
+def test_counting_and_copying_both_map_the_folders_under_inbox(server, counting):
+    """A mailbox moved here from an older server has its sent mail in INBOX.Sent as well as in Sent, and both
+    names open the one folder there. --automap doesn't know that name, so without this imapsync makes an
+    INBOX.Sent here too and the mailbox keeps its sent mail twice. The counting carries the same mapping, so
+    it pairs up the folders the copy would really write into."""
+    server.here = {"a.nl": ["old@a.nl"]}
+    _compare()
+    command = counting.commands[0]
+    assert "--regextrans2" in command
+    mapping = command[command.index("--regextrans2") + 1]
+    assert mapping == migratectl.UNDER_INBOX
+    assert mapping.startswith("s,^INBOX\\.(Sent|")
+    # Only the folders both servers have a name of their own for lose the prefix: anything else under INBOX is
+    # the only copy of that mail there is, and belongs where the customer keeps it.
+    for name in ("Sent", "Verzonden items", "Trash", "Drafts", "Junk", "Spam"):
+        assert "|%s|" % name in mapping or "(%s|" % name in mapping or "|%s)" % name in mapping
+    assert migratectl.UNDER_INBOX in migratectl._imapsync_command("old@a.nl", "old.example", "/x/pass")
+
+
+def test_the_password_of_a_counted_mailbox_is_not_left_behind(server, counting, tmp_path):
+    server.here = {"a.nl": ["old@a.nl"]}
+    _compare()
+    assert not (tmp_path / "mail" / "old@a.nl.password").exists()
+
+
+def test_counting_a_mailbox_copies_nothing(server, counting):
+    """It is the one thing on that menu that changes nothing, so it must not start a copy."""
+    server.here = {"a.nl": ["old@a.nl"]}
+    _compare()
+    assert all("--justfoldersizes" in command for command in counting.commands)
+    assert not any("--dry" in command for command in counting.commands)
+
+
+def test_a_mailbox_that_imapsync_could_not_open_says_what_it_said(server, counting):
+    server.here = {"a.nl": ["old@a.nl"]}
+    counting.text = ("Host1 failure: Error login on [178.21.114.195] with user [old@a.nl]: "
+                     "AUTHENTICATIONFAILED\nExiting with return value 8")
+    counting.code = 8
+    answer = _compare()
+    assert answer["ok"] is False and "AUTHENTICATIONFAILED" in answer["error"]
+
+
+def test_a_mailbox_that_is_being_copied_right_now_is_not_counted(server, counting, monkeypatch):
+    """What it held a moment ago is worse than no answer: it reads as mail that is missing."""
+    server.here = {"a.nl": ["old@a.nl"]}
+    monkeypatch.setattr(migratectl, "_running_copy", lambda pidfile: 4321)
+    answer = _compare()
+    assert answer["ok"] is False and "being copied" in answer["error"]
+    assert counting.commands == []
+
+
+def test_counting_a_mailbox_that_is_not_on_this_server_says_to_move_the_mail_first(server, counting):
+    server.here = {}
+    answer = _compare()
+    assert answer["ok"] is False and "Move the mail of its domain first" in answer["error"]
+    assert counting.commands == []
+
+
+def test_a_counting_request_that_makes_no_sense_is_refused(server, counting):
+    server.here = {"a.nl": ["old@a.nl"]}
+    for request in ({"address": "not an address"}, {"password": ""}, {"password": "two\nlines"},
+                    {"host": ""}, {"host": "not a host name"}):
+        assert _compare(**request)["ok"] is False
+    assert counting.commands == []
+
+# ---- How much mail the mailboxes here hold ----
+
+@pytest.fixture
+def vmail(monkeypatch, tmp_path):
+    """The mailboxes of this server, in a place of their own."""
+    monkeypatch.setattr(migratectl, "VMAIL", str(tmp_path / "vmail"))
+    return tmp_path / "vmail"
+
+
+def _mailbox(root, address, cur=(), new=(), tmp=(), beside=()):
+    """A maildir as dovecot keeps it: the messages in cur and new, half-delivered ones in tmp, and dovecot's
+    own indexes beside them."""
+    local_part, _, domain = address.partition("@")
+    maildir = root / domain / local_part / "Maildir"
+    for name, sizes in (("cur", cur), ("new", new), ("tmp", tmp)):
+        folder = maildir / name
+        folder.mkdir(parents=True)
+        for number, size in enumerate(sizes):
+            (folder / ("%d.M1P1.here,S=%d" % (number, size))).write_bytes(b"x" * size)
+    for name, size in beside:
+        (maildir / name).write_bytes(b"x" * size)
+
+
+def test_how_much_a_mailbox_holds_is_its_messages_and_not_this_servers_own_indexes(vmail):
+    _mailbox(vmail, "old@a.nl", cur=[100, 200], new=[50], tmp=[9999],
+             beside=[("dovecot.index.cache", 50000), ("dovecot-uidlist", 80)])
+
+    answer = migratectl.answer({"request": "mail_sizes", "addresses": ["Old@A.nl"]})
+
+    assert answer == {"ok": True, "mailboxes": {"old@a.nl": {"here": True, "bytes": 350, "messages": 3}}}
+
+
+def test_an_account_without_a_mailbox_here_is_said_to_have_none(vmail):
+    """Not "nothing": a mailbox of nothing and no mailbox at all are different answers to the old server."""
+    _mailbox(vmail, "old@a.nl")
+
+    answer = migratectl.answer({"request": "mail_sizes", "addresses": ["old@a.nl", "gone@a.nl", "nonsense"]})
+
+    assert answer == {"ok": True, "mailboxes": {"old@a.nl": {"here": True, "bytes": 0, "messages": 0},
+                                                "gone@a.nl": {"here": False}}}
+
+
+def test_measuring_needs_a_list_of_addresses_and_not_an_endless_one(vmail):
+    assert migratectl.answer({"request": "mail_sizes"})["ok"] is False
+    too_many = ["a%d@a.nl" % number for number in range(migratectl.MAX_MAILBOXES + 1)]
+    assert migratectl.answer({"request": "mail_sizes", "addresses": too_many})["ok"] is False
+
+
+# ---- Moving a site's DNS, and whether it really moved ----
+
+def _domainctl_add(monkeypatch, text="✓ example.nl is served from /home/example/public_html."):
+    ran = []
+    monkeypatch.setattr(migratectl, "_run", lambda command, what, **named: ran.append(command) or text)
+    monkeypatch.setattr(migratectl, "_addresses", lambda: ["187.126.5.158", "2a02:4780:7e:6327::1"])
+    return ran
+
+
+def _resolves_to(monkeypatch, *addresses):
+    monkeypatch.setattr(migratectl.socket, "getaddrinfo",
+                        lambda *args, **named: [(0, 0, 0, "", (address, 0)) for address in addresses])
+
+
+def test_point_dns_moves_the_dns_and_says_so(monkeypatch):
+    ran = _domainctl_add(monkeypatch)
+    _resolves_to(monkeypatch, "187.126.5.158")
+
+    answer = migratectl.answer({"request": "point_dns", "domain": "Example.NL"})
+
+    assert ran == [["domainctl", "add", "example.nl", "--yes"]]
+    assert answer["ok"] is True
+    assert answer["steps"] == ["Moved the DNS of example.nl to this server and finished the site."]
+
+
+def test_point_dns_says_no_when_the_name_still_goes_to_the_old_server(monkeypatch):
+    """domainctl sets the site up whatever the DNS says, and a domain whose records it can't change gets a
+    certificate signed here. The old server asked for the DNS to move, so that is not a yes."""
+    _domainctl_add(monkeypatch, text="! Couldn't change example.nl: example.nl isn't in the TransIP account "
+                                     "majorlabel.\n✓ example.nl is set up and served from /home/example.")
+    _resolves_to(monkeypatch, "178.21.114.195")
+
+    answer = migratectl.answer({"request": "point_dns", "domain": "example.nl"})
+
+    assert answer["ok"] is False
+    assert "still doesn't point at this server" in answer["error"]
+    assert "isn't in the TransIP account" in answer["text"]
+
+
+def test_a_move_domainctl_itself_checked_is_not_called_a_failure_by_a_stale_cache(monkeypatch):
+    """domainctl waits for the zone's own name servers before it says this, and Let's Encrypt only signs once
+    the record is really out there. This machine's resolver may still hold the record as it was, with the time
+    to live it was published with, and on its own it called a move that had just worked a failure."""
+    _domainctl_add(monkeypatch, text="Took away the A record of example.nl: 178.21.114.195\n"
+                                     "✓ Published 1 record(s) for example.nl in the zone example.nl.\n"
+                                     "✓ example.nl points to this server.\n"
+                                     "✓ https://example.nl is live with a Let's Encrypt certificate.")
+    _resolves_to(monkeypatch, "178.21.114.195")  # the old address, still in this machine's cache
+
+    answer = migratectl.answer({"request": "point_dns", "domain": "example.nl"})
+
+    assert answer["ok"] is True
+    assert answer["steps"] == ["Moved the DNS of example.nl to this server and finished the site."]
+
+
+def test_point_dns_claims_nothing_when_the_name_cannot_be_looked_up(monkeypatch):
+    _domainctl_add(monkeypatch)
+
+    def no_answer(*args, **named):
+        raise migratectl.socket.gaierror(-3, "Temporary failure in name resolution")
+
+    monkeypatch.setattr(migratectl.socket, "getaddrinfo", no_answer)
+
+    assert migratectl.answer({"request": "point_dns", "domain": "example.nl"})["ok"] is True
+
+
+def test_a_linux_user_that_is_already_here_asks_before_the_site_is_made(machine, monkeypatch):
+    """domainctl won't take over a user unless it is told to, so that a site never lands in somebody else's
+    home directory by accident. Whether it may is the old server's question to answer."""
+    monkeypatch.setattr(migratectl, "_user_taken", lambda user: user == "example")
+
+    answer = migratectl.answer(APPLY_SITE)
+
+    assert answer["ok"] is False and answer["ask"]["about"] == "user"
+    assert "already on this server" in answer["ask"]["question"]
+    assert machine.ran("domainctl") == []
+
+
+def test_saying_yes_to_that_user_takes_it_over(machine, monkeypatch):
+    monkeypatch.setattr(migratectl, "_user_taken", lambda user: user == "example")
+
+    answer = migratectl.answer({**APPLY_SITE, "answers": {"user": "yes"}})
+
+    assert answer["ok"] is True, answer
+    assert ["domainctl", "add", "example.nl", "--user", "example", "--no-dns", "--yes",
+            "--existing-user"] in machine.calls
+
+
+# ---- A site that is nothing but a redirect ----
+
+REDIRECT_RULES = ["RewriteCond %{HTTP_HOST} ^www\\.oud\\.nl$ [NC]",
+                  "RewriteRule ^(.*)$ https://nieuw.nl/$1 [R=301,L]"]
+APPLY_REDIRECT = {"request": "apply",
+                  "item": {"id": "site:oud.nl", "kind": "site", "name": "oud.nl", "user": "oud",
+                           "database": None, "redirect": {"to": "https://nieuw.nl/", "rules": REDIRECT_RULES,
+                                                          "by_hand": []}}}
+
+
+def test_a_redirect_is_made_as_a_site_with_its_rules_in_its_own_htaccess(machine):
+    """Every site here is an instance of one shared OpenLiteSpeed template, which nothing may change per site.
+    The template loads each site's .htaccess, so that is where a redirect goes."""
+    answer = migratectl.answer(APPLY_REDIRECT)
+
+    assert answer["ok"] is True and answer["redirect"] is True, answer
+    assert ["domainctl", "add", "oud.nl", "--user", "oud", "--no-dns", "--yes"] in machine.calls
+    assert machine.ran("mariadb") == [] and not (machine.homes / "oud" / "public_html" / "www" /
+                                                 "wp-config.php").exists()
+    written = (machine.homes / "oud" / "public_html" / "www" / ".htaccess").read_text()
+    assert written.splitlines()[-2:] == REDIRECT_RULES
+    assert "RewriteEngine On" in written and "autoLoadHtaccess" in written
+
+
+def test_the_rules_it_writes_are_redirect_rules_and_nothing_else(machine):
+    """They go into a file this server reads as configuration, so nothing else is ever written into it."""
+    for rules in (["php -r 'unlink(\"/etc/passwd\");'"], ["Options +Indexes"],
+                  ["RewriteRule a b\nInclude /etc/shadow"], ["RewriteRule " + "x" * 2100],
+                  [None], ["RewriteRule a b"] * (migratectl.MAX_RULES + 1)):
+        item = dict(APPLY_REDIRECT["item"], redirect={"rules": rules})
+        answer = migratectl.answer({"request": "apply", "item": item})
+        assert answer["ok"] is False and "redirect" in answer["error"], rules
+    assert machine.calls == []
+
+
+def test_a_site_with_files_of_its_own_is_still_asked_about_and_a_redirect_is_not(machine):
+    """A redirect brings no files, so files already in the web root are not in its way."""
+    root = machine.homes / "oud" / "public_html" / "www"
+    root.mkdir(parents=True)
+    (root / "index.php").write_text("<?php")
+
+    assert migratectl.answer(APPLY_REDIRECT)["ok"] is True
+
+
+# ---- A name that is a piSignage server, not a site ----
+
+def _signage_item(**more):
+    return dict({"id": "site:andre.milocast.nl", "kind": "site", "name": "andre.milocast.nl",
+                 "user": "andremilocast", "signage": 3002}, **more)
+
+
+@pytest.fixture
+def signage_server(server, monkeypatch):
+    """The new server with domainctl installed, so a site item is judged and not refused out of hand."""
+    monkeypatch.setattr(migratectl.shutil, "which", lambda name: "/usr/local/bin/" + name)
+    return server
+
+
+def _state(item):
+    return migratectl.answer({"request": "status", "items": [item]})["items"][item["id"]]
+
+
+def test_a_piSignage_name_is_judged_by_the_list_of_signage_servers_not_of_sites(signage_server):
+    """It has a virtual host of its own, so it is in neither of the other lists; asking for it as a site would
+    say the user already has one here and refuse it."""
+    assert _state(_signage_item())["state"] == "new"
+    signage_server.signage = [("andremilocast", "andre.milocast.nl", "3002")]
+    answer = _state(_signage_item())
+    assert answer["state"] == "exists" and "already here" in answer["detail"]
+    assert ["domainctl", "list"] not in signage_server.calls
+
+
+def test_a_piSignage_server_under_another_user_name_is_still_found(signage_server):
+    """What counts is the name it serves: the user the old server would pick may not be the one it has."""
+    signage_server.signage = [("milocast", "andre.milocast.nl", "3002")]
+    assert _state(_signage_item())["state"] == "exists"
+
+
+def test_a_list_that_cannot_be_read_is_not_taken_for_an_empty_one(signage_server):
+    """"Nothing there" would have the old server set up a second one over the first."""
+    signage_server.break_lists = True
+    answer = _state(_signage_item())
+    assert answer["state"] == "refused" and "piSignage servers" in answer["detail"]
+
+
+# ---- What the last copy of a mailbox really did ----
+
+OLD_RUN = """
+==== 2026-10-28 07:20:00: copying old@a.nl from 178.21.114.195 ====
+msg INBOX/1 copied to INBOX/1
+Messages transferred                    : 1
+Messages found in host1 not in host2    : 0 messages
+The sync looks good, all 1 identified messages in host1 are on host2.
+Detected 0 errors
+Exiting with return value 0 (EX_OK: successful termination)
+"""
+NEW_RUN = """
+==== 2026-10-29 08:47:15: copying old@a.nl from 178.21.114.195 ====
+Messages transferred                    : 0
+Messages skipped                        : 9271
+Messages found in host1 not in host2    : 0 messages
+The sync looks good, all 8817 identified messages in host1 are on host2.
+Detected 0 errors
+Exiting with return value 0 (EX_OK: successful termination)
+"""
+
+
+def _logged(tmp_path, text):
+    (tmp_path / "mail").mkdir(exist_ok=True)
+    (tmp_path / "mail" / "old@a.nl.log").write_text(text)
+
+
+def test_the_status_counts_this_copy_and_not_every_copy_there_has_ever_been(imapsync, tmp_path):
+    """The log is appended to. Counting over all of it showed the numbers of a copy that ran days ago as if
+    they were this one's, so a copy that moved nothing looked like one that moved thousands."""
+    _logged(tmp_path, OLD_RUN + NEW_RUN)
+    answer = migratectl.answer({"request": "copy_mail_status", "address": "old@a.nl"})
+    assert answer["copied"] == 0 and answer["transferred"] == 0
+    assert answer["good"] is True and answer["left"] == 0
+    assert "8817 identified messages" in answer["text"]
+
+
+def test_the_sizes_carry_what_imapsync_said_about_the_mailbox(imapsync, tmp_path, monkeypatch):
+    """The old server counts the files in a maildir, which are not the messages. This is the answer of the
+    program that opened both mailboxes."""
+    _logged(tmp_path, OLD_RUN + NEW_RUN)
+    monkeypatch.setattr(migratectl, "VMAIL", str(tmp_path / "vmail"))
+    answer = migratectl.answer({"request": "mail_sizes", "addresses": ["old@a.nl"]})
+    sync = answer["mailboxes"]["old@a.nl"]["sync"]
+    assert sync["good"] is True and sync["left"] == 0 and sync["transferred"] == 0 and sync["errors"] == 0
+    # How long ago it ran, never when: the two servers' clocks are their own.
+    assert "at" not in sync and 0 <= sync["ago"] < 60
+
+
+def test_a_copy_that_is_still_running_says_nothing_about_whether_it_is_across(imapsync, tmp_path, monkeypatch):
+    """Half a run is not an answer: it would read as "nothing is missing" before anything was copied."""
+    _logged(tmp_path, OLD_RUN + "\n==== 2026-10-29 09:00:00: copying old@a.nl from 178.21.114.195 ====\n"
+                                "Host1: connecting\n")
+    monkeypatch.setattr(migratectl, "VMAIL", str(tmp_path / "vmail"))
+    answer = migratectl.answer({"request": "mail_sizes", "addresses": ["old@a.nl"]})
+    assert "sync" not in answer["mailboxes"]["old@a.nl"]
+
+
+# ---- A database for a site that is not WordPress ----
+
+def _adopt(**more):
+    item = {"kind": "site", "name": "boersma-advocaten.nl", "user": "boersmaadvocaten",
+            "database": more.pop("database", "boersma")}
+    return migratectl.answer(dict({"request": "adopt_database", "item": item, "dump": "boersma.sql"}, **more))
+
+
+@pytest.fixture
+def arrived(server, monkeypatch, tmp_path):
+    """A site on this server whose files, the dump among them, have just arrived."""
+    monkeypatch.setattr(migratectl, "HOMES", str(tmp_path))
+    docroot = tmp_path / "boersmaadvocaten" / migratectl.WEB_ROOT
+    docroot.mkdir(parents=True)
+    (docroot / "boersma.sql").write_text("CREATE TABLE t (id int);")
+    monkeypatch.setattr(migratectl, "_database_taken", lambda name: False)
+    return docroot
+
+
+def test_the_database_is_made_from_the_dump_that_came_with_the_files(arrived, server):
+    answer = _adopt()
+
+    assert answer["ok"] is True
+    call = next(one for one in server.calls if one[:3] == ["domainctl", "database", "add"])
+    assert call[3] == "boersmaadvocaten"
+    assert call[call.index("--database") + 1] == "boersma"
+    assert call[call.index("--dump") + 1] == str(arrived / "boersma.sql")
+    # The password is made here and given back: this server can't write it into a site it can't read.
+    assert call[call.index("--password") + 1] == answer["password"]
+    assert len(answer["password"]) > 20 and answer["user"] == "boersma" and answer["host"] == "localhost"
+
+
+def test_a_dump_that_is_not_there_says_the_files_have_to_come_first(arrived, server):
+    (arrived / "boersma.sql").unlink()
+    answer = _adopt()
+    assert answer["ok"] is False and "copied over first" in answer["error"]
+    assert not [one for one in server.calls if one[:2] == ["domainctl", "database"]]
+
+
+def test_the_dump_is_a_file_name_and_never_a_path(arrived, server):
+    """The old server names a file in the web root; nothing it sends can point at a file somewhere else."""
+    for name in ("../../../etc/shadow", "/etc/passwd", "boersma.sql; rm -rf /", "boersma.txt"):
+        answer = _adopt(dump=name)
+        assert answer["ok"] is False and "isn't a name of a dump" in answer["error"]
+    assert not [one for one in server.calls if one[:2] == ["domainctl", "database"]]
+
+
+def test_a_database_that_is_already_there_is_asked_about(arrived, server, monkeypatch):
+    monkeypatch.setattr(migratectl, "_database_taken", lambda name: name == "boersma")
+    monkeypatch.setattr(migratectl, "_free_database", lambda name: "boersma_2")
+    answer = _adopt()
+    assert answer["ok"] is False and answer["ask"]["about"] == "database"
+    assert "boersma_2 is free" in answer["ask"]["question"]
+    assert _adopt(replace=True)["ok"] is True
+
+
+def test_a_site_without_a_database_name_is_refused(arrived, server):
+    assert _adopt(database=None)["ok"] is False

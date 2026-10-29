@@ -78,9 +78,15 @@ def test_a_refused_connection_says_to_paste_the_key(fake_ssh, tmp_path):
     assert fake_ssh.commands[0][-3:] == ["sudo", "-n", "migratectl"]
 
 
-def test_the_handshake_refuses_a_new_server_that_speaks_another_version(fake_ssh, tmp_path):
+def _hello(version=migrate.PROTOCOL_VERSION, **more):
+    return (0, json.dumps(dict({"ok": True, "version": version, "server": "x", "tools": {}}, **more)) + "\n", "")
+
+
+def test_the_handshake_refuses_a_new_server_that_speaks_another_version(fake_ssh, tmp_path, monkeypatch):
+    """With no migratectl.py beside this file there is nothing to bring the new server up to date with."""
+    monkeypatch.setattr(migrate, "own_migratectl", lambda: None)
     older = migrate.PROTOCOL_VERSION - 1
-    fake_ssh.replies = [(0, json.dumps({"ok": True, "version": older, "server": "x", "tools": {}}) + "\n", "")]
+    fake_ssh.replies = [_hello(older)]
     with pytest.raises(migrate.Stopped) as stopped:
         migrate.check(_connection(tmp_path))
     assert "reports %d, this file is %d" % (older, migrate.PROTOCOL_VERSION) in stopped.value.message
@@ -318,3 +324,44 @@ def test_a_killed_ssh_is_never_waited_for_twice_without_a_limit(monkeypatch):
         connection.ask({"request": "hello"})
     assert waits == [120, "killed", 10]
     assert "status" in stopped.value.message
+
+
+def test_an_older_new_server_gets_the_migratectl_beside_this_file(fake_ssh, tmp_path, capsys):
+    text, sha = migrate.own_migratectl()
+    fake_ssh.replies = [_hello(migrate.PROTOCOL_VERSION - 1), (0, "", ""), _hello(sha256=sha)]
+    assert migrate.check(_connection(tmp_path))["sha256"] == sha
+    install = fake_ssh.commands[1]
+    assert install[-5:] == ["sudo", "-n", "sh", "-c", "'cat > /usr/local/bin/migratectl.new && chmod 0755 "
+                            "/usr/local/bin/migratectl.new && mv /usr/local/bin/migratectl.new "
+                            "/usr/local/bin/migratectl'"]
+    assert fake_ssh.sent[1] == text.encode("utf-8")
+    assert "put the one beside me in its place" in capsys.readouterr().out
+
+
+def test_the_same_release_but_another_file_is_replaced_too(fake_ssh, tmp_path):
+    fake_ssh.replies = [_hello(sha256="0" * 64), (0, "", ""), _hello(sha256=migrate.own_migratectl()[1])]
+    migrate.check(_connection(tmp_path))
+    assert len(fake_ssh.commands) == 3 and fake_ssh.commands[1][-3:-1] == ["sh", "-c"]
+
+
+def test_the_same_file_and_a_newer_release_are_left_alone(fake_ssh, tmp_path):
+    fake_ssh.replies = [_hello(sha256=migrate.own_migratectl()[1])]
+    migrate.check(_connection(tmp_path))
+    fake_ssh.replies = [_hello(migrate.PROTOCOL_VERSION + 1)]
+    with pytest.raises(migrate.Stopped):
+        migrate.check(_connection(tmp_path))
+    assert len(fake_ssh.commands) == 2  # two hellos, no install
+
+
+def test_a_migratectl_that_cannot_be_put_there_says_so(fake_ssh, tmp_path):
+    fake_ssh.replies = [_hello(migrate.PROTOCOL_VERSION - 1), (1, "", "sh: cannot create: Read-only file system")]
+    with pytest.raises(migrate.Stopped) as stopped:
+        migrate.check(_connection(tmp_path))
+    assert "couldn't put" in stopped.value.message and "Read-only" in stopped.value.message
+
+
+def test_a_migratectl_of_another_release_beside_this_file_is_not_used(tmp_path):
+    other = tmp_path / "migratectl.py"
+    other.write_text("PROTOCOL_VERSION = %d\n" % (migrate.PROTOCOL_VERSION - 1))
+    assert migrate.own_migratectl(str(other)) is None
+    assert migrate.own_migratectl(str(tmp_path / "missing.py")) is None

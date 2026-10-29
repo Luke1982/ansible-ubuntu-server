@@ -302,13 +302,13 @@ def test_a_move_says_what_was_picked_and_what_will_happen_before_it_asks(capsys)
     job = dict(_cron("b.nl"), user="b")
     lines = [mail, site, job]
     asked = []
-    assert migrate._confirmed(lines, lambda prompt: asked.append(prompt) or "yes") is True
+    assert migrate._confirmed(lines, lambda prompt: asked.append(prompt) or "yes") == lines
     text = " ".join(capsys.readouterr().out.split())
     assert "3 accounts and 1 forward" in text and "filters and spam settings come too" in text
     assert "its files and its database of 52.0 MB are copied" in text
     assert "goes into the crontab of b on the new server" in text
-    assert asked == ["Go ahead? Type yes or no: "]
-    assert migrate._confirmed(lines, lambda prompt: "no") is False
+    assert asked == ["Go ahead? [y/n, or the numbers of the ones to do] "]
+    assert migrate._confirmed(lines, lambda prompt: "no") == []
 
 
 def test_the_report_after_one_mail_domain_is_about_that_move_only():
@@ -469,7 +469,7 @@ def test_help_says_how_to_get_the_file_onto_the_old_server_and_what_it_needs(cap
         migrate.main(["--help"])
     assert stopped.value.code == 0
     text = capsys.readouterr().out
-    assert "scp migrate.py root@" in text and "as root" in text
+    assert "scp migrate.py migratectl.py root@" in text and "as root" in text
     assert "/home/ansible/.ssh/authorized_keys" in text
     assert "rsync" in text and "Python 3.6" in text and "ssh-keygen" in text
     for written in ("migrate_key", "migrate_key.pub", "migrate_known_hosts", "/var/lib/migrate/state.json"):
@@ -595,11 +595,15 @@ def test_again_asks_before_replacing_and_no_leaves_the_site_alone(monkeypatch, c
     state.made(site, {"docroot": "/home/a/public_html/www", "database": "db1"})
     state.moved(site)
     connection, state = _wired(monkeypatch, ["1", "no"], status_state="exists", state=state, items=[site])
+    typed, prompts = ["1", "no"], []
+    monkeypatch.setattr(migrate, "_typed", lambda prompt: prompts.append(prompt) or typed.pop(0))
     args = _Args()
     args.again = True
     migrate._work(args, connection, state, [])
     text = " ".join(capsys.readouterr().out.split())
-    assert "will be emptied and replaced" in text and "Left alone" in text
+    asked = " ".join(prompts)  # a question's last line is its prompt
+    assert "will be emptied" in text and "by the one on this server. Go on? [y/n]" in asked
+    assert "Left alone" in text
     assert not any(r["request"] != "status" for r in connection.requests)
 
 
@@ -744,7 +748,7 @@ def test_the_bare_command_stays_up_a_move_a_look_again_and_then_quit(monkeypatch
     assert "Report" in text and [item["name"] for item, _ in result.moved] == ["a.nl"]
     asked = " ".join(prompts[0].split())  # the prompt is wrapped, so it is read as one line
     assert asked == ("Type a customer's number to open it, a to do the next step of every "
-                     "customer, q to leave:")
+                     "customer, t for what is still to do, s to move the spam learning, q to leave:")
     assert state.entry(items[0]).get("status") == "moved"
 
 
@@ -892,3 +896,17 @@ def test_nothing_is_painted_when_the_output_is_piped(tmp_path):
 
 # ---- the mailboxes on the list ----------------------------------------------
 
+
+
+def test_the_numbers_of_some_of_them_do_only_those(capsys):
+    """One customer can hold two websites, and its number would take both. Saying which leaves one behind."""
+    items = [{"id": "mail:a.nl", "kind": "mail_domain", "name": "a.nl", "data": {}},
+             {"id": "site:a.nl", "kind": "site", "name": "a.nl", "user": "a", "size": 10},
+             {"id": "site:web02.a.nl", "kind": "site", "name": "web02.a.nl", "user": "web02a", "size": 10}]
+
+    assert migrate._confirmed(items, lambda prompt: "1 3") == [items[0], items[2]]
+    assert migrate._confirmed(items, lambda prompt: "2") == [items[1]]
+    assert migrate._confirmed(items, lambda prompt: "2, 9") == [items[1]]  # 9 is nobody
+    assert migrate._confirmed(items, lambda prompt: "") == []
+    text = capsys.readouterr().out
+    assert "1. Mail a.nl" in text and "3. Website web02.a.nl" in text
