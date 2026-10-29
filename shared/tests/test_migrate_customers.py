@@ -2011,6 +2011,74 @@ def test_a_customer_whose_messages_are_across_is_left_alone():
     assert migrate._board_word(row, "mail") == migrate.DONE
 
 
+def test_a_measurement_is_kept_for_the_next_run(tmp_path):
+    """Walking every mailbox of every customer is minutes of waiting with nothing on the screen. It is done
+    once and written down, and the run after it reads what was measured instead of walking it all again."""
+    _mailboxes({"a0@example.nl": [1000] * 10})
+    row = _done_customer()
+    there = {"a0@example.nl": {"here": True, "bytes": 2000, "messages": 2}}
+    migrate.mail_sizes(row, Mailboxes(answer={"ok": True, "mailboxes": there}))
+    assert migrate.messages_behind(row.name) == 8
+
+    migrate._SIZES_SEEN.clear()  # as if the tool were closed and started again
+    assert migrate.messages_behind(row.name) is None
+    migrate._SIZES_SEEN.update(migrate._read_sizes())
+    assert migrate.messages_behind(row.name) == 8
+    assert migrate.sizes_remembered(row.name) is True
+
+
+def test_a_measurement_that_has_gone_stale_is_not_read_back():
+    _mailboxes({"a0@example.nl": [1000] * 10})
+    row = _done_customer()
+    there = {"a0@example.nl": {"here": True, "bytes": 2000, "messages": 2}}
+    long_ago = time.time() - migrate.SIZES_SEEN_FOR - 60
+    migrate.mail_sizes(row, Mailboxes(answer={"ok": True, "mailboxes": there}), now=long_ago)
+
+    assert migrate._read_sizes() == {}
+
+
+def test_a_file_of_measurements_that_makes_no_sense_only_means_measuring_again(tmp_path):
+    """Nothing in it is worth stopping the tool for."""
+    with open(migrate.SIZES_FILE, "w") as handle:
+        handle.write("not json at all")
+    assert migrate._read_sizes() == {}
+    with open(migrate.SIZES_FILE, "w") as handle:
+        handle.write('{"example.nl": {"when": "yesterday"}}')
+    assert migrate._read_sizes() == {}
+
+
+def test_looking_around_again_measures_the_mailboxes_again():
+    """The one way to get a fresh number when the board's looks old."""
+    _mailboxes({"a0@example.nl": [1000] * 10})
+    row = _done_customer()
+    migrate.mail_sizes(row, Mailboxes(answer={"ok": True, "mailboxes": {}}))
+    assert migrate.sizes_remembered(row.name) is True
+
+    migrate.forget_all_sizes()
+    assert migrate.sizes_remembered(row.name) is False
+    assert migrate._read_sizes() == {}
+
+
+def test_only_the_customers_whose_mail_is_across_are_measured_at_the_start():
+    """Their row is the one that would read "nothing to move" while their messages are still here. A customer
+    whose accounts are not over yet has mail on its row already, and waiting minutes to learn that is time
+    nobody has."""
+    measured = []
+
+    class Watching(object):
+        def ask(self, request, timeout=None):
+            measured.append(request)
+            return {"ok": True, "mailboxes": {}}
+
+    half = migrate.customers(_one_customer(), _status())[0]
+    migrate._measure_mailboxes([half], Watching())
+    assert measured == [] and migrate.sizes_remembered(half.name) is False
+
+    done = _done_customer()
+    migrate._measure_mailboxes([done], Watching())
+    assert measured != [] and migrate.sizes_remembered(done.name) is True
+
+
 def test_a_customer_nobody_measured_says_nothing_about_its_messages():
     """A guess here would be the same mistake the other way round."""
     migrate.forget_sizes("example.nl")

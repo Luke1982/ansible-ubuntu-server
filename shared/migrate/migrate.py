@@ -3474,11 +3474,45 @@ MAIL_CLOSE = 0.98  # how much of a mailbox's bytes may be missing and still coun
 # message over the wire with a line ending of two characters where a maildir keeps one, so the same message
 # weighs a little more or less on the other side; the count of the messages is what has to agree exactly
 MESSAGE_ROWS = 12  # mailboxes with a row of their own; the rest are one row together, so the menu stays in view
-SIZES_SEEN_FOR = 900  # seconds a measurement is remembered. Walking a mailbox of tens of gigabytes means a
-# stat of every message in it, which on a busy server is a minute of waiting with nothing on the screen; a
-# number typed after reading the screen must not start that again. Anything that copies or counts messages
-# forgets this customer's measurement itself, so what is drawn after it is the new one.
+SIZES_SEEN_FOR = 6 * 3600  # seconds a measurement is remembered. Walking a mailbox of tens of gigabytes
+# means a stat of every message in it, and over every customer that is minutes of waiting with nothing on the
+# screen; a number typed after reading the screen must not start that again, and neither must starting the
+# tool. Anything that copies or counts messages forgets that customer's measurement itself, so what is drawn
+# after it is the new one, and "r" forgets the lot.
+SIZES_FILE = "/var/tmp/migrate-mailbox-sizes.json"  # where the measurements wait for the next run
 _SIZES_SEEN = {}
+
+
+def _read_sizes(path=None):
+    """The measurements an earlier run wrote down, if they are still worth anything. Nothing here is worth
+    stopping for: a file that can't be read or understood only means measuring again."""
+    try:
+        with open(path or SIZES_FILE) as handle:
+            written = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    moment, found = time.time(), {}
+    for name, kept in (written.items() if isinstance(written, dict) else []):
+        try:
+            when, here, there = kept["when"], kept["here"], kept["there"]
+        except (TypeError, KeyError):
+            continue
+        if isinstance(when, (int, float)) and isinstance(here, dict) and moment - when <= SIZES_SEEN_FOR:
+            found[name] = (when, (here, there if isinstance(there, dict) else None))
+    return found
+
+
+def _write_sizes(path=None):
+    """Writes the measurements down for the next run. Only root reads them: they say what every customer's
+    mail weighs, which is nobody else's business."""
+    written = dict((name, {"when": when, "here": found[0], "there": found[1]})
+                   for name, (when, found) in _SIZES_SEEN.items() if found)
+    where = path or SIZES_FILE
+    try:
+        with open(os.open(where, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as handle:
+            json.dump(written, handle)
+    except (OSError, ValueError, TypeError):
+        pass  # the measuring is worth keeping, the writing down is not worth a word on the screen
 
 
 def mailbox_size(address, mail_root=None):
@@ -3549,6 +3583,7 @@ def mail_sizes(row, connection, now=None, measure=None, ask=None):
         there = (ask or mailboxes_there)(connection, addresses) if addresses else {}
         found = (here, there)
         _SIZES_SEEN[row.name] = (moment, found)
+        _write_sizes()
     return found
 
 
@@ -3576,6 +3611,13 @@ def messages_behind(name):
 def forget_sizes(name):
     """After something that copies messages, so the next screen measures again."""
     _SIZES_SEEN.pop(name, None)
+    _write_sizes()
+
+
+def forget_all_sizes():
+    """Everything measured, forgotten: what "r" is for when the numbers on the board look old."""
+    _SIZES_SEEN.clear()
+    _write_sizes()
 
 
 def _across(mine, theirs):
@@ -6861,7 +6903,11 @@ def _measure_mailboxes(rows, connection, doing=None):
     "nothing to move" while tens of gigabytes of its messages are still here, and the step it offers is to
     point the mail at a server that hasn't got them."""
     doing = doing if doing is not None else [""]
-    waiting = [row for row in rows if row.accounts() and not sizes_remembered(row.name)]
+    # Only the customers whose mail is all on the new server. Theirs is the row that reads "nothing to move"
+    # while their messages are still here; a customer whose accounts are not across yet has mail to move on
+    # its row already, and its own screen measures its mailboxes when it is opened.
+    waiting = [row for row in rows
+               if row.accounts() and row.word("mail") == DONE and not sizes_remembered(row.name)]
     if not waiting:
         return
     doing[0] = "measuring the mailboxes"
@@ -7316,6 +7362,7 @@ def _live(args, connection, state, notes, doing=None, hello=None):
         if typed is None or word in ("q", "quit"):
             return result
         if word == "r":
+            forget_all_sizes()  # the one way to make it measure the mailboxes again
             looked = None
             continue
         if word == "s":
@@ -7490,6 +7537,7 @@ def main(argv=None, geteuid=os.geteuid):
                      "settings and websites.", "red", colour))
         return 1
     doing = ["starting"]
+    _SIZES_SEEN.update(_read_sizes())  # what an earlier run measured, so this one needn't walk it all again
     try:
         _check_arguments(args)
         if args.command == "report":

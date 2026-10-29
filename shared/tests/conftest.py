@@ -27,5 +27,8 @@ def no_mailboxes_of_this_machine(monkeypatch, tmp_path):
     """No test measures the mailboxes of the machine it runs on, and no test sees what another one measured:
     the screen remembers a measurement for a minute, which inside one run of the tests is forever."""
     monkeypatch.setattr(migrate, "VMAIL", str(tmp_path / "no-vmail"))
+    # And no test writes its measurements where the next run of the tool would read them, or reads what the
+    # machine's own last run left there.
+    monkeypatch.setattr(migrate, "SIZES_FILE", str(tmp_path / "sizes.json"))
     migrate._SIZES_SEEN.clear()
     migrate._DNS_SEEN.clear()
