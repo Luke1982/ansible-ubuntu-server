@@ -6256,6 +6256,9 @@ NO_DATABASE_PICKED = "No database picked, so only the files of %s go over."
 # mysqldump writes its own message to the screen as it goes, so what went wrong is above this line; what is
 # not there is what to do about it. A table marked as crashed is much the commonest reason a dump stops, and
 # it stops the whole dump, not just that table.
+DUMP_LEFT = ("The files of %s are on the new server, but its database %s is not, so the site is not "
+             "finished there and the screen does not call it done. Put the database right here and type f "
+             "again: the files are copied over the ones there, and nothing that is already across is lost.")
 DUMP_FAILED = ("The database %s was not dumped (%s), so nothing was copied. mysqldump's own message is just above. If "
                "it says a table is marked as crashed, mysqlcheck --auto-repair %s puts it right, and then f again.")
 
@@ -6345,25 +6348,34 @@ def copy_other_site(connection, item, databases, sites=None, mail_database=None,
         return []
     there = answer.get("docroot")
     steps = ["Made the site %s on the new server, its user %s and its directories." % (name, item.get("user"))]
+    dumped = None
     if database:
         try:
             dumped = (dump or _dump_into)(docroot, database)
         except (CommandFailed, OSError) as problem:
+            # The files have nothing to do with the database, and the site is more use with them than without,
+            # so they still go over. What is not done is said at the end, and f is offered again for the rest.
             fail(DUMP_FAILED % (database, getattr(problem, "message", problem), database), say)
-            return steps
-        steps.append("Dumped the database %s into %s." % (database, os.path.join(docroot, dumped)))
+        else:
+            steps.append("Dumped the database %s into %s." % (database, os.path.join(docroot, dumped)))
     try:
         copy_files(connection, docroot, there, name, runner)
     except MoveFailed as problem:
         fail(problem.message, say)
-        return steps
+        return []  # nothing of the site is there: the screen must not call it moved
     steps.append("Copied the files of %s to %s." % (name, there))
+    if database and dumped is None:
+        for step in steps:
+            success(step, say)
+        say("")
+        warn(DUMP_LEFT % (name, database), say)
+        return []  # its files are there and its database is not, so it is not moved: f again when it dumps
     if database:
         made = _adopt_database(connection, sent, dumped, ask, say, login=login)
         if made is None:
             for step in steps:
                 success(step, say)
-            return steps
+            return []  # the database was left alone, so the site is not across: f offers it again
         steps.extend(made.get("steps") or [])
         for step in steps:
             success(step, say)

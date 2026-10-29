@@ -61,7 +61,7 @@ def here(tmp_path, monkeypatch):
     return str(docroot)
 
 
-def _copy(server, here, databases=None, typed="1", answer="yes", secret="", **more):
+def _copy(server, here, databases=None, typed="1", answer="yes", secret="", runner=None, **more):
     """Types 'typed' at the database question and at the user name after it, and 'secret' at the password."""
     said, copied = [], []
     replies = [typed, ""]
@@ -69,7 +69,7 @@ def _copy(server, here, databases=None, typed="1", answer="yes", secret="", **mo
         server, _item(docroot=here), databases if databases is not None else {"boersma": 4096},
         ask=lambda question: answer, choose=lambda prompt: replies.pop(0) if replies else "",
         secret=lambda prompt: secret, say=said.append,
-        runner=lambda *args: copied.append(args) or 0, **more)
+        runner=runner or (lambda *args: copied.append(args) or 0), **more)
     return steps, " ".join(" ".join(said).split()), copied
 
 
@@ -99,6 +99,41 @@ def test_a_site_without_a_database_copies_only_its_files(here):
     assert server.asked_for("adopt_database") == []
     assert not os.path.exists(os.path.join(here, "boersma.sql"))
     assert "No database picked" in said and copied and "Copied the files" in " ".join(steps)
+
+
+def test_a_dump_that_fails_still_copies_the_files_and_does_not_call_the_site_moved(here, monkeypatch):
+    """A crashed table stops mysqldump, not the site: its files have nothing to do with its database, and are
+    more use on the new server than here. What is not done has to be said, and the screen must not go on to
+    call the site done -- it did, and the customer's site was an empty page nobody was told about."""
+    monkeypatch.setattr(migrate, "run_into", lambda path, *args: 2)  # mysqldump: table marked as crashed
+    server = Server()
+    steps, said, copied = _copy(server, here)
+
+    assert copied and copied[0][0] == "rsync"  # the files went over all the same
+    assert server.asked_for("adopt_database") == []
+    assert steps == []  # nothing marks it moved, so f is offered again and the board says files to copy
+    assert "was not dumped" in said and "mysqlcheck --auto-repair boersma" in said
+    assert "its database boersma is not" in said and "type f again" in said
+
+
+def test_a_database_left_alone_does_not_call_the_site_moved(here, monkeypatch):
+    """The new server has a database of that name and the answer was no. Its files are there; it is not done."""
+    monkeypatch.setattr(migrate, "_database_question", lambda text: "no")
+    server = Server(question="There is already a database called boersma in MariaDB. Go on?")
+    steps, said, copied = _copy(server, here)
+
+    assert copied and copied[0][0] == "rsync"
+    assert steps == []
+    assert "was left alone" in said
+
+
+def test_files_that_do_not_copy_leave_nothing_behind_that_reads_as_done(here, monkeypatch):
+    def refuse(*args):
+        raise migrate.CommandFailed("rsync isn't installed", missing=True)
+
+    server = Server()
+    steps, said, _copied = _copy(server, here, runner=refuse)
+    assert steps == [] and "did not work" in said
 
 
 def test_nothing_is_copied_without_a_yes(here):
