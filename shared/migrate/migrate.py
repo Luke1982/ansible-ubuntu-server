@@ -2453,13 +2453,32 @@ def _board_word(row, part):
     return word
 
 
+MESSAGES_HEAD = "Messages"
+
+
+def _messages_cell(row):
+    """What the board says about this customer's messages. The one column that says a number rather than one
+    of the four words: the mailboxes are walked to find it out, which costs the start of every run minutes,
+    and a word nobody can act on is not worth that. It counts messages and not bytes, because what a mailbox
+    weighs on one server says nothing about the other -- see _across."""
+    left = messages_behind(row.name)
+    if left is None:
+        return NONE
+    return DONE if not left else "%d left" % left
+
+
 def _table_of(rows, colour):
-    """The table itself: a column for each part that has something to say, and the next step at the end."""
+    """The table itself: a column for each part that has something to say, the messages, and the next step at
+    the end."""
     steps = [next_step(row)[1] for row in rows]
     parts = [part for part in PARTS if any(row.word(part) != NONE for row in rows)]
-    heads = ["Customer"] + [PART_HEADS[part] for part in parts] + ["Next step"]
-    cells = [[row.name] + [_board_word(row, part) for part in parts] + [step]
-             for row, step in zip(rows, steps)]
+    messages = [_messages_cell(row) for row in rows]
+    counted = any(cell != NONE for cell in messages)  # nothing measured yet: no column rather than a rule of -
+    heads = ["Customer"] + [PART_HEADS[part] for part in parts] \
+        + ([MESSAGES_HEAD] if counted else []) + ["Next step"]
+    cells = [[row.name] + [_board_word(row, part) for part in parts]
+             + ([cell] if counted else []) + [step]
+             for row, cell, step in zip(rows, messages, steps)]
     widths = _widths(heads, cells, _LEAST_NAME)
     out = ["  " + _paint("#", "bold", colour) + "   "
            + "  ".join(_paint(head, "bold", colour) + " " * (width - len(head))
@@ -2473,6 +2492,8 @@ def _table_of(rows, colour):
         for i, text in enumerate(line):
             fitted = _fit(text, widths[i], middle=(i == 0))
             style = WORD_STYLES.get(text) if 0 < i < len(heads) - 1 else ("dim" if finished else None)
+            if 0 < i < len(heads) - 1 and style is None and text.endswith("left"):
+                style = "yellow"  # the messages column says a number, which is in no table of words
             shown.append(_paint(fitted, style, colour)
                          + ("" if i == len(heads) - 1 else " " * (widths[i] - len(fitted))))
         number = _paint("%3s" % row.number, "dim" if finished else "bold", colour)
