@@ -6310,9 +6310,18 @@ def _dump_into(docroot, database, runner=None):
     path = os.path.join(docroot, database + DUMP_SUFFIX)
     code = (runner or run_into)(path, "mysqldump", "--single-transaction", "--quick",
                                 "--default-character-set=utf8mb4", database)
+    # Before anything else, including before giving up: a dump that stopped half way is still a file in the
+    # web root with the customer's data in it, and until this runs anyone who knows the name can download it.
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
     if code != 0:
+        try:
+            os.unlink(path)  # half a dump is no use to anybody and is not left lying in a web root
+        except OSError:
+            pass
         raise CommandFailed("mysqldump stopped with code %d" % code)
-    os.chmod(path, 0o600)
     return os.path.basename(path)
 
 

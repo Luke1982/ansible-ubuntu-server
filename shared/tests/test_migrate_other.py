@@ -116,6 +116,19 @@ def test_a_dump_that_fails_still_copies_the_files_and_does_not_call_the_site_mov
     assert "its database boersma is not" in said and "type f again" in said
 
 
+def test_a_dump_that_stopped_half_way_is_not_left_in_the_web_root(here, monkeypatch):
+    """Anything in a web root can be downloaded by anyone who knows its name, and half a dump still holds the
+    customer's data."""
+    def half(path, *args):
+        with open(path, "wb") as out:
+            out.write(b"-- dump\nINSERT INTO users VALUES ('secret'")  # and then mysqldump gave up
+        return 2
+
+    monkeypatch.setattr(migrate, "run_into", half)
+    _steps, _said, _copied = _copy(Server(), here)
+    assert not os.path.exists(os.path.join(here, "boersma.sql"))
+
+
 def test_a_database_left_alone_does_not_call_the_site_moved(here, monkeypatch):
     """The new server has a database of that name and the answer was no. Its files are there; it is not done."""
     monkeypatch.setattr(migrate, "_database_question", lambda text: "no")
