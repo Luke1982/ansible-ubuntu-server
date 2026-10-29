@@ -114,6 +114,18 @@
     minute: "30"
     job: doveadm fts optimize -A
 
+# Mail is indexed as it arrives, but what the indexer still had queued is lost
+# when Dovecot restarts, and stays unindexed until somebody searches that
+# folder. Messages that are already indexed are skipped.
+- name: Index mail the indexer missed, every night
+  cron:
+    name: dovecot fts index
+    cron_file: dovecot-fts-index
+    user: root
+    hour: "4"
+    minute: "0"
+    job: doveadm index -A -q '*'
+
 - name: Enable sieve_after in Dovecot
   lineinfile:
     path: /etc/dovecot/conf.d/90-sieve.conf
