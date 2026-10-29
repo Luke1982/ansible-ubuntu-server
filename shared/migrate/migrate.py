@@ -1028,8 +1028,8 @@ NO_DOCROOT = "Its configuration has no DocumentRoot, so its files can't be found
 
 # What a web root holds when there is no site in it: a directory left behind with a placeholder page in it.
 _NO_SITE_IN_IT = ("index.html", "index.htm", "cgi-bin")
-REDIRECT_IN_CONFIG = ("its redirect is in the web server's own configuration here, not in the site's files, so "
-                      "copying the files doesn't bring it: %s")
+REDIRECT_IN_CONFIG = ("its redirect is in the web server's own configuration here, not in the site's files, so copying "
+                      "the files doesn't bring it: %s")
 
 
 def _serves_files(docroot):
@@ -1630,9 +1630,8 @@ def cost(item):
     return ""
 
 
-MAIL_MERGES = ("Sending it again adds the accounts, forwards, filters and "
-               "spam settings that are missing, and leaves what is already "
-               "there alone.")
+MAIL_MERGES = ("Sending it again adds the accounts, forwards, filters and spam settings that are missing, and leaves "
+               "what is already there alone.")
 GONE_THERE = ("This moved from here before, but the new server doesn't have "
               "it any more. Moving it again puts it back.")
 
@@ -1750,8 +1749,25 @@ def fail(text, say=print):
     _marked("fail", text, say)
 
 
-def note(text, say=print):
-    say("\n".join(_paint(line, "dim", LOOK["colour"]) for line in textwrap.wrap(str(text), _WIDTH)))
+_SAID = set()  # the notes this run has already printed
+
+
+def note(text, say=print, again=False):
+    """A note under a heading. The same note is printed once in a run and not again: what it says is worth
+    reading the first time it comes up and is noise on the fortieth customer, and a screen of noise is a
+    screen nobody reads at all. A note that names the customer differs by that name, so it still comes up
+    once for each of them; 'again' is for the few that have to be under the eye every time."""
+    body = str(text)
+    if not again:
+        if body in _SAID:
+            return
+        _SAID.add(body)
+    say("\n".join(_paint(line, "dim", LOOK["colour"]) for line in textwrap.wrap(body, _WIDTH)))
+
+
+def forget_notes():
+    """Every note comes up once more: what r does, so a screen read again reads the same."""
+    _SAID.clear()
 
 
 def heading(text, say=print):
@@ -2634,9 +2650,8 @@ def _cron_sentence(row, status, short):
     return " ".join(said)
 
 
-NOTHING_TO_MOVE = ("Nothing left of this customer to move. What it may still need is in the list that t "
-                   "prints: its messages, its redirects, the mail this server still delivers itself, and "
-                   "where its names point.")
+NOTHING_TO_MOVE = ("Nothing left of this customer to move. t lists what it may still need: its messages, its "
+                   "redirects, mail this server still delivers itself, and where its names point.")
 
 
 def inside(row, status, remembered=None, colour=False, new_server=None, mail=None):
@@ -2751,9 +2766,9 @@ def _part_head(row, part):
     return PART_HEADS[part]
 
 
-KEPT_HERE_NOTE = ("The world sends the mail of %s to the new server now, but Postfix on this server still has "
-                  "the domain in its own tables: a message sent from a mailbox here lands in the old mailbox "
-                  "here instead of going along, and nobody sees it go missing. Number 7 stops that.")
+KEPT_HERE_NOTE = ("The world sends the mail of %s to the new server now, but Postfix here still has the domain, so "
+                  "mail sent from a mailbox here lands in the old mailbox and nobody sees it go missing. Number 7 "
+                  "stops that.")
 
 
 def kept_here(dns, run=None):
@@ -2842,23 +2857,20 @@ def _note_column(menu):
     return min(MENU_NOTE_AT, _WIDTH - max(len(note) for note in notes))
 
 
-DNS_WARNING = ("This moves the DNS of %s to the new server at TransIP and then finishes the site there: it "
-               "waits until the name resolves at the new server and asks Let's Encrypt for its certificate. "
-               "Visitors go to the new server as soon as the old record has expired, so do it when the site "
-               "and its database are across. The TransIP login has to be saved on the new server already "
-               "(domainctl dns credentials there); there is no terminal here to type it in.")
+DNS_WARNING = ("Moves the DNS of %s at TransIP, waits for the name to resolve there, and asks Let's Encrypt for its "
+               "certificate. Visitors follow once the old record has expired, so do it when the site and its database "
+               "are across. The TransIP login must already be saved on the new server (domainctl dns credentials "
+               "there): there is no terminal here to type it in.")
 
 
-SIGNAGE_THERE = ("The piSignage server of %s is on the new server already. Nothing of it is copied with the "
-                 "websites; g brings over what changed here since, and its DNS when you say yes.")
-OTHER_FIRST = ("The files of %s are not on the new server yet. Moving its DNS now would send its visitors to "
-               "a server that hasn't got the site: type f here first, and pick its database.")
-SIGNAGE_FIRST = ("The piSignage server of %s is not on the new server yet. Moving its DNS now would send its "
-                 "screens and its players at a server that hasn't got it: type g here first, and say yes to "
-                 "the DNS at the end of that.")
-SITE_NOT_THERE = ("%s is not on the new server: this tool doesn't move it, and the reason is on the screen "
-                  "above. Moving its DNS would send its visitors to a server that hasn't got the site, so "
-                  "leave it alone until you have copied it there by hand.")
+SIGNAGE_THERE = ("The piSignage server of %s is across already, and nothing of it is copied with the websites. g "
+                 "brings over what changed here since, and its DNS when you say yes.")
+OTHER_FIRST = ("The files of %s are not across yet, so moving its DNS now would send visitors to a server without the "
+               "site. Type f here first, and pick its database.")
+SIGNAGE_FIRST = ("The piSignage server of %s is not across yet, so moving its DNS now would send its players at a "
+                 "server without it. Type g here first, and say yes to the DNS at the end of it.")
+SITE_NOT_THERE = ("%s is not on the new server and this tool doesn't move it (the reason is above). Moving its DNS "
+                  "would send visitors to a server without the site: copy it there by hand first.")
 
 
 def _point_dns(connection, row, doing=None, ask=None, say=print):
@@ -3036,11 +3048,10 @@ TRANSPORT_HEADER = ("# Written by migrate: the domains this server no longer kee
                     "# the new server instead. To have this server keep one again, take its line away, run\n"
                     "# 'postmap %s' and then 'postfix reload'.\n" % TRANSPORT_FILE)
 
-HANDOVER_WARNING = ("Postfix on this server still has %(domain)s in its own tables, so mail sent from a "
-                    "mailbox here to that domain is dropped in the old mailbox here instead of going to the "
-                    "new server. This tells Postfix here to send everything for %(domain)s to %(new)s. "
-                    "Nothing is deleted: the mail already in the mailboxes here stays where it is, and the "
-                    "one line that does it is in %(file)s.")
+HANDOVER_WARNING = ("Postfix here still has %(domain)s, so mail sent from a mailbox here to that domain is dropped in "
+                    "the old mailbox instead of going on. This tells Postfix to send everything for %(domain)s to "
+                    "%(new)s; the line that does it is in %(file)s. Nothing is deleted: the mail already in the "
+                    "mailboxes here stays.")
 
 
 def _mx_hosts(text):
@@ -3203,9 +3214,8 @@ def _hand_over(connection, row, hello=None, doing=None, ask=None, say=print, run
     return _hand_over_domains(connection, domains, hello, doing=doing, ask=ask, say=say, run=run)
 
 
-LATER_NOTE = ("Mail sent from a mailbox on this server to %s still lands in the old mailbox here, because "
-              "this server has the domain in its own tables. Hand it over with the number for it on %s's "
-              "screen once its DNS has been moved.")
+LATER_NOTE = ("Mail sent from a mailbox here to %s still lands in the old mailbox, because this server has the domain "
+              "in its own tables. Hand it over on %s's screen once its DNS has moved.")
 
 
 def _offer_handover(connection, domains, hello=None, doing=None, ask=None, say=print, run=None):
@@ -3788,10 +3798,9 @@ def _messages_notes(here, there):
     return []
 
 
-SIZES_DIFFER = ("The maildirs here hold more files than the new server's do, and nothing is missing: imapsync "
-                "opened both and found every message of %s on the new server. A maildir keeps files dovecot "
-                "doesn't serve as messages, an old folder it no longer lists among them, so the two sides "
-                "never add up to the same number. c counts them again, folder by folder.")
+SIZES_DIFFER = ("Nothing is missing: imapsync opened both and found every message of %s on the new server. A maildir "
+                "keeps files dovecot doesn't serve as messages, so the two sides never add up to the same number. c "
+                "counts them again, folder by folder.")
 
 
 def _and_list(names):
@@ -3947,11 +3956,16 @@ def _only_signage(row):
 
 # ---- The password of an account that already exists --------------------------
 
-CHECKED_HERE = ("The account's own password is asked for here, checked against what this server has stored for "
-                "it, and then stored on the new server the way that server stores its own. Nothing changes on "
-                "this server, and no new password is made up: the customer keeps the one they have.")
-WRONG_PASSWORD = ("That is not the password this server has for %s. Nothing was changed. Try again, or press "
-                  "Enter to leave it.")
+CHECKED_HERE = ("The account's own password is asked for here, checked against what this server has stored, and then "
+                "stored on the new server. Nothing here changes and no new password is made up: the customer keeps the "
+                "one they have.")
+WRONG_PASSWORD = ("That is not the password this server has for %s. Nothing was changed. Try again, or press Enter to "
+                  "skip this mailbox.")
+# Enter used to say "leave it", which says nothing about what happens: the mailbox is skipped and its mail
+# stays here. Nobody has the password of an account like crediteuren@ that only a form ever sends from, so
+# there is a way through besides knowing it: a password this tool makes up and sets on both servers at once.
+PASSWORD_PROMPT = "Password of %s (Enter skips it, 'new' sets a new one on both): "
+MAKE_NEW = "make a new one on both servers"  # what ask_password gives back when 'new' was typed
 
 
 def _sql_text(value):
@@ -3990,22 +4004,30 @@ def password_fits(password, stored, run=None):
 
 def ask_password(address, stored, say=print, ask=None):
     """Asks for one account's own password until it is the one this server has stored for it, and gives it
-    back. None when Enter was pressed. It is checked here first, so a typing mistake is never sent anywhere."""
+    back. It is checked here first, so a typing mistake is never sent anywhere. None when Enter was pressed,
+    which skips the mailbox and leaves its mail here; MAKE_NEW when 'new' was typed, for an account whose
+    password nobody has any more."""
     ask = ask or _typed_password
     while True:
-        password = ask("Password of %s (Enter to leave it): " % address)
+        password = ask(PASSWORD_PROMPT % address)
         if not password:
             return None
+        if password.strip().lower() == "new":
+            return MAKE_NEW
         if password_fits(password, stored):
             return password
         _say(WRONG_PASSWORD % address, say)
 
 
-def give_password(connection, address, stored, say=print, ask=None):
+def give_password(connection, address, stored, say=print, ask=None, database=None, question=None, run=None):
     """Asks for one account's own password, checks it here, and has the new server store it. True when the new
-    server took it. Enter leaves the account alone."""
+    server took it. Enter skips the account; 'new' makes a password up and sets it on both servers."""
     password = ask_password(address, stored, say=say, ask=ask)
-    return False if password is None else store_password(connection, address, password, say=say)
+    if password is None:
+        return False
+    if password is MAKE_NEW:
+        return bool(new_password_on_both(connection, address, database, say=say, ask=question, run=run))
+    return store_password(connection, address, password, say=say)
 
 
 def store_password(connection, address, password, say=print, quiet=False):
@@ -4026,10 +4048,8 @@ PASSWORD_LETTERS = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 PASSWORD_GROUPS = 4  # of four letters, which is long enough for any mail server and still readable aloud
 NEW_HASH = "SHA512-CRYPT"  # what a password this tool makes is hashed with here
 
-NEW_PASSWORD_WARNING = ("I can give %s a brand new password and set it on both servers, so the same one opens "
-                        "the mailbox on each of them. The password it has now stops working, here and on the "
-                        "new server, so the customer needs the new one: it is printed here once and kept "
-                        "nowhere.")
+NEW_PASSWORD_WARNING = ("Gives %s a brand new password, set on both servers. The one it has now stops working on each, "
+                        "so the customer needs the new one: it is printed here once and kept nowhere.")
 
 
 def new_password():
@@ -4136,7 +4156,7 @@ def set_passwords(connection, row, say=print, database=None, ask=None, old_serve
             _say("This server has no password stored for %s, so there is nothing to check against." % address,
                  say)
             continue
-        if give_password(connection, address, stored, say=say):
+        if give_password(connection, address, stored, say=say, database=database, question=ask):
             done.append(address)
     if done and old_server and new_server:
         say("")
@@ -4155,9 +4175,9 @@ def set_passwords(connection, row, say=print, database=None, ask=None, old_serve
 # after it does the same for those folders with INBOX. in front of their names, which this server has for
 # every mailbox that was moved here from a server before. Without it the sent mail of such a mailbox is
 # copied into Sent and into INBOX.Sent both, and takes twice the room on the new server for ever.
-MAP_FOLDERS = ("--automap --regextrans2 "
-               "'s,^INBOX\\.(Sent|Sent Items|Sent Messages|Verzonden items|Verzonden Items|Drafts|Concepten|"
-               "Trash|Deleted Items|Verwijderde items|Junk|Junk E-mail|Spam|Ongewenste e-mail)$,$1,i'")
+MAP_FOLDERS = ("--automap --regextrans2 's,^INBOX\\.(Sent|Sent Items|Sent Messages|Verzonden items|Verzonden "
+               "Items|Drafts|Concepten|Trash|Deleted Items|Verwijderde items|Junk|Junk E-mail|Spam|Ongewenste "
+               "e-mail)$,$1,i'")
 
 
 def _imapsync_line(old, new, address, password=None):
@@ -4184,17 +4204,14 @@ WEBMAIL_DUMPS = "/var/tmp/migrate-webmail"  # where a backup waits here until it
 WEBMAIL_TIMEOUT = ASK_TIMEOUTS["restore_webmail"]
 WEBMAIL_WHAT = "contacts and calendars"
 COPY_WEBMAIL = "copy the contacts and calendars"
-WEBMAIL_WARNING = ("Webmail keeps an account's address books and calendars outside its mailbox, so the mail "
-                   "being across doesn't bring them. sogo-tool writes them out here, the files go over, and "
-                   "sogo-tool there reads them back in: the account's settings first, which hold its "
-                   "signature and its filters, and then every folder it has. Nothing here is changed, and a "
-                   "folder that is already there is added to and never emptied, so doing this twice costs "
-                   "time and nothing else.")
-WEBMAIL_NONE = ("%s has no address books or calendars in webmail on this server, so there is nothing of them "
-                "to copy. Only what somebody made in webmail itself is kept there; what a mail program keeps "
-                "on the person's own computer was never on this server at all.")
-WEBMAIL_NO_TOOL = ("There is no sogo-tool at %s on this server, so its webmail's contacts and calendars "
-                   "can't be written out. A server without webmail has none to copy.")
+WEBMAIL_WARNING = ("Webmail keeps address books and calendars outside the mailbox, so the mail being across doesn't "
+                   "bring them. sogo-tool writes them out here and the new server reads them back in: the account's "
+                   "settings first, which hold its signature and its filters, then every folder. Nothing here changes, "
+                   "and a folder already there is added to, never emptied.")
+WEBMAIL_NONE = ("%s has no address books or calendars in webmail on this server. Only what somebody made in webmail "
+                "itself is kept there; what a mail program keeps on their own computer never was.")
+WEBMAIL_NO_TOOL = ("There is no sogo-tool at %s on this server, so its webmail's contacts and calendars can't be "
+                   "written out. A server without webmail has none to copy.")
 _WEBMAIL_FOLDERS = {}
 
 
@@ -4313,12 +4330,11 @@ def copy_webmail(connection, row, ask=None, say=print, run=run_command, runner=N
 
 # ---- Copying the messages of a customer's mailboxes over ---------------------
 
-COPY_WARNING = ("imapsync runs on the new server and reads the mailbox here over IMAP on port 993, like a "
-                "mail program does: nothing here is deleted or changed, and no message is copied twice, so a "
-                "copy that was stopped and started again brings over what is new since.")
-COPY_NEEDS_PASSWORD = ("It opens the mailbox on both servers, so it needs the account's own password: asked "
-                       "for here, checked against what this server has stored for it, and given to the new "
-                       "server as well.")
+COPY_WARNING = ("imapsync runs on the new server and reads the mailbox here over IMAP on port 993, like a mail "
+                "program. Nothing here is deleted or changed and no message is copied twice, so a copy that was "
+                "stopped and started again brings over what is new since.")
+COPY_NEEDS_PASSWORD = ("It opens the mailbox on both servers, so it needs the account's own password: checked here "
+                       "against what this server has stored, and given to the new server too.")
 COPY_WATCH_EVERY = 10  # seconds between asking the new server how far the copies are
 
 
@@ -4424,11 +4440,9 @@ def _copy_compare(address, mine, there, short, say=print):
 
 # ---- Counting a mailbox on both servers, with imapsync itself ---------------
 
-COMPARE_WARNING = ("imapsync opens the mailbox on both servers and counts every folder of it, and copies "
-                   "nothing: this only says whether the messages are across. It is the same program that "
-                   "does the copying, reading the mailboxes the same way, so what it counts is what a mail "
-                   "program sees, and not what lies in the folders on disk. Counting tens of gigabytes takes "
-                   "minutes, and the account's own password is asked for, as for the copy itself.")
+COMPARE_WARNING = ("imapsync opens the mailbox on both servers and counts every folder, copying nothing. It counts "
+                   "what a mail program sees, not what lies on disk. Tens of gigabytes take minutes, and it needs the "
+                   "account's own password.")
 COMPARE_HEADS = ("Folder", "Messages here", "On %s", "Missing")
 NOT_THERE_YET = "not there yet"
 
@@ -4540,9 +4554,8 @@ def _compare_total(folders, part):
             "bytes": sum(one.get("bytes") or 0 for one in held)}
 
 
-SAME_FOLDER = ("%s here answers to more than one name, from a move this mailbox has been through before. "
-               "Each of them is counted once here, and the copy puts the messages of all of them in the one "
-               "folder on %s.")
+SAME_FOLDER = ("%s here answers to more than one name, from a move this mailbox has been through before. Each is "
+               "counted once, and the copy puts them all in the one folder on %s.")
 
 
 def _compare_said(address, answer, short, say=print):
@@ -4669,13 +4682,21 @@ def _copy_mail(connection, row, hello=None, doing=None, ask=None, say=print, dat
         if not _is_yes(ask("Copy the mail of %s to the new server now?" % address)):
             note("The mail of %s was left where it is." % address, say)
             continue
-        password = _password_for(address, database, say=say)
-        if password is None:
+        password = _password_for(address, database, say=say, ask=None)
+        if password is MAKE_NEW:
+            # Nobody knows the password of this one: make one up and set it on both servers, then copy with it.
+            password = new_password_on_both(connection, address, database, say=say, ask=ask, run=run)
+            if not password:
+                warn("The mail of %s was not copied: without a password imapsync can't open the mailbox."
+                     % address, say)
+                continue
+        elif password is None:
             # Without it nothing was tried, and a screen that comes straight back says nothing about why.
             warn("No password, so the mail of %s was not copied. imapsync opens the mailbox on both servers "
-                 "like a mail program does, and there is no way in without one." % address, say)
+                 "like a mail program does, and there is no way in without one. Type new at the password to "
+                 "have one made up and set on both servers." % address, say)
             continue
-        if not store_password(connection, address, password, say=say):
+        elif not store_password(connection, address, password, say=say):
             # The new server has rules of its own, and a password it won't take is a mailbox imapsync can't
             # open there. One this tool makes up fits them and is set on both servers at once.
             password = new_password_on_both(connection, address, database, say=say, ask=ask, run=run)
@@ -4711,8 +4732,8 @@ TODO_SECTIONS = (
     ("delivery", "Mail this server still delivers itself, though the world sends it on"),
     ("dns", "Names that still don't point at the new server"),
 )
-TODO_DONE = "Nothing of that is left: the mail, the messages, the redirects, the delivery and the DNS are all "\
-            "on the new server."
+TODO_DONE = ("Nothing of that is left: the mail, the messages, the redirects, the delivery and the DNS are all on the "
+             "new server.")
 
 
 def todo(rows, status, connection, hello, short="the new server", run=None):
@@ -4819,8 +4840,8 @@ def _number_words(word, count, notes, one="item", many="items"):
     return list(range(low, high + 1))
 
 
-UNDERSTAND = ('I don\'t understand: %s. Type a number to do its next step, a to do all of '
-              'them, "i 3" to look inside one or "p 3" to give one new mail passwords.')
+UNDERSTAND = ("I don't understand: %s. Type a number to do its next step, a to do all of them, \"i 3\" to look inside "
+              "one or \"p 3\" to give one new mail passwords.")
 AFTER_NUMBER = '"%s" goes after a number, like "3 %s".'
 LETTER_NEEDS = '"%s" says which customer, so it goes with a number, like "%s 1".'
 
@@ -4944,10 +4965,8 @@ def _apply_with_questions(connection, item, ask, report, ask_name=None):
 
 MADE_NOT_FILLED = ("The site was made, but its files and database were not "
                    "brought over")
-NEEDS_PROGRAM = ("%s isn't installed on this server, and a site's files and "
-                 "database can't be brought over without it. Nothing was "
-                 "made for %s: install it (on Debian or Ubuntu: apt install "
-                 "%s) and run me again.")
+NEEDS_PROGRAM = ("%s isn't installed here, and a site's files and database can't come over without it. Nothing was "
+                 "made for %s: install it (apt install %s) and run me again.")
 
 
 def _missing_programs(item, which=None):
@@ -5150,19 +5169,15 @@ def _owner_of(path):
         return None
 
 
-NOT_WORDPRESS = ("No wp-config.php was found in %s, so this is not a WordPress site: its database settings "
-                 "are in a file somewhere in its own code, and nothing here can read them. Type f and pick "
-                 "its database, and its files and that database are copied over; the new server then says "
-                 "the password, and you put it in the site's own settings yourself.")
-SIGNAGE_SITE = ("piSignage runs behind this name on port %d, and Apache here does nothing but hand requests "
-                "on to it, so there are no website files to copy. Type g, or run migrate.py signage, and its "
-                "media, its data folder and its MongoDB database are brought across into a piSignage server "
-                "the new one makes for it.")
-SAME_USER = ("%s would get the same Linux user on the new server as %s (the "
-             "name of both comes down to %s), and one user there means one "
-             "home, one web root and one wp-config.php. Move this one on its "
-             "own, under a name of its own: migrate.py --host NEW --domain "
-             "%s --user NAME")
+NOT_WORDPRESS = ("No wp-config.php in %s, so this is not WordPress and nothing here can read its database settings. "
+                 "Type f and pick its database; the new server then says the password, and you put it in the site's "
+                 "own settings.")
+SIGNAGE_SITE = ("piSignage runs behind this name on port %d, so there are no website files to copy. Type g, or run "
+                "migrate.py signage: its media, its data folder and its MongoDB database come across into a piSignage "
+                "server the new one makes for it.")
+SAME_USER = ("%s would get the same Linux user on the new server as %s (both come down to %s), and one user there "
+             "means one home, one web root and one wp-config.php. Move this one under a name of its own: migrate.py "
+             "--host NEW --domain %s --user NAME")
 
 
 REDIRECT_BY_HAND = ("Not all of what %s does moves with it: %s")
@@ -5235,29 +5250,24 @@ NO_SITE_JOB = ("This job belongs to no site on this server, so it is not "
                "moved. If the new server needs it, add it by hand.")
 SITE_FIRST = ("The site %s is not being moved, so this job isn't either: "
               "its paths would point at files that aren't there.")
-NO_OLD_ROOT = ("I don't know where the files of %s are on this server, so "
-               "the paths in this job can't be pointed at the new server.")
-NO_NEW_ROOT = ("I don't know where the files of %s are on the new server, so "
-               "this job's paths can't be pointed at them. Move the site "
-               "first, in this same run, and then this job.")
-OUTSIDE_SITE = ("This job uses %s, which is not part of the site, so there "
-                "is no way to know where it is on the new server. Set this "
-                "job up there by hand.")
+NO_OLD_ROOT = ("I don't know where the files of %s are on this server, so the paths in this job can't be pointed at "
+               "the new server.")
+NO_NEW_ROOT = ("I don't know where the files of %s are on the new server, so this job's paths can't be pointed at "
+               "them. Move the site first, in this same run, and then this job.")
+OUTSIDE_SITE = ("This job uses %s, which is not part of the site, so there is no way to know where it is on the new "
+                "server. Set this job up there by hand.")
 NO_NEW_PHP = ("The new server didn't say which PHP it has, so %s can't be "
               "replaced by it and this job would not run there.")
-NO_NEW_WP = ("The new server didn't say where its wp-cli is, so %s can't be "
-             "replaced by it and this job would not run there. Install "
-             "wp-cli there and send the job again.")
+NO_NEW_WP = ("The new server didn't say where its wp-cli is, so %s can't be replaced and this job would not run there. "
+             "Install wp-cli there and send the job again.")
 # Paths that mean the same on any server, so they travel as they are: the places a job throws its output away,
 # and the scratch folders where a job makes its own lock file.
 _KEEP_PATHS = ("/dev/null", "/dev/zero", "/dev/stdout", "/dev/stderr")
 _KEEP_FOLDERS = ("/tmp/", "/var/tmp/")
 # The directories every Linux has, so a PATH that names them says nothing about the old server.
 _ORDINARY_PLACES = ("/bin", "/sbin", "/usr/bin", "/usr/sbin", "/usr/local/bin", "/usr/local/sbin")
-PATH_FROM_OLD = ("This job's PATH is kept as it is, and it names %s, which "
-                 "may not be there on the new server. A program this job "
-                 "runs by its bare name has to be in one of the directories "
-                 "its PATH names, so look at that job once it has run.")
+PATH_FROM_OLD = ("This job's PATH is kept as it is and names %s, which may not be there on the new server. Look at the "
+                 "job once it has run.")
 
 
 def _is_php(word):
@@ -5580,12 +5590,10 @@ class State(object):
 
 NO_DELETE_NOTE = ("Files that are gone on the old server were not removed "
                   "from the new one; the copy only adds and replaces.")
-VANISHED_NOTE = ("Some files vanished on the old server while they were "
-                 "copied, which happens on a site that is in use. The rest "
-                 "was copied.")
-WRONG_CONFIG = (" The site's wp-config.php on the new server now points at "
-                "the OLD server's database, and must not be left that way: "
-                "send the site again.")
+VANISHED_NOTE = ("Some files vanished on the old server while they were copied, which happens on a site that is in "
+                 "use. The rest was copied.")
+WRONG_CONFIG = (" The site's wp-config.php on the new server now points at the OLD server's database, and must not be "
+                "left that way: send the site again.")
 
 
 def _database_problem(name):
@@ -5602,9 +5610,8 @@ def _database_problem(name):
     return None
 
 
-REPLACE_QUESTION = ("The database %s on the new server, for the site %s, "
-                    "will be emptied and replaced by the one on this "
-                    "server. Go on?")
+REPLACE_QUESTION = ("The database %s on the new server, for the site %s, will be emptied and replaced by the one on "
+                    "this server. Go on?")
 NOT_REPLACED = ("Nothing was done for %s: the database was not to be "
                 "replaced.")
 
@@ -5872,9 +5879,8 @@ def do_again(connection, items, notes, ask, extra_notes=None, **fakes):
 # The tables that make a database SpamAssassin's Bayes, the part of it that learns from the mail it is shown.
 BAYES_TABLES = ("bayes_token", "bayes_vars")
 _BAYES_DATABASE = re.compile(r"[A-Za-z0-9_]+")
-SPAM_QUESTION = ("The new server has learned from %s itself. This server's learning (%s) is added to it: "
-                 "neither is thrown away, and a message both have already learned from is not counted twice. "
-                 "Go on?")
+SPAM_QUESTION = ("The new server has learned from %s itself. This server's learning (%s) is added to it: neither is "
+                 "thrown away, and a message both already learned from is not counted twice. Go on?")
 
 
 def _learned_words(counts):
@@ -5972,16 +5978,13 @@ def _move_spam(connection, doing=None, ask=None):
 
 SYSTEM_DATABASES = ("information_schema", "performance_schema", "mysql", "sys")
 DNS_BY_HAND = "On the new server, run: mailctl dns show %s"
-AFTER_DNS = ("Once the DNS of a site points at the new server, run this on the "
-             "new server for each site, to get its certificate:")
-SITE_DNS_UNKNOWN = ("Each of the names below needs an A record, and an AAAA "
-                    "record where there is IPv6, pointing at the new server. "
-                    "It didn't say which addresses it has, so look them up "
-                    "there (ip addr). Until a name points at the new server, "
-                    "this server keeps answering for it.")
-BOTH_RUN_JOBS = ("Until the DNS points at the new server, BOTH servers run "
-                 "the same cron jobs. Switch the jobs off on the old server "
-                 "when you move the DNS.")
+AFTER_DNS = ("Once the DNS of a site points at the new server, run this on the new server for each site, to get its "
+             "certificate:")
+SITE_DNS_UNKNOWN = ("Each name below needs an A record, and an AAAA where there is IPv6, pointing at the new server. "
+                    "It didn't say its addresses: look them up there with ip addr. Until a name points at the new "
+                    "server, this server keeps answering for it.")
+BOTH_RUN_JOBS = ("Until the DNS points at the new server, BOTH servers run the same cron jobs. Switch the jobs off on "
+                 "the old server when you move the DNS.")
 
 
 def _wrap(text, indent="  "):
@@ -6220,24 +6223,21 @@ def report(result, connection=None, old_server=None, found_sites=None,
 # because nothing here knows which file that is. So the files and the database go over, and the new server says
 # the password out loud for a person to put in place. That is the whole of what is left by hand.
 
-OTHER_WARNING = ("This copies the files of %s to the new server, and the database you pick with them. The dump "
-                 "is written into the site's own directory here, goes over with the files, and is read in "
-                 "there; the new server moves it out of the web root afterwards, where anyone could have "
-                 "downloaded it. Nothing here is changed or deleted.")
-OTHER_BY_HAND = ("A site that is not WordPress keeps its database settings in a file only the person who built "
-                 "it knows, so nothing here can write the new password into it. The new server says it below; "
-                 "put it in the site's own settings, and then point the DNS with number 6.")
-OTHER_ITS_OWN = ("The new server made the database with the user and password you gave, so the settings that "
-                 "came over with the site's files fit it as they are. Nothing is left to type in but the DNS, "
+OTHER_WARNING = ("Copies the files of %s and the database you pick. The dump is written into the site's own directory "
+                 "here, goes over with the files and is read in there; the new server then moves it out of the web "
+                 "root, where anyone could have downloaded it. Nothing here is changed.")
+OTHER_BY_HAND = ("A site that is not WordPress keeps its database settings where only its builder knows, so nothing "
+                 "here can write the new password in. Put the one below in the site's own settings, then point the DNS "
                  "with number 6.")
-OTHER_LOGIN = ("The site's own settings hold a user name and a password for %s. Type them here and the new "
-               "server makes exactly those, so the site works there without a line of it being changed. Press "
-               "Enter at the password instead and the new server makes one up, which it says afterwards for "
-               "you to put in the site's settings yourself.")
+OTHER_ITS_OWN = ("The new server made the database with the user and password you gave, so the settings that came over "
+                 "with the files fit as they are. Only the DNS is left, with number 6.")
+OTHER_LOGIN = ("The site's own settings hold a user and a password for %s. Type them here and the new server makes "
+               "exactly those, so the site works there unchanged. Press Enter at the password instead and it makes one "
+               "up and says it afterwards.")
 DB_USER_PROMPT = "The user the site logs in as [%s]: "
 DB_PASSWORD_PROMPT = "The password of %s (Enter to have a new one made): "
-OTHER_THERE = ("The files of %s and the database it was given are on the new server. f brings over what has "
-               "changed here since; it asks for the database again, and reads it in over the one there.")
+OTHER_THERE = ("The files of %s and the database it was given are across. f brings over what changed here since; it "
+               "asks for the database again and reads it in over the one there.")
 
 
 def _database_login(database, say=print, typed=None, secret=None):
@@ -6253,7 +6253,11 @@ OTHER_NO_DOCROOT = ("%s has no web root on this server that I can find, so there
 DUMP_SUFFIX = ".sql"
 PICK_DATABASE = "Number of the database of %s, its name, or Enter for none: "
 NO_DATABASE_PICKED = "No database picked, so only the files of %s go over."
-DUMP_FAILED = "The database %s was not dumped (%s), so nothing was copied."
+# mysqldump writes its own message to the screen as it goes, so what went wrong is above this line; what is
+# not there is what to do about it. A table marked as crashed is much the commonest reason a dump stops, and
+# it stops the whole dump, not just that table.
+DUMP_FAILED = ("The database %s was not dumped (%s), so nothing was copied. mysqldump's own message is just above. If "
+               "it says a table is marked as crashed, mysqlcheck --auto-repair %s puts it right, and then f again.")
 
 
 def other_sites(row):
@@ -6345,7 +6349,7 @@ def copy_other_site(connection, item, databases, sites=None, mail_database=None,
         try:
             dumped = (dump or _dump_into)(docroot, database)
         except (CommandFailed, OSError) as problem:
-            fail(DUMP_FAILED % (database, getattr(problem, "message", problem)), say)
+            fail(DUMP_FAILED % (database, getattr(problem, "message", problem), database), say)
             return steps
         steps.append("Dumped the database %s into %s." % (database, os.path.join(docroot, dumped)))
     try:
@@ -6455,12 +6459,12 @@ PROC = "/proc"
 _PROXY_TO = re.compile(r"^(?:https?|wss?)://(?:127\.0\.0\.1|localhost|\[::1\]):(\d+)(?:/|$)", re.I)
 _LISTENING = re.compile(r":(\d+)\s.*\bpid=(\d+)")
 _MONGO_URI = re.compile(r"""["'](mongodb(?:\+srv)?://[^"']+)["']""")
-SIGNAGE_NO_NAME = ("The piSignage server in %s (port %d) isn't behind any site of Apache's, so it has no name to "
-                   "move to. Set it up on the new server by hand: domainctl signage add DOMAIN.")
+SIGNAGE_NO_NAME = ("The piSignage server in %s (port %d) is behind no site of Apache's, so it has no name to move to. "
+                   "Set it up on the new server by hand: domainctl signage add DOMAIN.")
 SIGNAGE_PROMPT = "Numbers of the ones to move (a for all of them; Enter for none): "
-SIGNAGE_DNS_QUESTION = ("Point the DNS of %s at the new server now? Its players then talk to the new server once "
-                        "the old record has expired. What changes here after this copy stays behind; running "
-                        "this again before you say yes copies it across again.")
+SIGNAGE_DNS_QUESTION = ("Point the DNS of %s at the new server now? Its players follow once the old record has "
+                        "expired. What changes here after this copy stays behind; running this again before you say "
+                        "yes brings it across.")
 
 
 def _proxied_ports(sites_dir=SITES_ENABLED, notes=None):
@@ -6609,11 +6613,10 @@ def move_signage(connection, server, ask, run=run_command, runner=run_visible, p
     return steps
 
 
-SIGNAGE_NOT_RUNNING = ("%s is set up as a piSignage server, but no piSignage server is running here under "
-                       "that name now, so there is nothing to copy. Start it and look again.")
-SIGNAGE_QUESTION = ("Move the piSignage server of %s to the new server now? Its media, its data folder and its "
-                    "database %s are copied into a server domainctl makes for it there."
-                    " Nothing here is changed or deleted.")
+SIGNAGE_NOT_RUNNING = ("%s is set up as a piSignage server, but no piSignage server is running here under that name "
+                       "now, so there is nothing to copy. Start it and look again.")
+SIGNAGE_QUESTION = ("Move the piSignage server of %s now? Its media, its data folder and its database %s are copied "
+                    "into a server domainctl makes for it there. Nothing here is changed.")
 
 
 def _signage_for(connection, row, doing=None, ask=None, run=run_command, say=print):
@@ -7396,8 +7399,8 @@ def _numbers_in(answer):
 
 
 PICK_PROMPT = 'Numbers to do their next step (a for all of them; Enter for none): '
-LIVE_PROMPT = ("Type a customer's number to open it, a to do the next step of every "
-               "customer, t for what is still to do, s to move the spam learning, q to leave: ")
+LIVE_PROMPT = ("Type a customer's number to open it, a to do the next step of every customer, t for what is still to "
+               "do, s to move the spam learning, q to leave:")
 LIVE_HELP = ('A number opens that customer and asks what to do for it: its mail, its '
              'website, its cron jobs, everything that is left, or giving an account its own '
              'password on the new server. '
@@ -7550,6 +7553,7 @@ def _live(args, connection, state, notes, doing=None, hello=None):
             return result
         if word == "r":
             forget_all_sizes()  # the one way to make it measure the mailboxes again
+            forget_notes()  # and to read the notes again that this run has already said once
             looked = None
             continue
         if word == "s":

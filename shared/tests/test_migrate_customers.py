@@ -248,7 +248,7 @@ def test_a_customer_with_nothing_left_to_move_does_not_claim_the_move_is_over(tm
     said = " ".join(" ".join(migrate.inside(row, status, notes).split()).split())
 
     assert "Nothing left of this customer to move." in said
-    assert "in the list that t prints" in said
+    assert "what it may still need" in said
     assert migrate.next_step(row) == ([], "nothing to move")
 
 
@@ -375,7 +375,7 @@ def test_the_customers_accounts_are_asked_for_one_by_one(monkeypatch):
     done = migrate.set_passwords(connection, row, said.append, database="mailserver",
                                  old_server="old.nl", new_server="new.nl")
     assert done == ["a0@example.nl", "a1@example.nl"]
-    text = " ".join(said)
+    text = " ".join(" ".join(said).split())  # a note is wrapped to the screen; the words are what matters
     assert "no new password is made up" in text and "HetEchteW8woord" not in text
     assert "imapsync \\" in text and "THE-PASSWORD-OF-THIS-ACCOUNT" in text
 
@@ -494,7 +494,7 @@ def test_p_at_the_prompt_sets_the_passwords_and_the_report_says_them(monkeypatch
     monkeypatch.setattr(migrate, "_stored_hash", lambda address, database, run=None: _REAL)
     monkeypatch.setattr(migrate, "_typed_password", lambda prompt: "HetEchteW8woord")
     migrate._live(migrate._arguments([]), connection, state, [])
-    text = capsys.readouterr().out
+    text = " ".join(capsys.readouterr().out.split())
     assert [r["request"] for r in connection.requests].count("password") == 2
     assert "no new password is made up" in text
     assert "Accounts that now open with the same password on both servers:" in text  # in the report too
@@ -541,7 +541,7 @@ def test_the_dns_move_asks_first_and_says_what_it_does():
     assert done == ["example.nl"]
     assert connection.requests[-1] == {"request": "point_dns", "domain": "example.nl"}
     text = " ".join(" ".join(said).split())  # it is wrapped to the width
-    assert "Visitors go to the new server" in text and "domainctl dns credentials" in text
+    assert "Visitors follow once the old record has expired" in text and "domainctl dns credentials" in text
 
 
 class Refusing(Connection):
@@ -585,7 +585,7 @@ def test_a_site_this_tool_does_not_move_says_so_before_its_dns_is_touched():
 
     text = " ".join(" ".join(said).split())
     assert "old.example.nl is not on the new server" in text
-    assert "hasn't got the site" in text
+    assert "without the site" in text
     # The site that is moved is asked about in the same words as ever, with no warning of its own.
     assert "example.nl is not on the new server" not in text.replace("old.example.nl is not on the new "
                                                                      "server", "")
@@ -717,7 +717,7 @@ def test_the_offer_after_a_mail_move_only_names_a_domain_that_has_to_wait(dns_sa
                                    say=said.append, run=Postfix())
     assert done == [] and asked == []
     text = " ".join(" ".join(said).split())
-    assert "lands in the old mailbox here" in text and "once its DNS has been moved" in text
+    assert "lands in the old mailbox" in text and "once its DNS has moved" in text
 
 
 def test_the_offer_after_a_mail_move_asks_nothing_it_cannot_look_up(dns_says):
@@ -1941,7 +1941,7 @@ def test_imapsyncs_own_word_settles_whether_a_mailbox_is_across():
 
     assert migrate._messages_cells(*found)[3] == migrate.DONE
     note = migrate._messages_notes(*found)[0]
-    assert "nothing is missing" in note and "doesn't serve as messages" in note
+    assert "Nothing is missing" in note and "doesn't serve as messages" in note
 
 
 def test_a_sync_that_still_found_messages_here_says_how_many():
@@ -2189,7 +2189,7 @@ def test_a_customer_with_nothing_in_webmail_is_told_so_and_nothing_is_asked():
     said, server = [], Webmail()
     assert migrate.copy_webmail(server, _done_customer(), say=said.append) == []
     assert server.requests == []
-    assert "nothing of them to copy" in " ".join(" ".join(said).split())
+    assert "no address books or calendars in webmail" in " ".join(" ".join(said).split())
 
 
 def test_the_copy_is_not_made_when_it_is_not_wanted(monkeypatch):

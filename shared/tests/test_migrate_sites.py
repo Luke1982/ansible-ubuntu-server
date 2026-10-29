@@ -667,7 +667,7 @@ def test_a_site_that_is_not_wordpress_is_listed_and_left_alone():
     items = migrate.site_items(found, owner_of=lambda path: None)
     status = {i["id"]: {"state": "new", "detail": ""} for i in items}
 
-    assert "not a WordPress site" in items[0]["problem"] and "/var/www/static" in items[0]["problem"]
+    assert "not WordPress" in items[0]["problem"] and "/var/www/static" in items[0]["problem"]
     assert migrate.offered(items, status) == [items[1]]
     assert items[0]["problem"] in " ".join(migrate.items_board(items, status).split())
 

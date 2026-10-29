@@ -32,3 +32,5 @@ def no_mailboxes_of_this_machine(monkeypatch, tmp_path):
     monkeypatch.setattr(migrate, "SIZES_FILE", str(tmp_path / "sizes.json"))
     migrate._SIZES_SEEN.clear()
     migrate._DNS_SEEN.clear()
+    # A note is printed once in a run; inside one run of the tests that would be once in the whole suite.
+    migrate._SAID.clear()

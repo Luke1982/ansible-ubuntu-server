@@ -1595,7 +1595,7 @@ def test_the_sizes_carry_what_imapsync_said_about_the_mailbox(imapsync, tmp_path
 
 
 def test_a_copy_that_is_still_running_says_nothing_about_whether_it_is_across(imapsync, tmp_path, monkeypatch):
-    """Half a run is not an answer: it would read as "nothing is missing" before anything was copied."""
+    """Half a run is not an answer: it would read as "Nothing is missing" before anything was copied."""
     _logged(tmp_path, OLD_RUN + "\n==== 2026-10-29 09:00:00: copying old@a.nl from 178.21.114.195 ====\n"
                                 "Host1: connecting\n")
     monkeypatch.setattr(migratectl, "VMAIL", str(tmp_path / "vmail"))

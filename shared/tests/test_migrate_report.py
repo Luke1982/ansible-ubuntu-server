@@ -123,7 +123,7 @@ def test_without_an_address_the_report_says_to_look_it_up_on_the_new_server():
     result = _result()
     result.moved = [(SITE, {"ok": True})]
     joined = " ".join(migrate.report(result, Connection(), addresses=[]).split())
-    assert "didn't say which addresses it has" in joined and "ip addr" in joined
+    assert "didn't say its addresses" in joined and "ip addr" in joined
 
 
 def test_a_run_without_a_site_says_nothing_about_a_records():

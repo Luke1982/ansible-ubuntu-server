@@ -68,7 +68,7 @@ def test_a_piSignage_server_is_found_by_the_name_apache_serves_it_under(machine)
     assert found == [{"name": "andre.milocast.nl", "port": 3001, "code": str(machine["andre"]),
                       "media": str(machine["andre"].parent / "media"), "data": str(machine["andre"] / "data"),
                       "uri": "mongodb://127.0.0.1:27017/pisignage-dev", "database": "pisignage-dev"}]
-    assert len(notes) == 1 and "port 3002" in notes[0] and "isn't behind any site" in notes[0]
+    assert len(notes) == 1 and "port 3002" in notes[0] and "is behind no site" in notes[0]
 
 
 def test_the_database_in_its_environment_comes_before_its_settings(machine, tmp_path):
@@ -300,7 +300,7 @@ def test_once_it_is_across_the_screen_stops_telling_you_to_move_it(one_site):
     item = _item(one_site)
     screen = migrate.customer_screen(migrate.customers([item], _there(item))[0], _there(item),
                                      new_server="web03.majorlabel.nl")
-    assert "is on the new server already" in " ".join(screen.split())
+    assert "is across already" in " ".join(screen.split())
     assert "has no website files to copy" not in " ".join(screen.split())
 
 
@@ -309,12 +309,12 @@ def test_the_dns_is_not_moved_before_the_server_is(one_site):
     item = _item(one_site)
     said = []
     migrate._point_dns(None, migrate.customers([item], {})[0], ask=lambda question: "no", say=said.append)
-    assert "type g here first" in " ".join(" ".join(said).split())
+    assert "Type g here first" in " ".join(" ".join(said).split())
 
     said = []
     migrate._point_dns(None, migrate.customers([item], _there(item))[0], ask=lambda question: "no",
                        say=said.append)
-    assert "type g here first" not in " ".join(said)
+    assert "Type g here first" not in " ".join(said)
     assert "not on the new server" not in " ".join(said)
 
 

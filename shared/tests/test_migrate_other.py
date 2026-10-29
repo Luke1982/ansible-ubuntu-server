@@ -89,7 +89,7 @@ def test_the_databases_of_this_server_are_offered_and_the_one_picked_is_dumped_i
 def test_the_new_server_says_the_password_and_what_is_left_to_do(here):
     _steps, said, _copied = _copy(Server(), here)
     assert "password s3cret-but-new" in said and "database boersma" in said and "host localhost" in said
-    assert "put it in the site's own settings" in said
+    assert "in the site's own settings" in said
 
 
 def test_a_site_without_a_database_copies_only_its_files(here):
@@ -171,7 +171,7 @@ def test_enter_at_the_password_leaves_the_new_server_to_make_one(here):
     _steps, said, _copied = _copy(server, here)
     asked = server.asked_for("adopt_database")[0]
     assert "password" not in asked and asked["db_user"] == "boersma"
-    assert "put it in the site's own settings" in said
+    assert "in the site's own settings" in said
 
 
 def test_a_site_that_is_across_stops_being_called_not_wordpress():
@@ -181,8 +181,8 @@ def test_a_site_that_is_across_stops_being_called_not_wordpress():
     state.moved(item)
     row = migrate.customers([item], {item["id"]: {"state": "exists", "detail": ""}}, state)[0]
     screen = " ".join(migrate.customer_screen(row, {}, state, new_server="web03.majorlabel.nl").split())
-    assert "No wp-config.php" not in screen and "not a WordPress site" not in screen
-    assert "on the new server" in screen and "f brings over what has changed here since" in screen
+    assert "No wp-config.php" not in screen and "not WordPress" not in screen
+    assert "on the new server" in screen and "f brings over what changed here since" in screen
 
 
 def test_the_dns_of_a_site_that_is_across_is_moved_without_a_warning():
@@ -195,10 +195,10 @@ def test_the_dns_of_a_site_that_is_across_is_moved_without_a_warning():
     migrate._point_dns(Server(), migrate.customers([item], there, state)[0],
                        ask=lambda question: "no", say=said.append)
     whole = " ".join(" ".join(said).split())
-    assert "is not on the new server" not in whole and "type f here first" not in whole
+    assert "is not on the new server" not in whole and "Type f here first" not in whole
 
 
 def test_the_dns_of_a_site_that_is_not_across_says_to_copy_it_first():
     said = []
     migrate._point_dns(Server(), _row(_item()), ask=lambda question: "no", say=said.append)
-    assert "type f here first" in " ".join(" ".join(said).split())
+    assert "Type f here first" in " ".join(" ".join(said).split())
