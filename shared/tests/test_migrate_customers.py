@@ -1410,8 +1410,8 @@ def test_a_mailbox_that_is_a_message_short_is_not_called_done():
     assert migrate._messages_cells(*found)[3] == migrate.PART
     assert migrate._mailbox_rows(row, *found)[0][3] == migrate.PART
     note = migrate._messages_notes(*found)[0]
-    assert "2 messages here against 1 on the new server" in note
-    assert "1 message is not across yet" in note
+    assert "1 message of a0@example.nl is not across yet" in note
+    assert "1 message of a0@example.nl is not across yet" in note
 
 
 def test_a_mailbox_whose_messages_are_all_there_is_done_though_the_sizes_differ_a_hair():
@@ -1953,7 +1953,7 @@ def test_a_sync_that_still_found_messages_here_says_how_many():
 
     assert migrate._messages_cells(*found)[3] == migrate.PART
     # Three, which is what imapsync saw, and not the six the files would suggest.
-    assert "3 messages are not across yet" in migrate._messages_notes(*found)[0]
+    assert "3 messages of a0@example.nl are not across yet" in migrate._messages_notes(*found)[0]
 
 
 def test_mail_that_came_in_after_the_copy_is_still_to_copy():

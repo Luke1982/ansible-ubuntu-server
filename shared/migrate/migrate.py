@@ -3774,10 +3774,14 @@ def _messages_notes(here, there):
     if here and there is not None:
         left = _messages_left(here, there)
         if left:
-            return ["%s here against %s on the new server: %s not across yet. Number 9 brings over what is "
-                    "missing without copying anything twice."
-                    % (_plural(_counted(here), "message", "messages"), _counted(there),
-                       _plural(left, "message is", "messages are"))]
+            # The mailboxes that are short, by name. The two servers' totals are not put beside each other:
+            # they are files counted in two maildirs, and the new server's may hold more of them than this
+            # one's while a mailbox is still short -- which reads as if messages had appeared out of nowhere.
+            short = [address for address, mine, theirs in _behind(here, there) if _left_of(mine, theirs)]
+            return ["%s of %s %s not across yet. Number 9 brings over what is missing without copying "
+                    "anything twice." % (_plural(left, "message", "messages"),
+                                         _and_list(short) if short else "this customer",
+                                         "is" if left == 1 else "are")]
         whole = _copied_whole(here, there)
         if whole:
             return [SIZES_DIFFER % _plural(len(whole), "mailbox", "mailboxes")]
@@ -3788,6 +3792,16 @@ SIZES_DIFFER = ("The maildirs here hold more files than the new server's do, and
                 "opened both and found every message of %s on the new server. A maildir keeps files dovecot "
                 "doesn't serve as messages, an old folder it no longer lists among them, so the two sides "
                 "never add up to the same number. c counts them again, folder by folder.")
+
+
+def _and_list(names):
+    """"a", "a and b", "a, b and c": the mailboxes a sentence names, however many there are."""
+    names = list(names)
+    if len(names) > 3:
+        return "%s and %s" % (", ".join(names[:3]), _plural(len(names) - 3, "other", "others"))
+    if len(names) > 1:
+        return "%s and %s" % (", ".join(names[:-1]), names[-1])
+    return names[0] if names else ""
 
 
 def _counted(found):
