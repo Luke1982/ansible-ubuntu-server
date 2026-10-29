@@ -888,7 +888,7 @@ def test_every_line_of_the_menu_fits_and_lines_up():
     """A line longer than the screen is cut, and loses its indent and the gap before its note."""
     for row in (_done_customer(), migrate.customers(_one_customer(), _status())[0]):
         menu = [line for line in migrate.customer_screen(row, _status(), new_server="web03.majorlabel.nl")
-                .splitlines() if re.match(r"  [0-9bcq]  ", line)]
+                .splitlines() if re.match(r"  [0-9a-z]  ", line)]
         assert len(menu) == len(migrate.customer_menu(row))
         assert all(len(line) <= 79 for line in menu)
 
@@ -2077,6 +2077,153 @@ def test_only_the_customers_whose_mail_is_across_are_measured_at_the_start():
     done = _done_customer()
     migrate._measure_mailboxes([done], Watching())
     assert measured != [] and migrate.sizes_remembered(done.name) is True
+
+
+# ---- The contacts and calendars webmail keeps -------------------------------
+
+SOGO_ROWS = "info@example.nl\t2\nbeheer@example.nl\t1\nsomebody@elsewhere.nl\t4\n"
+
+
+def _webmail(rows=SOGO_ROWS):
+    """This server's webmail, with those folders in it."""
+    def run(*args, **named):
+        if "sogo_folder_info" in " ".join(args):
+            return rows
+        raise AssertionError("asked for %r" % (args,))
+    return run
+
+
+def test_what_webmail_keeps_is_read_off_its_own_table():
+    found = migrate.webmail_folders(_webmail())
+    assert found == {"info@example.nl": 2, "beheer@example.nl": 1, "somebody@elsewhere.nl": 4}
+
+
+def test_a_server_without_webmail_has_nothing_of_it_to_move():
+    """Most old servers never ran SOGo, and that is no trouble at all: there is simply nothing to copy."""
+    def no_sogo(*args, **named):
+        raise migrate.CommandFailed("mysql failed: Unknown database 'sogo'")
+
+    notes = []
+    assert migrate.webmail_folders(no_sogo, notes) == {}
+    assert len(notes) == 1 and "webmail" in notes[0]
+
+
+def test_only_this_customer_s_accounts_are_offered():
+    migrate.remember_webmail(migrate.webmail_folders(_webmail()))
+    row = _done_customer()
+    assert migrate.webmail_of(row) == {"a0@example.nl": 2} or migrate.webmail_of(row) == {}
+    migrate.remember_webmail({"a0@example.nl": 3, "nobody@elsewhere.nl": 9})
+    assert migrate.webmail_of(row) == {"a0@example.nl": 3}
+    migrate.remember_webmail({})
+
+
+def test_the_menu_offers_to_copy_the_contacts_and_calendars():
+    row = _done_customer()
+    migrate.remember_webmail({"a0@example.nl": 2})
+    assert dict((key, note) for key, _, note in migrate.customer_menu(row))["k"] == ""
+    migrate.remember_webmail({})
+    assert dict((key, note) for key, _, note in migrate.customer_menu(row))["k"] == "none in webmail"
+
+
+class Webmail(object):
+    """The new server, taking the backups and reading them back in."""
+
+    def __init__(self, restored=None, place="/var/lib/migrate/webmail"):
+        self.requests, self.place, self.restored = [], place, restored
+
+    def ask(self, request, timeout=None):
+        self.requests.append(dict(request))
+        if request["request"] == "webmail_place":
+            return {"ok": True, "place": self.place}
+        if request["request"] == "restore_webmail":
+            given = request["addresses"] if self.restored is None else self.restored
+            return {"ok": True, "restored": given, "trouble": []}
+        return {"ok": True}
+
+    def options(self):
+        return ["-o", "BatchMode=yes"]
+
+    user = "root"
+    host = "web03.majorlabel.nl"
+
+
+def test_copying_the_contacts_writes_them_out_here_and_reads_them_in_there(monkeypatch, tmp_path):
+    migrate.remember_webmail({"a0@example.nl": 2, "a1@example.nl": 1})
+    monkeypatch.setattr(migrate.os, "access", lambda path, mode: True)
+    rsync = []
+    server = Webmail()
+
+    def backup(addresses, run=None):
+        return str(tmp_path / "out"), {}
+
+    done = migrate.copy_webmail(server, _done_customer(), ask=lambda question: "yes", say=lambda *a: None,
+                                runner=lambda *args: rsync.append(args) or 0, backup=backup)
+
+    assert done == ["a0@example.nl", "a1@example.nl"]
+    assert [request["request"] for request in server.requests] == ["webmail_place", "restore_webmail"]
+    assert server.requests[1]["addresses"] == ["a0@example.nl", "a1@example.nl"]
+    assert rsync and "/var/lib/migrate/webmail/" in " ".join(rsync[0])
+    migrate.remember_webmail({})
+
+
+def test_an_account_that_could_not_be_written_out_stops_nothing(monkeypatch, tmp_path):
+    """The others still go over, and the screen says which one didn't."""
+    migrate.remember_webmail({"a0@example.nl": 2, "a1@example.nl": 1})
+    monkeypatch.setattr(migrate.os, "access", lambda path, mode: True)
+    said, server = [], Webmail()
+
+    def backup(addresses, run=None):
+        return str(tmp_path / "out"), {"a1@example.nl": "sogo-tool failed: no such user"}
+
+    done = migrate.copy_webmail(server, _done_customer(), ask=lambda question: "yes", say=said.append,
+                                runner=lambda *args: 0, backup=backup)
+
+    assert done == ["a0@example.nl"]
+    assert server.requests[1]["addresses"] == ["a0@example.nl"]
+    assert "no such user" in " ".join(" ".join(said).split())
+    migrate.remember_webmail({})
+
+
+def test_a_customer_with_nothing_in_webmail_is_told_so_and_nothing_is_asked():
+    migrate.remember_webmail({})
+    said, server = [], Webmail()
+    assert migrate.copy_webmail(server, _done_customer(), say=said.append) == []
+    assert server.requests == []
+    assert "nothing of them to copy" in " ".join(" ".join(said).split())
+
+
+def test_the_copy_is_not_made_when_it_is_not_wanted(monkeypatch):
+    migrate.remember_webmail({"a0@example.nl": 2})
+    monkeypatch.setattr(migrate.os, "access", lambda path, mode: True)
+    said, server = [], Webmail()
+    assert migrate.copy_webmail(server, _done_customer(), ask=lambda question: "no", say=said.append) == []
+    assert server.requests == []
+    migrate.remember_webmail({})
+
+
+def test_a_mailbox_is_not_half_there_for_weighing_less_on_the_new_server():
+    """The new server keeps its mail compressed where this one keeps it plain: one account here serves 10.6 GB
+    of messages out of 5.4 GB of files. Weighing the two sides against each other made a mailbox that was
+    wholly copied read "part" for ever, and the board above it said the mail was done -- the screen arguing
+    with itself, with the DNS step offered either way."""
+    mine = {"bytes": 5_800_000_000, "messages": 16151}
+    theirs = {"bytes": 5_300_000_000, "messages": 16151}
+    assert migrate._across(mine, theirs) is True
+
+    # A message that is really missing is still missing, however much the mailbox weighs.
+    assert migrate._across(mine, {"bytes": 9_000_000_000, "messages": 16150}) is False
+
+
+def test_the_board_and_the_rows_say_the_same_thing_about_the_messages():
+    """The row of the table and the word on the board come from one judgement, not two."""
+    _mailboxes({"a0@example.nl": [1000] * 10})
+    row = _done_customer()
+    lighter = {"a0@example.nl": {"here": True, "bytes": 4000, "messages": 10}}
+    migrate.mail_sizes(row, Mailboxes(answer={"ok": True, "mailboxes": lighter}))
+
+    assert migrate.messages_behind(row.name) == 0
+    assert migrate._board_word(row, "mail") == migrate.DONE
+    assert migrate._across({"bytes": 10000, "messages": 10}, lighter["a0@example.nl"]) is True
 
 
 def test_a_customer_nobody_measured_says_nothing_about_its_messages():

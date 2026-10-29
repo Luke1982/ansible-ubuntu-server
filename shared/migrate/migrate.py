@@ -56,7 +56,7 @@ LSWS_ROOT = "/usr/local/lsws"
 APACHE, NGINX, LITESPEED = "Apache", "nginx", "OpenLiteSpeed"
 # Of the talk with migratectl on the new server; both halves must come from the same release. It goes up whenever
 # the requests or the answers change, so a mismatch is found at the handshake and not in the middle of a site.
-PROTOCOL_VERSION = 16
+PROTOCOL_VERSION = 17
 KEY_NAME = "migrate_key"
 KNOWN_HOSTS_NAME = "migrate_known_hosts"
 AUTHORIZED_KEYS = "/home/ansible/.ssh/authorized_keys"
@@ -1316,7 +1316,8 @@ _UNREACHABLE = ("could not resolve", "no route to host", "connection refused", "
 ASK_TIMEOUTS = {"apply": 1800, "finish_site": 1800, "status": 600, "bayes_swap": 600,
                 "point_dns": 1200, "repair": 1200,  # up to 15 minutes there for the DNS and the certificate
                 "mail_sizes": 600, "compare_mail": 1800,  # counting a big mailbox over IMAP takes minutes
-                "adopt_database": 1800}  # reading a big dump in takes as long as making a whole mail domain
+                "adopt_database": 1800,  # reading a big dump in takes as long as making a whole mail domain
+                "webmail_place": 60, "restore_webmail": 3600}  # a few thousand contacts, account by account
 COMPARE_TIMEOUT = ASK_TIMEOUTS["compare_mail"]
 ADOPT_TIMEOUT = ASK_TIMEOUTS["adopt_database"]
 MIGRATECTL = "/usr/local/bin/migratectl"  # where the basic role installs it on the new server
@@ -3470,9 +3471,6 @@ def forget_dns(name):
 # ---- How much mail the mailboxes hold, here and on the new server ------------
 
 MAIL_FOLDERS = ("cur", "new")  # where a maildir keeps its messages; tmp holds half-delivered ones
-MAIL_CLOSE = 0.98  # how much of a mailbox's bytes may be missing and still count as copied. imapsync hands a
-# message over the wire with a line ending of two characters where a maildir keeps one, so the same message
-# weighs a little more or less on the other side; the count of the messages is what has to agree exactly
 MESSAGE_ROWS = 12  # mailboxes with a row of their own; the rest are one row together, so the menu stays in view
 SIZES_SEEN_FOR = 6 * 3600  # seconds a measurement is remembered. Walking a mailbox of tens of gigabytes
 # means a stat of every message in it, and over every customer that is minutes of waiting with nothing on the
@@ -3624,19 +3622,19 @@ def _across(mine, theirs):
     """Whether what a mailbox holds here is on the new server as well.
 
     imapsync's own word comes first where there is one: it is the program that does the copying, it opened both
-    mailboxes, and it says how many messages it found here that the new server hasn't got. The files in the
-    maildir are only a hint beside that. They are counted on both servers and not weighed, since a mailbox that
-    is a few megabytes short may be short of a message; the bytes are looked at too, so a mailbox whose
-    messages all arrived truncated doesn't read as done. A mailbox that is empty here is across as soon as the
-    account is there: there is nothing to copy into it.
+    mailboxes, and it says how many messages it found here that the new server hasn't got. The messages in the
+    maildirs are counted beside that, and never weighed. What a mailbox weighs on one server says nothing
+    about the other: a server may keep its mail compressed where this one keeps it plain, and then the same
+    mailbox weighs half as much there for ever -- on one account here the new server serves 10.6 GB of
+    messages out of 5.4 GB of files. A mailbox judged on its bytes would read "half there" however often it
+    was copied. A mailbox that is empty here is across as soon as the account is there: there is nothing to
+    copy into it.
     """
     if not theirs:
         return False
     if _synced(mine, theirs):
         return True
-    if (theirs.get("messages") or 0) < (mine.get("messages") or 0):
-        return False
-    return (theirs.get("bytes") or 0) >= (mine.get("bytes") or 0) * MAIL_CLOSE
+    return (theirs.get("messages") or 0) >= (mine.get("messages") or 0)
 
 
 def _synced(mine, theirs, now=None):
@@ -3854,6 +3852,7 @@ def customer_menu(row):
                 ("no mail" if not row.items["mail"] else "move the mail first")))
     out.append(("c", "count the messages on both servers", "" if row.word("mail") == DONE else
                 ("no mail" if not row.items["mail"] else "move the mail first")))
+    out.append(("k", COPY_WEBMAIL, "" if webmail_of(row) else "none in webmail"))
     if other_sites(row):
         out.append(("f", "copy this site's files and a database you pick", ""))
     if signage_of(row):
@@ -3891,6 +3890,8 @@ def customer_action(row, word):
         return row.items["mail"], "copy_mail", False
     if word == "c":
         return row.items["mail"], "compare_mail", False
+    if word == "k":
+        return row.items["mail"], "webmail", False
     if word == "f" and other_sites(row):
         return other_sites(row), "other", False
     if word == "g" and signage_of(row):
@@ -4132,6 +4133,147 @@ def _imapsync_line(old, new, address, password=None):
         "  --host%s %s --user%s %s \\" % (n, shlex.quote(host), n, shlex.quote(address))
         + "\n  --password%s %s --ssl%s \\" % (n, secret, n)
         for n, host in ((1, old), (2, new))] + ["  " + MAP_FOLDERS]).splitlines()
+
+
+# ---- The contacts and calendars that webmail keeps ---------------------------
+
+# Webmail keeps an account's address books and calendars in a database of its own, one table for each of them,
+# and its settings -- the signature and the filters -- in a row beside them. None of that is in the mailbox,
+# so copying the mail leaves every one of them behind, and the customer opens webmail on the new server to an
+# empty address book. sogo-tool writes them out here and reads them back in there, which is SOGo's own way of
+# doing it: it survives the two servers running different versions of SOGo, where copying its tables across
+# by hand would quietly break the first time the newer one keeps them differently.
+SOGO_TOOL = "/usr/sbin/sogo-tool"
+SOGO_FOLDERS = "sogo.sogo_folder_info"  # one row for each address book and calendar, with whose it is
+WEBMAIL_DUMPS = "/var/tmp/migrate-webmail"  # where a backup waits here until it is copied over
+WEBMAIL_TIMEOUT = ASK_TIMEOUTS["restore_webmail"]
+WEBMAIL_WHAT = "contacts and calendars"
+COPY_WEBMAIL = "copy the contacts and calendars"
+WEBMAIL_WARNING = ("Webmail keeps an account's address books and calendars outside its mailbox, so the mail "
+                   "being across doesn't bring them. sogo-tool writes them out here, the files go over, and "
+                   "sogo-tool there reads them back in: the account's settings first, which hold its "
+                   "signature and its filters, and then every folder it has. Nothing here is changed, and a "
+                   "folder that is already there is added to and never emptied, so doing this twice costs "
+                   "time and nothing else.")
+WEBMAIL_NONE = ("%s has no address books or calendars in webmail on this server, so there is nothing of them "
+                "to copy. Only what somebody made in webmail itself is kept there; what a mail program keeps "
+                "on the person's own computer was never on this server at all.")
+WEBMAIL_NO_TOOL = ("There is no sogo-tool at %s on this server, so its webmail's contacts and calendars "
+                   "can't be written out. A server without webmail has none to copy.")
+_WEBMAIL_FOLDERS = {}
+
+
+def webmail_folders(run=run_command, notes=None):
+    """{address: how many address books and calendars} webmail holds on this server. Empty for a server that
+    never ran webmail, which is no trouble at all: there is then nothing of it to move."""
+    try:
+        rows = query(run, "SELECT c_path2, COUNT(*) FROM %s GROUP BY c_path2" % SOGO_FOLDERS)
+    except CommandFailed as problem:
+        if notes is not None and not problem.missing:
+            notes.append("What webmail keeps beside the mail could not be read: %s." % problem.message)
+        return {}
+    found = {}
+    for row in rows:
+        if len(row) < 2 or "@" not in row[0]:
+            continue
+        try:
+            found[row[0].strip().lower()] = int(row[1])
+        except ValueError:
+            continue
+    return found
+
+
+def remember_webmail(folders):
+    """What was found, for the screens to read without asking the database again."""
+    _WEBMAIL_FOLDERS.clear()
+    _WEBMAIL_FOLDERS.update(folders or {})
+
+
+def webmail_of(row):
+    """{address: how many folders} of this customer's accounts that have something in webmail here."""
+    return dict((address, _WEBMAIL_FOLDERS[address]) for address in row.accounts()
+                if _WEBMAIL_FOLDERS.get(address))
+
+
+def back_up_webmail(addresses, run=run_command, root=None):
+    """Writes each account's address books and calendars into a file of its own, named after the account.
+    Returns (the directory they are in, {address: what went wrong}) -- an account sogo-tool couldn't write
+    out stops nothing: the others still go over, and the screen says which didn't."""
+    where = root or WEBMAIL_DUMPS
+    os.makedirs(where, mode=0o700, exist_ok=True)
+    os.chmod(where, 0o700)
+    trouble = {}
+    for address in addresses:
+        try:
+            run(SOGO_TOOL, "backup", where, address, timeout=WEBMAIL_TIMEOUT)
+        except CommandFailed as problem:
+            trouble[address] = problem.message
+            continue
+        if not os.path.isfile(os.path.join(where, address)):
+            trouble[address] = "sogo-tool wrote nothing out for it"
+    return where, trouble
+
+
+def copy_webmail(connection, row, ask=None, say=print, run=run_command, runner=None, backup=None):
+    """The 'k' on a customer's screen: brings this customer's address books and calendars across. Returns the
+    addresses that are now on the new server."""
+    ask, runner = ask or _question, runner or run_visible  # rsync is further down this file than this is
+    accounts = webmail_of(row)
+    heading("Copying the %s of %s to the new server" % (WEBMAIL_WHAT, row.name), say)
+    say("")
+    if not accounts:
+        note(WEBMAIL_NONE % row.name, say)
+        return []
+    if not os.access(SOGO_TOOL, os.X_OK):
+        fail(WEBMAIL_NO_TOOL % SOGO_TOOL, say)
+        return []
+    note(WEBMAIL_WARNING, say)
+    say("")
+    for address in sorted(accounts):
+        _say("%s: %s" % (address, _plural(accounts[address], "address book or calendar",
+                                          "address books and calendars")), say)
+    say("")
+    if not _is_yes(ask("Copy the %s of %s to the new server now?" % (WEBMAIL_WHAT, row.name))):
+        note("The %s of %s were left alone." % (WEBMAIL_WHAT, row.name), say)
+        return []
+    try:
+        answer = connection.ask({"request": "webmail_place"}, timeout=ASK_TIMEOUTS["webmail_place"])
+    except Stopped as problem:
+        warn(problem.message, say)
+        return []
+    if not answer.get("ok"):
+        fail(answer.get("error") or "The new server wouldn't say where the backups go.", say)
+        return []
+    there = answer.get("place")
+    try:
+        where, trouble = (backup or back_up_webmail)(sorted(accounts), run=run)
+    except OSError as problem:
+        fail("I couldn't write the %s out: %s" % (WEBMAIL_WHAT, problem), say)
+        return []
+    for address in sorted(trouble):
+        warn("The %s of %s were not written out: %s" % (WEBMAIL_WHAT, address, trouble[address]), say)
+    going = [address for address in sorted(accounts) if address not in trouble]
+    if not going:
+        fail("Nothing was written out, so nothing was copied.", say)
+        return []
+    try:
+        copy_files(connection, where, there, "the %s of %s" % (WEBMAIL_WHAT, row.name), runner)
+    except MoveFailed as problem:
+        fail(problem.message, say)
+        return []
+    try:
+        read = connection.ask({"request": "restore_webmail", "addresses": going}, timeout=WEBMAIL_TIMEOUT)
+    except Stopped as problem:
+        warn(problem.message, say)
+        return []
+    for line in read.get("trouble") or []:
+        warn(line, say)
+    done = read.get("restored") or []
+    for address in done:
+        success("The %s of %s are on the new server." % (WEBMAIL_WHAT, address), say)
+    if not done:
+        fail(read.get("error") or "The new server read nothing in.", say)
+    return done
 
 
 # ---- Copying the messages of a customer's mailboxes over ---------------------
@@ -6787,14 +6929,19 @@ def _look_around(args, notes, run=run_command):
         mail = mail_inventory(run, database, domain) if database else None
         if mail is not None:
             notes.extend(mail.notes)
+        remember_webmail(webmail_folders(run, notes))
         return database, mail
 
     def mail_summary(found):
         mail = found[1]
         if mail is None:
             return "none found"
-        return "%s, %s" % (_plural(len(mail.file["domains"]), "domain", "domains"),
+        text = "%s, %s" % (_plural(len(mail.file["domains"]), "domain", "domains"),
                            _plural(len(mail.file["addresses"]), "account", "accounts"))
+        if _WEBMAIL_FOLDERS:
+            text += " (and %s in webmail)" % _plural(sum(_WEBMAIL_FOLDERS.values()),
+                                                     "address book or calendar", "address books and calendars")
+        return text
 
     def look_at_sites():
         found = sites(run, notes)
@@ -7033,6 +7180,11 @@ def _open_customer(name, args, connection, state, notes, doing, hello, colour, a
         if what == "compare_mail":
             # It counts and says; nothing on either server changes, so nothing has to be asked again.
             _compare_mail(connection, row, hello, doing, database=looked[1])
+            continue
+        if what == "webmail":
+            doing[0] = "copying the contacts and calendars"
+            # Webmail's own tables on the new server change, and nothing this screen shows comes from them.
+            copy_webmail(connection, row, ask=_question)
             continue
         if what == "copy_mail":
             # Nothing the new server has changes, so there is nothing to ask it again. A copy that really

@@ -872,7 +872,7 @@ def test_the_requests_it_takes_are_the_ones_the_old_server_sends():
     assert sorted(migratectl.HANDLERS) == ["adopt_database", "apply", "bayes", "bayes_prepare", "bayes_swap",
                                            "compare_mail", "copy_mail", "copy_mail_status", "dns",
                                            "finish_site", "hello", "mail_sizes", "password", "point_dns",
-                                           "repair", "status"]
+                                           "repair", "restore_webmail", "status", "webmail_place"]
     assert sorted(migratectl.KINDS) == ["cron", "mail_domain", "site"]
 
 
@@ -1124,6 +1124,111 @@ def counting(monkeypatch, tmp_path, server):
     counter = Counter(migratectl.subprocess.run)
     monkeypatch.setattr(migratectl.subprocess, "run", counter)
     return counter
+
+
+# ---- Reading a customer's contacts and calendars back in --------------------
+
+@pytest.fixture
+def webmail(monkeypatch, tmp_path):
+    """sogo-tool on this server, and the directory the old server's backups land in."""
+    place = tmp_path / "webmail"
+    place.mkdir()
+    monkeypatch.setattr(migratectl, "WEBMAIL_ROOT", str(place))
+    monkeypatch.setattr(migratectl.os, "access", lambda path, mode: True)
+    runs = []
+    others = migratectl.subprocess.run  # mailctl is asked whether the account is here; only sogo-tool is ours
+
+    class Done(object):
+        returncode = 0
+        stdout = b""
+
+    def run(command, **named):
+        if not command or command[0] != migratectl.SOGO_TOOL:
+            return others(command, **named)
+        runs.append(list(command))
+        return Done()
+
+    monkeypatch.setattr(migratectl.subprocess, "run", run)
+    return place, runs
+
+
+def test_reading_webmail_back_in_does_the_settings_first_and_then_the_folders(server, webmail):
+    """SOGo's own order: the preferences hold the signature and the filters, the folders hold the contacts."""
+    place, runs = webmail
+    server.here = {"a.nl": ["old@a.nl"]}
+    (place / "old@a.nl").write_text("a backup")
+
+    answer = migratectl.answer({"request": "restore_webmail", "addresses": ["Old@A.nl"]})
+
+    assert answer["ok"] is True and answer["restored"] == ["old@a.nl"]
+    assert [command[1:4] for command in runs] == [["restore", "-p", str(place)],
+                                                  ["restore", "-f", "ALL"]]
+    assert all(command[-1] == "old@a.nl" for command in runs)
+
+
+def test_an_account_with_no_backup_is_said_so_and_not_run(server, webmail):
+    _place, runs = webmail
+    server.here = {"a.nl": ["old@a.nl"]}
+    answer = migratectl.answer({"request": "restore_webmail", "addresses": ["old@a.nl"]})
+    assert answer["ok"] is False and "no backup" in answer["error"]
+    assert runs == []
+
+
+def test_webmail_is_not_read_into_an_account_this_server_has_not_got(server, webmail):
+    """It would be a pile of errors, and the old server is told to move the accounts first."""
+    place, runs = webmail
+    server.here = {}
+    (place / "old@a.nl").write_text("a backup")
+    answer = migratectl.answer({"request": "restore_webmail", "addresses": ["old@a.nl"]})
+    assert answer["ok"] is False and "Move the mail of its domain first" in answer["error"]
+    assert runs == []
+
+
+def test_one_account_that_will_not_read_in_does_not_stop_the_others(server, webmail, monkeypatch):
+    place, runs = webmail
+    server.here = {"a.nl": ["one@a.nl", "two@a.nl"]}
+    for address in ("one@a.nl", "two@a.nl"):
+        (place / address).write_text("a backup")
+
+    class Failed(object):
+        returncode = 70
+        stdout = b"<0x0[SOGoCache]> noise\nunknown user two@a.nl\n"
+
+    class Done(object):
+        returncode = 0
+        stdout = b""
+
+    others = migratectl.subprocess.run
+    monkeypatch.setattr(migratectl.subprocess, "run",
+                        lambda command, **named: others(command, **named)
+                        if command[0] != migratectl.SOGO_TOOL
+                        else (Failed() if "two@a.nl" in command else Done()))
+
+    answer = migratectl.answer({"request": "restore_webmail", "addresses": ["one@a.nl", "two@a.nl"]})
+    assert answer["restored"] == ["one@a.nl"]
+    assert answer["ok"] is False and "unknown user two@a.nl" in answer["error"]
+
+
+def test_where_the_backups_go_is_made_for_root_alone(server, webmail, tmp_path, monkeypatch):
+    """A person's whole address book is in there."""
+    place = tmp_path / "made"
+    monkeypatch.setattr(migratectl, "WEBMAIL_ROOT", str(place))
+    answer = migratectl.answer({"request": "webmail_place"})
+    assert answer["ok"] is True and answer["place"] == str(place)
+    assert oct(place.stat().st_mode)[-3:] == "700"
+
+
+def test_a_server_without_webmail_says_so_instead_of_trying(server, monkeypatch):
+    monkeypatch.setattr(migratectl.os, "access", lambda path, mode: False)
+    assert migratectl.answer({"request": "webmail_place"})["ok"] is False
+    assert "no webmail" in migratectl.answer({"request": "webmail_place"})["error"]
+
+
+def test_a_request_to_read_webmail_in_without_addresses_is_refused(server, webmail):
+    _place, runs = webmail
+    assert migratectl.answer({"request": "restore_webmail"})["ok"] is False
+    assert migratectl.answer({"request": "restore_webmail", "addresses": []})["ok"] is False
+    assert runs == []
 
 
 def _compare(**more):

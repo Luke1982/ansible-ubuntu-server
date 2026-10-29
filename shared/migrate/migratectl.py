@@ -22,7 +22,7 @@ import tempfile
 import time
 import unicodedata
 
-PROTOCOL_VERSION = 16  # it goes up with every change to the requests or the answers; migrate.py refuses another
+PROTOCOL_VERSION = 17  # it goes up with every change to the requests or the answers; migrate.py refuses another
 TOOLS = ("mailctl", "domainctl")
 LIST_TIMEOUT = 60
 # OpenLiteSpeed's own PHP, where the web role installs it, for a server that has no php on the path at all.
@@ -1477,12 +1477,92 @@ def adopt_database(request):
             "steps": [f"{made}, and read the dump of {name} into it."]}
 
 
+# ---- The contacts and calendars that webmail keeps --------------------------
+
+# SOGo keeps an account's address books and calendars in a database of its own, one table per folder, and its
+# settings -- the signature and the filters -- in a row beside them. None of that is in the mailbox, so a
+# mailbox that is copied over leaves them behind. sogo-tool writes them out on the old server and reads them
+# back in here, which is SOGo's own way of doing it and survives the two servers running different versions
+# of it; copying its tables across by hand would not.
+SOGO_TOOL = "/usr/sbin/sogo-tool"
+WEBMAIL_ROOT = "/var/lib/migrate/webmail"  # where the old server's backups land, for root alone to read
+WEBMAIL_TIMEOUT = 600  # seconds for one account: reading a few thousand contacts in is not instant
+
+
+def webmail_place(request):
+    """Where the old server is to put the backups it made. The directory is made here, and only root may look
+    in it: a person's whole address book is in there."""
+    if not os.access(SOGO_TOOL, os.X_OK):
+        return {"ok": False, "error": f"There is no sogo-tool at {SOGO_TOOL} on this server, so the contacts "
+                                      f"and calendars can't be read in. This server has no webmail."}
+    try:
+        os.makedirs(WEBMAIL_ROOT, mode=0o700, exist_ok=True)
+        os.chmod(WEBMAIL_ROOT, 0o700)
+    except OSError as error:
+        return {"ok": False, "error": f"I couldn't make {WEBMAIL_ROOT} ({error})."}
+    return {"ok": True, "place": WEBMAIL_ROOT}
+
+
+def restore_webmail(request):
+    """Reads the backups that just arrived back into webmail, one account at a time: its settings first, then
+    every folder it had. A folder that is here already is added to and never emptied, so running this twice
+    costs time and nothing else."""
+    addresses = request.get("addresses")
+    if not isinstance(addresses, list) or not addresses:
+        return {"ok": False, "error": "A request to read webmail back in needs the addresses to read in."}
+    if not os.access(SOGO_TOOL, os.X_OK):
+        return {"ok": False, "error": f"There is no sogo-tool at {SOGO_TOOL} on this server."}
+    done, trouble = [], []
+    for one in addresses:
+        try:
+            address = _copy_address({"address": one})
+        except ValueError as error:
+            trouble.append(f"{error}.")
+            continue
+        backup = os.path.join(WEBMAIL_ROOT, address)
+        if not os.path.isfile(backup):
+            trouble.append(f"There is no backup of {address} in {WEBMAIL_ROOT}.")
+            continue
+        try:
+            if not _account_here(address):
+                trouble.append(f"{address} is not a mailbox on this server, so there is nothing to read its "
+                               f"contacts and calendars into. Move the mail of its domain first.")
+                continue
+        except Unreadable as error:
+            trouble.append(f"{error}, so I can't tell whether {address} is here.")
+            continue
+        said = _sogo_restore(address)
+        (done if said is True else trouble).append(address if said is True else said)
+    return {"ok": not trouble and bool(done), "restored": done, "trouble": trouble,
+            "error": " ".join(trouble) if trouble else None}
+
+
+def _sogo_restore(address):
+    """One account read back in: its settings, then its folders. True, or what went wrong."""
+    for what, command in (("settings", ["-p"]), ("folders", ["-f", "ALL"])):
+        try:
+            done = subprocess.run([SOGO_TOOL, "restore"] + command + [WEBMAIL_ROOT, address],
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, timeout=WEBMAIL_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            return f"Reading the {what} of {address} in took longer than {WEBMAIL_TIMEOUT // 60} minutes."
+        except OSError as error:
+            return f"I couldn't run sogo-tool for {address} ({error})."
+        if done.returncode != 0:
+            last = [line.strip() for line in done.stdout.decode("utf-8", "replace").splitlines()
+                    if line.strip()]
+            return (f"sogo-tool couldn't read the {what} of {address} in: "
+                    f"{last[-1] if last else f'it stopped with return value {done.returncode}'}")
+    return True
+
+
 HANDLERS = {"hello": hello, "status": status, "apply": apply, "finish_site": finish_site,
             "password": password, "dns": dns, "point_dns": point_dns, "repair": repair,
             "bayes": bayes, "bayes_prepare": bayes_prepare, "bayes_swap": bayes_swap,
             "copy_mail": copy_mail, "copy_mail_status": copy_mail_status,
             "compare_mail": compare_mail, "mail_sizes": mail_sizes,
-            "adopt_database": adopt_database}
+            "adopt_database": adopt_database,
+            "webmail_place": webmail_place, "restore_webmail": restore_webmail}
 
 
 def answer(request):
