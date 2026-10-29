@@ -1,0 +1,63 @@
+---
+# imapsync copies the messages of one mailbox from another server into this one, over IMAP, without making
+# duplicates: run it again and it carries on where it stopped. migratectl runs it (the "copy_mail" request),
+# which is what the old server's migrate tool asks for per mail account.
+#
+# The file in roles/mail/files/imapsync is imapsync itself, one Perl script, kept in this repository so every
+# server gets the same version whatever its release has. Its own licence: "No limits to do anything with this
+# work and this license."
+
+- name: Install the Perl modules imapsync needs
+  apt:
+    pkg:
+      - libauthen-ntlm-perl
+      - libcgi-pm-perl
+      - libcrypt-openssl-rsa-perl
+      - libdata-uniqid-perl
+      - libencode-imaputf7-perl
+      - libfile-copy-recursive-perl
+      - libfile-tail-perl
+      - libhtml-parser-perl
+      - libio-socket-inet6-perl
+      - libio-socket-ssl-perl
+      - libio-tee-perl
+      - libjson-webtoken-perl
+      - libmail-imapclient-perl
+      - libmodule-scandeps-perl
+      - libnet-server-perl
+      - libparse-recdescent-perl
+      - libproc-processtable-perl
+      - libreadonly-perl
+      - libregexp-common-perl
+      - libsys-meminfo-perl
+      - libterm-readkey-perl
+      - libtest-mockobject-perl
+      - libunicode-string-perl
+      - liburi-perl
+      - libwww-perl
+    state: present
+
+- name: Install imapsync
+  copy:
+    src: imapsync
+    dest: /usr/local/bin/imapsync
+    mode: 0755
+    owner: root
+    group: root
+
+# Where migratectl keeps one log per mailbox it copies, and the password file a running copy reads. Root only:
+# the password of a customer's mailbox is in there while it runs.
+- name: Create the directory the mail copies are run from
+  file:
+    path: /var/lib/migrate/mail
+    state: directory
+    mode: 0700
+    owner: root
+    group: root
+
+# imapsync stops at once when a Perl module is missing, so it is asked for its version here: the playbook
+# fails now rather than halfway through moving a customer's mail.
+- name: Check that imapsync runs
+  command: /usr/local/bin/imapsync --version
+  register: imapsync_version
+  changed_when: no

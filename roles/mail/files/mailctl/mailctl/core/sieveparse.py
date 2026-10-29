@@ -129,7 +129,7 @@ class _Parser:
         if token.kind == "string":
             return _unquote(token.text)
         if token.kind == "text":
-            return token.text
+            return _multiline(token.text)
         if token.kind == "number":
             return token.text
         if token.text == "[":
@@ -183,3 +183,10 @@ class _Parser:
 
 def _unquote(text: str) -> str:
     return re.sub(r"\\(.)", r"\1", text[1:-1])
+
+
+def _multiline(text: str) -> str:
+    """What a text: string says: the lines between "text:" and the lone dot, a doubled dot at a line's start
+    being one dot."""
+    lines = text.splitlines()[1:-1]
+    return "\n".join(line[1:] if line.startswith("..") else line for line in lines)

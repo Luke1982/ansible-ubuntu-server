@@ -1,0 +1,8 @@
+[Unit]
+Description=Warn by mail when a lot of mail is waiting in Postfix's queue
+Documentation=man:postqueue(1)
+After=postfix.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/mailctl queue check

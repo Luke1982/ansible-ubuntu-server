@@ -1,0 +1,8 @@
+[Unit]
+Description=Check Postfix's queue every 10 minutes for a lot of waiting mail
+
+[Timer]
+OnCalendar=*:0/10
+
+[Install]
+WantedBy=timers.target

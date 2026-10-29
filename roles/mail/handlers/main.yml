@@ -54,6 +54,12 @@
 - name: restart openlitespeed
   shell: "{{ ols_root }}/bin/lswsctrl restart </dev/null >/dev/null 2>&1"
 
+# The basic role's firewall, which reads the mail role's rules in /etc/firewall.d.
+- name: restart firewall
+  systemd:
+    name: firewall
+    state: restarted
+
 - name: restart opendkim
   service:
     name: opendkim

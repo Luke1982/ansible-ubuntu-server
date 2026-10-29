@@ -27,6 +27,29 @@ mail_send_limits_by_account: {}
 #    - recipients: 2000
 #      seconds: 3600
 
+# Sending limits for the websites' mail, per site (tasks/configure-website-mail.yml), in the same order.
+mail_website_send_limits:
+  - recipients: 300
+    seconds: 3600
+  - recipients: 1000
+    seconds: 86400
+
+# And for all mail from this server without a login together: the websites, and anything that talks SMTP to
+# Postfix itself. A script can make up a site's name, but can't get past these.
+mail_websites_send_limits:
+  - recipients: 1000
+    seconds: 3600
+  - recipients: 3000
+    seconds: 86400
+
+# The user the websites' PHP runs as: OpenLiteSpeed's, in every site. The sendmail command and other mail
+# servers' port 25 are closed to it, so its mail goes through the website sending limits.
+mail_website_user: nobody
+
+# mailctl queue check, every 10 minutes: from how many messages waiting in Postfix's queue it warns, and who.
+mail_queue_warn_at: 100
+mail_queue_warn_to: info@majorlabel.nl
+
 # SOGo per Ubuntu release: where it comes from, its packages, and where they put
 # SOGo's images, scripts and styles, which OpenLiteSpeed serves directly.
 sogo_releases:

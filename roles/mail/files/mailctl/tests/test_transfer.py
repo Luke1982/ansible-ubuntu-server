@@ -144,7 +144,8 @@ def test_import_creates_everything_in_the_file(mailctl, doveadm, tmp_path, datab
         ("%example.nl", "welcomelist_from", "*@supplier.nl"), ("info@example.nl", "required_score", "4"),
         ("info@shop.nl", "use_bayes", "0")]
     assert "1 rule of them is in webmail's filters now" in output, "the rules go where filters are edited"
-    assert "Not in webmail: " in output, "an away message isn't something webmail's filters have"
+    assert "The out-of-office reply is in webmail's out-of-office settings now, switched off." in output
+    assert "wasn't the one that ran" in output, "the away message wasn't on, so it isn't on here either"
     assert [rule["name"] for rule in sogofilters.read(database, "info@example.nl")] == ["roundcube 1"]
     assert ["sieve", "activate", "-u", "info@example.nl", sogofilters.SCRIPT] in doveadm.calls
     assert (tmp_path / "sieve-store" / "info@example.nl" / "vacation").read_text() == VACATION

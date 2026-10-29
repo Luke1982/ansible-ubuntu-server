@@ -2,7 +2,8 @@
 #
 # Sending limits for authenticated users. Postfix asks postfwd about every
 # recipient (smtpd_relay_restrictions), so limits count recipients per SASL
-# login. Unauthenticated clients, i.e. inbound mail, match no rule.
+# login, and the websites' mail per site (below). Other clients without a
+# login, i.e. inbound mail, match no rule.
 #
 # A rate() rule under its limit lets evaluation continue with the next rule;
 # the first rule over its limit answers with its 450.
@@ -15,4 +16,17 @@ id=ACCOUNT{{ account_index }}_DONE; sasl_username=={{ account }}; action=DUNNO
 {% endfor %}
 {% for limit in mail_send_limits %}
 id=DEFAULT_LIMIT{{ loop.index }}; sasl_username=.; action=rate(sasl_username/{{ limit.recipients }}/{{ limit.seconds }}/450 4.7.1 Sending limit reached: {{ limit.recipients }} recipients per {{ limit.seconds }} seconds. Try again later.)
+{% endfor %}
+#
+# The websites' mail (tasks/configure-website-mail.yml): site-sendmail hands it
+# over from 127.0.0.1 without a login and greets with the site's name, so these
+# count per site (helo_name). Then all mail from this server without a login
+# together: "request" is the same in every query, so it is one counter. A
+# script that talks SMTP itself can make up names, but not get past that one.
+# postfwd compares IPv6 addresses as text, so ::1 is written out.
+{% for limit in mail_website_send_limits %}
+id=WEBSITE_LIMIT{{ loop.index }}; client_address=127.0.0.0/8; client_address==::1; sasl_username!~.+; action=rate(helo_name/{{ limit.recipients }}/{{ limit.seconds }}/450 4.7.1 Sending limit reached for this website: {{ limit.recipients }} recipients per {{ limit.seconds }} seconds. Try again later.)
+{% endfor %}
+{% for limit in mail_websites_send_limits %}
+id=WEBSITES_LIMIT{{ loop.index }}; client_address=127.0.0.0/8; client_address==::1; sasl_username!~.+; action=rate(request/{{ limit.recipients }}/{{ limit.seconds }}/450 4.7.1 Sending limit reached for the websites on this server: {{ limit.recipients }} recipients per {{ limit.seconds }} seconds. Try again later.)
 {% endfor %}

@@ -4,7 +4,7 @@
 _mailctl() {
     local current=${COMP_WORDS[COMP_CWORD]} words=""
     case $COMP_CWORD in
-        1) words="domain address forward dkim dns autodiscover certificate spam filters webmail status doctor repair import export --help" ;;
+        1) words="domain address forward dkim dns autodiscover certificate spam filters webmail queue status doctor repair import export --help" ;;
         2)
             case ${COMP_WORDS[1]} in
                 domain) words="add list delete" ;;
@@ -17,6 +17,7 @@ _mailctl() {
                 spam) words="show set unset learn" ;;
                 filters) words="show adopt import run repair" ;;
                 webmail) words="sync brand" ;;
+                queue) words="check" ;;
             esac
             ;;
     esac

@@ -201,7 +201,22 @@ def test_an_outage_at_login_isnt_blamed_on_the_key(credentials, fake_transip):
         client(credentials).dns_entries("example.nl")
 
     assert not isinstance(problem.value, transip.LoginRefused)
-    assert problem.value.message == "TransIP: Service unavailable"
+    assert problem.value.message == "TransIP: Service unavailable (HTTP 503 on POST /auth)"
+    assert "not this server" in problem.value.hint
+
+
+def test_a_failure_in_transips_own_api_says_which_request_failed_and_whose_side_it_is_on(credentials, fake_transip):
+    """Its answer alone, "Internal error occurred", sends whoever reads it looking through this server."""
+    broke = (500, {"error": "Internal error occurred, please contact our support"})
+    fake_transip.answers[("PUT", "/domains/example.nl/dns")] = [broke]
+    fake_transip.zones["example.nl"] = []
+
+    with pytest.raises(MailctlError) as problem:
+        client(credentials, read_only=False).replace_dns_entries("example.nl", ())
+
+    assert problem.value.message == ("TransIP: Internal error occurred, please contact our support "
+                                     "(HTTP 500 on PUT /domains/example.nl/dns)")
+    assert "not this server, and nothing was changed" in problem.value.hint
 
 
 def test_credentials_transip_refuses_are_not_saved(config, transip_key_pair, fake_transip, tmp_path):

@@ -1,8 +1,9 @@
 """Arguments, options and steps that several commands share."""
 
 from collections.abc import Callable
+from datetime import date
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Any, Optional
 
 import typer
 
@@ -102,15 +103,19 @@ def warn_about_incoming_forwards(incoming: list[Forward]) -> None:
 def into_webmail(session: Session, address: str, scripts: list) -> bool:
     """Puts the imported rules in webmail's filter list, where filters are edited. False when none of them fits,
     and the imported filter is left to run as it is."""
-    adopted = sogofilters.adopt(session.db, address, [(script.name, script.content) for script in scripts])
+    adopted = sogofilters.adopt(session.db, address,
+                                [(script.name, script.content, script.active) for script in scripts])
     for line in adopted.left:
         ui.warn(f"Not in webmail: {line}")
-    if not adopted.added:
+    if not adopted.added and adopted.vacation is None:
         # Nothing said and nothing to add: the scripts hold no rules at all, so there is nothing to run.
         return not adopted.left
-    ui.success(f"{ui.plural(len(adopted.added), 'rule')} of them "
-               f"{'is' if len(adopted.added) == 1 else 'are'} in webmail's filters now, which is where they are "
-               f"edited from now on. They run already.")
+    if adopted.added:
+        ui.success(f"{ui.plural(len(adopted.added), 'rule')} of them "
+                   f"{'is' if len(adopted.added) == 1 else 'are'} in webmail's filters now, which is where they are "
+                   f"edited from now on. They run already.")
+    if adopted.vacation is not None:
+        tell_about_the_reply(adopted.vacation)
     if adopted.already:
         ui.note(f"Webmail already had {ui.plural(adopted.already, 'filter')} of the same name, left as "
                 f"{'it was' if adopted.already == 1 else 'they were'}.")
@@ -120,11 +125,29 @@ def into_webmail(session: Session, address: str, scripts: list) -> bool:
     return True
 
 
+def tell_about_the_reply(vacation: dict[str, Any], indent: int = 0) -> None:
+    """Where an imported out-of-office reply went, and whether it is on."""
+    if vacation.get("enabled"):
+        ui.success("The out-of-office reply is in webmail's out-of-office settings now, which is where it is edited "
+                   "from now on. It runs already.", indent=indent)
+        return
+    ui.success("The out-of-office reply is in webmail's out-of-office settings now, switched off.", indent=indent)
+    last = sogofilters.last_day(vacation)
+    if last is not None and last < date.today():
+        ui.note(f"Its last day, {last:%d-%m-%Y}, has passed.", indent=indent)
+    else:
+        ui.note("Its filter wasn't the one that ran on the other server.", indent=indent)
+
+
 def would_be_in_webmail(scripts: list) -> None:
     for script in scripts:
-        filters, left = sogofilters.translate(script.content, script.name)
-        ui.line(f"Would put {ui.plural(len(filters), 'rule')} of {script.name} in webmail's filters.", indent=2)
-        for line in left:
+        found = sogofilters.translate(script.content, script.name)
+        ui.line(f"Would put {ui.plural(len(found.filters), 'rule')} of {script.name} in webmail's filters.",
+                indent=2)
+        if found.vacation is not None:
+            ui.line(f"Would put the out-of-office reply of {script.name} in webmail's out-of-office settings.",
+                    indent=2)
+        for line in found.left:
             ui.warn(f"Not in webmail: {line}", indent=2)
 
 

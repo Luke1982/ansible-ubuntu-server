@@ -105,8 +105,10 @@ def sync(no_dns: NoDns = False) -> None:
         mail_domains = [domain.name for domain in domains.list_domains(session.db)]
         server_ips = system.server_ips()
         resolver: Resolver = dns_check.SystemResolver()
+        unpublished: list[str] = []
         if not no_dns:
-            resolver = _WithPublished(resolver, _publish_missing_records(session, mail_domains, server_ips))
+            published = _publish_missing_records(session, mail_domains, server_ips, resolver, unpublished)
+            resolver = _WithPublished(resolver, published)
         with ui.console.status("Setting up the webmail sites…"):
             result = webmail.sync(session.config, mail_domains, server_ips, resolver)
     for outcome in result.outcomes:
@@ -114,13 +116,18 @@ def sync(no_dns: NoDns = False) -> None:
     # Says whether this run changed anything, so a run by hand shows it at a glance.
     if result.changed:
         ui.success("Changed the webmail sites.")
+    elif unpublished:
+        # "Nothing changed" on its own would read as "all is well" under the records it couldn't publish.
+        ui.note("The webmail sites are as they were; what didn't work is above.")
     else:
         ui.note("Nothing changed.")
 
 
-def _publish_missing_records(session: Session, mail_domains: list[str], server_ips: set[IPAddress]) -> dict:
+def _publish_missing_records(session: Session, mail_domains: list[str], server_ips: set[IPAddress],
+                             resolver: Resolver, unpublished: list[str]) -> dict:
     """Publishes webmail.DOMAIN at TransIP for the domains that have no record for it there, and waits until TransIP's
-    nameservers serve them. Returns the names they serve, with their addresses."""
+    nameservers serve them. Returns the names they serve, with their addresses, and adds the names it couldn't
+    publish to unpublished."""
     ips = dns_check.published_ips({ip for ip in server_ips if ip.is_global})
     if not ips:
         ui.warn("This server has no public address, so no webmail records are published.")
@@ -134,6 +141,8 @@ def _publish_missing_records(session: Session, mail_domains: list[str], server_i
     for domain in sorted({domain.lower() for domain in mail_domains}):
         name = webmail.host(domain)
         if not names.valid_domain(name):
+            continue
+        if _points_here(resolver, name, server_ips):
             continue
         try:
             zone_name, entries = find_zone(client, domain)
@@ -151,13 +160,31 @@ def _publish_missing_records(session: Session, mail_domains: list[str], server_i
             continue
         except transip.LoginRefused as problem:
             ui.warn(f"{problem.message} No webmail records are published.")
+            unpublished.append(name)
             return {}
         except MailctlError as problem:
             ui.warn(f"Couldn't publish {name} at TransIP: {problem.message}")
+            if problem.hint:
+                ui.note(problem.hint, indent=2)
+            unpublished.append(name)
             continue
         ui.success(f"Published {name} at TransIP.")
         published[name] = zone_name
     return _served(published, ips)
+
+
+def _points_here(resolver: Resolver, name: str, server_ips: set[IPAddress]) -> bool:
+    """Whether the internet already sends the name to this server, and there is nothing to publish for it.
+
+    What the nameservers answer decides, not what the zone at TransIP holds: the record may stand in a zone
+    mailctl doesn't read, a parent domain's or another account's, and TransIP's API has handed out a zone without
+    a record its own nameservers were serving. Publishing then replaces a whole zone over a name that is already
+    right, which is a great deal of risk for no gain.
+    """
+    try:
+        return bool(resolver.addresses(name) & server_ips)
+    except dns_check.LookupFailed:
+        return False  # the zone at TransIP decides, as it did before this was asked
 
 
 def _served(published: dict[str, str], ips: set[IPAddress]) -> dict:

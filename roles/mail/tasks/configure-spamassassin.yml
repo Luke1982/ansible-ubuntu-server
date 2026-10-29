@@ -39,6 +39,19 @@
     src: "bayes-sql.cf.j2"
     dest: "/etc/spamassassin/bayes.cf"
 
+# Removes the tokens Bayes hasn't seen for a long time, at night instead of in the middle of checking a message
+# (bayes_auto_expire is off in bayes.cf). flock skips a night while the previous run is still going, which the
+# first run on a database that has grown for years can do.
+- name: Expire old Bayes tokens every night
+  copy:
+    dest: /etc/cron.d/spamassassin-bayes-expire
+    owner: root
+    group: root
+    mode: 0644
+    content: |
+      # Nightly Bayes token cleanup (replaces bayes_auto_expire, which locked the DB during mail scanning)
+      30 3 * * * vmail flock -n /tmp/sa-expire.lock nice sa-learn --force-expire >/dev/null 2>&1
+
 - name: Enable the SpamAssassin update cron
   lineinfile:
     path: /etc/default/spamd

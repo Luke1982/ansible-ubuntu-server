@@ -163,10 +163,38 @@ def test_dns_publish_dry_run_shows_the_changes_and_changes_nothing(mailctl, tran
     assert re.search(r"\+ TXT example\.nl\n\s+v=spf1 ip4:93\.184\.216\.34 include:_spf\.transip\.email ~all\n", output)
     assert re.search(r"\+ SRV _imaps\._tcp\.example\.nl\n\s+0 1 993 mail\.example\.nl\.\n", output)
     assert "1 record is already right" in output  # the DMARC policy
-    assert "Nothing was changed" in output
+    assert "TransIP takes changes to example.nl, so publishing would work." in output
+    assert "The domain's own records were not changed (--dry-run)." in output
     assert transip_account.entries() == [tuple(entry.values()) for entry in TRANSIP_DEFAULTS]
-    assert all(body["read_only"] for _, path, body, _ in transip_account.requests if path == "/auth")
+    # Reading the zone takes a read-only token; trying whether TransIP saves a change can't. (The first is the
+    # one the login was checked with when the credentials were entered.)
+    tokens = [body["read_only"] for _, path, body, _ in transip_account.requests if path == "/auth"]
+    assert tokens == [True, True, False]
     assert "PUT" not in (method for method, *_ in transip_account.requests)
+
+
+def test_dns_publish_dry_run_says_when_transip_wont_take_a_change(mailctl, transip_account):
+    """Reading the zone says nothing about whether TransIP is saving zones at all. Without trying one, that comes
+    out only after a publish has been agreed to, with everything that waits on the records left hanging."""
+    transip_account.answers[("POST", "/domains/example.nl/dns")] = [
+        (500, {"error": "Internal error occurred, please contact our support"})]
+
+    output = mailctl.ok("dns", "publish", "example.nl", "--dry-run")
+
+    assert "TransIP won't take a change to example.nl, so publishing would fail too." in output
+    assert "HTTP 500 on POST /domains/example.nl/dns" in output
+    assert "TransIP's own API is failing, not this server" in output
+    assert transip_account.entries() == [tuple(entry.values()) for entry in TRANSIP_DEFAULTS]
+
+
+def test_dns_publish_dry_run_says_when_its_own_test_record_is_left_behind(mailctl, transip_account):
+    transip_account.answers[("DELETE", "/domains/example.nl/dns")] = [
+        (500, {"error": "Internal error occurred, please contact our support"})]
+
+    output = mailctl.ok("dns", "publish", "example.nl", "--dry-run")
+
+    assert "TransIP took the test record _mailctl-write-test.example.nl but won't remove it again." in output
+    assert ("_mailctl-write-test", 60, "TXT", "mailctl write test") in transip_account.entries()
 
 
 def test_dns_publish_without_a_terminal_needs_yes(mailctl, transip_account):
@@ -483,3 +511,33 @@ def test_repair_says_when_a_domain_needs_nothing(mailctl, healthy_dns, db_config
     monkeypatch.setattr("mailctl.commands.checks._not_set_up", lambda *args: [])
 
     assert "needs nothing: everything is set up" in mailctl.ok("repair", "example.nl", "--yes")
+
+
+def test_a_publish_waits_until_the_nameservers_give_this_servers_address(monkeypatch):
+    """TransIP serves a change a moment after it is made; asked before that, the certificate and webmail that
+    come next see the old address and leave the domain out."""
+    from conftest import wait_for_real
+    from mailctl.commands import dns as dns_command
+
+    answers = [{ip_address("178.21.114.195")}, {ip_address("178.21.114.195")}, {ip_address(PUBLIC_IP)}]
+
+    class Changing:
+        def addresses(self, name):
+            return answers.pop(0)
+
+    monkeypatch.setattr(system, "server_ips", lambda: {ip_address(PUBLIC_IP)})
+    monkeypatch.setattr(dns_check, "SystemResolver", Changing)
+    monkeypatch.setattr(dns_command.time, "sleep", lambda seconds: None)
+    assert wait_for_real("mail.example.nl", wait=60) is True and answers == []
+
+
+def test_a_publish_stops_waiting_and_says_so_when_the_address_never_comes(monkeypatch):
+    from conftest import wait_for_real
+
+    class Old:
+        def addresses(self, name):
+            return {ip_address("178.21.114.195")}
+
+    monkeypatch.setattr(system, "server_ips", lambda: {ip_address(PUBLIC_IP)})
+    monkeypatch.setattr(dns_check, "SystemResolver", Old)
+    assert wait_for_real("mail.example.nl", wait=0) is False

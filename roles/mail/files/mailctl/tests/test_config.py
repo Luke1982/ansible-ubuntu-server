@@ -36,6 +36,14 @@ def test_load_reads_values_and_keeps_defaults(tmp_path):
     assert loaded.db_socket == "/run/mysqld/mysqld.sock"
 
 
+def test_load_reads_the_queue_warning_settings(tmp_path):
+    path = write_config(tmp_path, {"hostname": "mail.example.nl", "queue_warn_at": 250, "queue_warn_to": "info@example.nl"})
+
+    loaded = config.load(path)
+
+    assert (loaded.queue_warn_at, loaded.queue_warn_to) == (250, "info@example.nl")
+
+
 def test_load_finds_the_file_through_the_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("MAILCTL_CONFIG", str(write_config(tmp_path, {"hostname": "mail.example.nl"})))
 
@@ -82,7 +90,9 @@ def test_load_needs_a_json_object(tmp_path):
 
 @pytest.mark.parametrize(
     "setting, value",
-    [("send_limits", [{"recipients": 300}]), ("hostname", None), ("vmail_root", 5), ("mail_logs", "/var/log/mail.log")],
+    [("send_limits", [{"recipients": 300}]), ("hostname", None), ("vmail_root", 5), ("mail_logs", "/var/log/mail.log"),
+     # Ansible writes a number as a string when it went through "| int"
+     ("queue_warn_at", "100"), ("queue_warn_at", 0), ("queue_warn_at", True)],
 )
 def test_load_reports_malformed_values(tmp_path, setting, value):
     path = write_config(tmp_path, {"hostname": "mail.example.nl", setting: value})

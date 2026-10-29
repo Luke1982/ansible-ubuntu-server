@@ -26,6 +26,7 @@ os.environ["COLUMNS"] = "200"
 from typer.testing import CliRunner  # noqa: E402
 
 from mailctl import cli  # noqa: E402
+from mailctl.commands import dns as dns_command  # noqa: E402
 from mailctl.core import db, openlitespeed, reach, system, transip  # noqa: E402
 from mailctl.core.config import Config, SendLimit  # noqa: E402
 
@@ -161,6 +162,15 @@ class FakeTransip:
         if (method, resource) == ("PUT", "dns"):
             self.zones[domain] = json.loads(body)["dnsEntries"]
             return 204, b""
+        if (method, resource) == ("POST", "dns"):
+            self.zones[domain].append(json.loads(body)["dnsEntry"])
+            return 201, b"Created"  # TransIP answers a change with something that isn't JSON
+        if (method, resource) == ("DELETE", "dns"):
+            entry = json.loads(body)["dnsEntry"]
+            if entry not in self.zones[domain]:
+                return 404, b'{"error": "Dns entry not found"}'
+            self.zones[domain].remove(entry)
+            return 204, b""
         if (method, resource) == ("GET", "nameservers"):
             names = [{"hostname": name, "ipv4": "", "ipv6": ""} for name in self.nameservers[domain]]
             return 200, json.dumps({"nameservers": names}).encode()
@@ -203,6 +213,16 @@ class FakeCommand:
 def everything_answers(monkeypatch):
     """No test reaches the network: every address answers, unless a test says otherwise."""
     monkeypatch.setattr(reach, "answers", lambda address, port, timeout=None: True)
+
+
+wait_for_real = dns_command.wait_until_served  # the wait itself, for the tests of it
+
+
+@pytest.fixture(autouse=True)
+def published_at_once(monkeypatch):
+    """No test waits for TransIP's nameservers after a publish: what was published is served at once.
+    tests/test_cli_dns.py tests the wait itself."""
+    monkeypatch.setattr(dns_command, "wait_until_served", lambda host, **named: True)
 
 
 @pytest.fixture(autouse=True)

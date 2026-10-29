@@ -5,7 +5,7 @@ from typer.core import TyperGroup
 
 from . import ui
 from .commands import (
-    address, autodiscover, certificate, dkim, dns, doctor, domain, filters, forward, repair, spam, status,
+    address, autodiscover, certificate, dkim, dns, doctor, domain, filters, forward, queue, repair, spam, status,
     transfer, webmail,
 )
 from .core.errors import MailctlError
@@ -43,6 +43,7 @@ app.add_typer(certificate.app, name="certificate")
 app.add_typer(spam.app, name="spam")
 app.add_typer(filters.app, name="filters")
 app.add_typer(webmail.app, name="webmail")
+app.add_typer(queue.app, name="queue")
 app.command()(status.status)
 app.command()(doctor.doctor)
 app.command()(repair.repair)

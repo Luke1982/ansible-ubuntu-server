@@ -81,3 +81,24 @@
       webmail_root: "{{ webmail_root }}"
       mailcert_root: "{{ mailcert_root }}"
       letsencrypt_email: "{{ letsencrypt_email }}"
+      queue_warn_at: "{{ mail_queue_warn_at }}"  # without "| int", which would make it a string here
+      queue_warn_to: "{{ mail_queue_warn_to }}"
+
+# A long queue is how a mailbox or website that sends spam shows itself (mailctl queue check).
+- name: Install the queue check service and timer
+  copy:
+    src: "roles/mail/files/{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: 0644
+  loop:
+    - mailctl-queue-check.service
+    - mailctl-queue-check.timer
+
+- name: Check the mail queue every 10 minutes
+  systemd:
+    name: mailctl-queue-check.timer
+    daemon_reload: yes
+    enabled: yes
+    state: started

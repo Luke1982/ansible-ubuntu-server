@@ -34,6 +34,11 @@ class Config:
     sieve_after: Path = Path("/etc/dovecot/sieve-after")
     # When SpamAssassin was last taught from everybody's Junk folder and inbox, so a run only reads what came after.
     spam_learn_state: Path = Path("/var/lib/mailctl/spam-learn.json")
+    # mailctl queue check: from how many waiting messages it warns, and who; without an address it only says so.
+    queue_warn_at: int = 100
+    queue_warn_to: str = ""
+    # When it last warned, so a queue that stays long doesn't send a warning every time it is checked.
+    queue_warning_state: Path = Path("/var/lib/mailctl/queue-warning.json")
     certificate_file: Path | None = None  # by default the Let's Encrypt certificate of the hostname
     # The web root of the autoconfig and autodiscover sites, where certbot puts its challenges too.
     autodiscover_root: Path = Path("/var/www/mailautodiscover")
@@ -112,6 +117,12 @@ def _limits(value) -> tuple[SendLimit, ...]:
     return tuple(SendLimit(recipients=int(limit["recipients"]), seconds=int(limit["seconds"])) for limit in value)
 
 
+def _count(value) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(value)
+    return value
+
+
 def _optional(convert):
     return lambda value: None if value is None else convert(value)
 
@@ -127,4 +138,5 @@ _CONVERTERS = {
     "send_limits_by_account": lambda value: {_text(account).lower(): _limits(limits) for account, limits in value.items()},
     "mail_logs": _paths,
     "certificate_file": _optional(_path),
+    "queue_warn_at": _count,
 }

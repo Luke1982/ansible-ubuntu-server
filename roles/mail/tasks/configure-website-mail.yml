@@ -1,0 +1,66 @@
+---
+# Sending limits for the websites' mail, like the accounts have (templates/postfwd.cf.j2). Every site runs PHP as
+# the same user, so Postfix can't tell the sites apart by user: PHP hands its mail to site-sendmail
+# (files/mailctl/mailctl/sitesendmail.py), which names the site to Postfix. The ways around it are closed to that
+# user: the sendmail command, and port 25 of other mail servers.
+
+# -P keeps the script's folder, the website's own, off the module path.
+- name: Install site-sendmail, which hands the websites' mail to Postfix in the site's name
+  copy:
+    dest: /usr/local/sbin/site-sendmail
+    mode: 0755
+    content: |
+      #!/bin/sh
+      PYTHONPATH={{ mailctl_lib }} exec /usr/bin/python3 -P -m mailctl.sitesendmail "$@"
+
+- name: Find the php.ini of the websites' PHP
+  find:
+    paths: "{{ ols_root }}"
+    patterns: php.ini
+    recurse: yes
+    depth: 6
+  register: website_php_ini
+
+# The name has to contain "sendmail": PHPMailer, which WordPress uses, calls /usr/sbin/sendmail itself otherwise.
+- name: Hand the websites' mail to site-sendmail
+  ini_file:
+    path: "{{ item.path }}"
+    section: mail function
+    option: sendmail_path
+    value: /usr/local/sbin/site-sendmail -t -i
+  loop: "{{ website_php_ini.files | selectattr('path', 'search', '/lsphp[^/]*/etc/php/[^/]+/litespeed/php.ini$') | list }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: website_sendmail
+
+# Now and not at the end of the play: PHP that runs keeps its old sendmail, which the next task closes to it.
+# Restarting OpenLiteSpeed leaves PHP's processes running (detached mode), so they are stopped themselves;
+# OpenLiteSpeed starts new ones, with the new php.ini, on the next request. pkill's 1 means none was running.
+- name: Restart the websites' PHP so it uses site-sendmail
+  shell: pkill -TERM -x lsphp || [ $? -eq 1 ]
+  when: website_sendmail.changed
+
+# Postfix's sendmail and postdrop check this themselves, so it holds without a restart.
+- name: Close the sendmail command to the websites' PHP
+  lineinfile:
+    path: /etc/postfix/main.cf
+    regexp: ^authorized_submit_users\s*=
+    line: authorized_submit_users = !{{ mail_website_user }}, static:anyone
+
+- name: Create the directory for firewall rules of other roles
+  file:
+    path: /etc/firewall.d
+    state: directory
+    owner: root
+    group: root
+    mode: 0755
+
+# /usr/local/bin/start_firewall.sh (the basic role) reads it.
+- name: Close other mail servers' port 25 to the websites' PHP
+  template:
+    src: firewall-website-smtp.sh.j2
+    dest: /etc/firewall.d/website-smtp.sh
+    owner: root
+    group: root
+    mode: 0644
+  notify: restart firewall

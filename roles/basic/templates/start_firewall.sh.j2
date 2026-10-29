@@ -54,3 +54,12 @@ iptables -A INPUT -p tcp -m tcp --dport 21 -m conntrack --ctstate NEW,ESTABLISHE
 iptables -A INPUT -p tcp -m tcp --dport 20 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
 # Following rules opens everything above port 5000 for FTP traffic after connection is established
 iptables -A INPUT -p tcp -m tcp --sport 5000: --dport 5000: -m conntrack --ctstate ESTABLISHED -j ACCEPT
+
+# Rules of other roles, like the mail role's: the files in /etc/firewall.d. An "if", so that without any the
+# script still ends well and the firewall service doesn't count as failed.
+for rules in /etc/firewall.d/*.sh
+do
+	if [ -f "$rules" ]; then
+		. "$rules"
+	fi
+done

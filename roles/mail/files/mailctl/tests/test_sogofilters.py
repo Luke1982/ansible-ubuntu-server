@@ -1,6 +1,7 @@
 """Filters as they come from another server, and as webmail keeps them."""
 
 import json
+from datetime import date, datetime
 
 import pytest
 
@@ -24,7 +25,7 @@ if allof (address :is ["to","cc"] "bills@example.nl", not header :contains "subj
 
 
 def translated(script=ROUNDCUBE, name="roundcube"):
-    return sogofilters.translate(script, name)
+    return sogofilters.translate(script, name)[:2]
 
 
 def test_a_rule_becomes_a_filter_webmail_can_show():
@@ -95,7 +96,7 @@ def test_filters_are_written_back_as_the_script_dovecot_runs():
 def test_rendering_and_reading_again_gives_the_same_filters():
     filters, _ = translated()
 
-    again, left = sogofilters.translate(sogofilters.render(filters), "again")
+    again, left, _ = sogofilters.translate(sogofilters.render(filters), "again")
 
     assert left == []
     assert [one["rules"] for one in again] == [one["rules"] for one in filters]
@@ -139,7 +140,7 @@ def test_an_account_webmail_has_never_seen_gets_a_profile_of_its_own(database):
 def test_adopt_puts_the_rules_in_webmail_and_writes_the_script_it_runs(database, fake_command):
     doveadm = fake_command("doveadm")
 
-    adopted = sogofilters.adopt(database, "info@example.nl", [("roundcube", ROUNDCUBE)])
+    adopted = sogofilters.adopt(database, "info@example.nl", [("roundcube", ROUNDCUBE, True)])
 
     assert [one["name"] for one in adopted.added] == ["Family", "Bills"]
     assert adopted.already == 0 and adopted.left == []
@@ -150,9 +151,9 @@ def test_adopt_puts_the_rules_in_webmail_and_writes_the_script_it_runs(database,
 
 def test_adopt_leaves_a_filter_webmail_already_has_alone(database, fake_command):
     fake_command("doveadm")
-    sogofilters.adopt(database, "info@example.nl", [("roundcube", ROUNDCUBE)])
+    sogofilters.adopt(database, "info@example.nl", [("roundcube", ROUNDCUBE, True)])
 
-    adopted = sogofilters.adopt(database, "info@example.nl", [("roundcube", ROUNDCUBE)])
+    adopted = sogofilters.adopt(database, "info@example.nl", [("roundcube", ROUNDCUBE, True)])
 
     assert adopted.added == [] and adopted.already == 2
     assert len(sogofilters.read(database, "info@example.nl")) == 2
@@ -161,9 +162,9 @@ def test_adopt_leaves_a_filter_webmail_already_has_alone(database, fake_command)
 def test_adopt_writes_nothing_when_no_rule_fits_webmails_filters(database, fake_command):
     doveadm = fake_command("doveadm")
 
-    adopted = sogofilters.adopt(database, "info@example.nl", [("away", 'vacation :days 1 "Away";\n')])
+    adopted = sogofilters.adopt(database, "info@example.nl", [("big", "if size :over 100K { discard; }\n", True)])
 
-    assert adopted.added == [] and "vacation" in adopted.left[0]
+    assert adopted.added == [] and "size" in adopted.left[0]
     assert sogofilters.read(database, "info@example.nl") == []
     assert doveadm.calls == []
 
@@ -242,3 +243,105 @@ def test_the_script_webmail_renders_puts_the_sieve_names_back():
                                   "actions": [{"method": "addflag", "argument": "seen"}]}])
 
     assert 'addflag "\\\\Seen";' in script
+
+
+# An out-of-office reply goes to webmail's out-of-office settings, which have a first and a last day.
+
+# As Roundcube writes one, with the period as two tests on today's date.
+AWAY = """require ["date","relational","vacation"];
+# rule:[Vakantiemelding]
+if allof (currentdate :value "gt" "date" "%s", currentdate :value "lt" "date" "%s")
+{
+	vacation :days 1 :subject "Afwezigheidsmelding" text:
+Geachte mevrouw, heer,
+
+Het kantoor is gesloten.
+..Een regel die met een punt begint.
+
+Met vriendelijke groet,
+.
+;
+}
+"""
+
+
+def test_an_out_of_office_reply_that_has_ended_comes_over_switched_off():
+    found = sogofilters.translate(AWAY % ("2026-09-22", "2026-10-07"), "managesieve")
+
+    assert found.filters == [] and found.left == []
+    reply = found.vacation
+    assert reply["enabled"] == 0
+    assert reply["autoReplyText"] == ("Geachte mevrouw, heer,\n\nHet kantoor is gesloten.\n"
+                                      ".Een regel die met een punt begint.\n\nMet vriendelijke groet,")
+    assert reply["customSubjectEnabled"] == 1 and reply["customSubject"] == "Afwezigheidsmelding"
+    assert reply["daysBetweenResponse"] == 1
+    # Later than the 22nd and earlier than the 7th: from the 23rd until the 6th.
+    assert sogofilters.last_day(reply) == date(2026, 10, 6)
+    assert reply["startDateEnabled"] == 1
+    assert datetime.fromtimestamp(reply["startDate"]).date() == date(2026, 9, 23)
+
+
+def test_an_out_of_office_reply_still_to_come_is_on_and_runs_on_its_days_only():
+    reply = sogofilters.translate(AWAY % ("2098-12-31", "2099-02-01"), "managesieve").vacation
+
+    assert reply["enabled"] == 1
+    script = sogofilters.render([], reply)
+    assert script.startswith('require ["date", "relational", "vacation"];')
+    assert ('if allof (currentdate :value "ge" "date" "2099-01-01", currentdate :value "le" "date" "2099-01-31")'
+            in script)
+    assert sogofilters.translate(script, "again").vacation == reply
+
+
+def test_an_out_of_office_reply_without_days_is_on_until_it_is_switched_off():
+    reply = sogofilters.translate('require ["vacation"];\nvacation :days 3 "Away";\n', "rc").vacation
+
+    assert reply["enabled"] == 1 and reply["autoReplyText"] == "Away"
+    assert reply["startDateEnabled"] == 0 and reply["endDateEnabled"] == 0
+    assert sogofilters.render([], reply).startswith('require ["vacation"];\n\nvacation :days 3 text:\nAway\n.\n;')
+
+
+def test_a_reply_that_is_switched_off_is_left_out_of_the_script():
+    reply = sogofilters.translate(AWAY % ("2026-09-22", "2026-10-07"), "managesieve").vacation
+
+    assert sogofilters.render([], reply) == ""
+
+
+def test_adopt_puts_the_reply_in_webmails_out_of_office_settings(database, fake_command):
+    doveadm = fake_command("doveadm")
+
+    adopted = sogofilters.adopt(database, "info@example.nl", [("managesieve", AWAY % ("2098-12-31", "2099-02-01"),
+                                                               True)])
+
+    stored = json.loads(database.value("SELECT c_defaults FROM sogo.sogo_user_profile WHERE c_uid = %s",
+                                       "info@example.nl"))
+    assert stored["Vacation"] == adopted.vacation and adopted.vacation["enabled"] == 1
+    # Without :addresses the reply goes out for the account's own address.
+    assert adopted.vacation["autoReplyEmailAddresses"] == ["info@example.nl"]
+    assert ["sieve", "activate", "-u", "info@example.nl", "sogo"] in [call[:5] for call in doveadm.calls]
+
+
+def test_a_reply_from_a_script_that_didnt_run_comes_over_switched_off(database, fake_command):
+    fake_command("doveadm")
+
+    adopted = sogofilters.adopt(database, "info@example.nl", [("old", AWAY % ("2098-12-31", "2099-02-01"), False)])
+
+    assert adopted.vacation["enabled"] == 0
+
+
+def test_adopt_leaves_a_reply_webmail_already_has_alone(database, fake_command):
+    fake_command("doveadm")
+    database.execute("INSERT INTO sogo.sogo_user_profile (c_uid, c_defaults) VALUES (%s, %s)", "info@example.nl",
+                     json.dumps({"Vacation": {"enabled": 1, "autoReplyText": "Mine"}}))
+
+    adopted = sogofilters.adopt(database, "info@example.nl", [("rc", 'vacation "Away";\n', True)])
+
+    assert adopted.vacation is None and "webmail has one already" in adopted.left[0]
+    stored = json.loads(database.value("SELECT c_defaults FROM sogo.sogo_user_profile WHERE c_uid = %s",
+                                       "info@example.nl"))
+    assert stored["Vacation"]["autoReplyText"] == "Mine"
+
+
+def test_a_reply_under_a_test_webmail_has_no_place_for_stays_in_its_script():
+    _, left = translated('if header :is "subject" "x" { vacation "away"; }', "old")
+
+    assert "the action vacation" in left[0]

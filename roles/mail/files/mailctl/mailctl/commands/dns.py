@@ -1,6 +1,7 @@
 """mailctl dns: the DNS records a domain needs, and publishing them at TransIP."""
 
 import sys
+import time
 from dataclasses import dataclass, replace
 from typing import Annotated, Optional
 
@@ -15,6 +16,9 @@ from .checks import offer_the_certificate
 from .shared import Domain, Yes, ask_domain, group, recommended_records
 
 app = group("Show a domain's DNS records and publish them at TransIP.")
+
+PUBLISH_WAIT = 300  # how long to wait for TransIP's nameservers to serve what was just published, as domainctl does
+PUBLISH_POLL = 10  # seconds between asking them
 
 DryRun = Annotated[bool, typer.Option("--dry-run", help="Only show the changes; change nothing.")]
 Login = Annotated[Optional[str], typer.Option(
@@ -52,6 +56,9 @@ def publish(domain: Domain = None, dry_run: DryRun = False, yes: Yes = False) ->
     senders it allows, and a DMARC record that's there stays. A domain like shop.example.nl goes into the zone of
     example.nl when it has none of its own. Shows the changes and asks before making them.
 
+    A dry run also tries whether TransIP takes a change to the zone at all, with a record of its own that it
+    removes again; the domain's own records are left exactly as they are.
+
     [dim]Example:[/] mailctl dns publish example.nl --dry-run
     """
     with open_session() as session:
@@ -63,18 +70,85 @@ def publish(domain: Domain = None, dry_run: DryRun = False, yes: Yes = False) ->
             return
         show_zone_change(change)
         if dry_run:
-            ui.note("Nothing was changed (--dry-run).")
+            try_a_change(session, change.zone)
+            ui.note("The domain's own records were not changed (--dry-run).")
             return
         ui.confirm("Make these changes at TransIP?", yes)
         change = _one_expire_per_record_set(change, yes)
         save_zone_change(change)
         ui.success(f"Published the mail records of {domain} at TransIP.")
         note_removed_records(change)
+        wait_until_served(dns_check.mail_host(domain))
         add_to_certificate = offer_the_certificate(session, domain, yes)
     if add_to_certificate:
         from . import certificate as certificate_command  # here: certificate.py takes DryRun from this module
         certificate_command.sync(yes=True)
     ui.note(f"Check the domain's setup with: mailctl doctor {domain}")
+
+
+def wait_until_served(host: str, wait: int = PUBLISH_WAIT, poll: int = PUBLISH_POLL) -> bool:
+    """Waits until the nameservers of the host's zone give this server's address for it, and says whether they do.
+
+    TransIP takes a moment to serve a change. What comes next, the certificate and webmail, looks the name up, and
+    asked too soon it finds the old address and leaves the domain out as if nothing had been published.
+    """
+    ips = system.server_ips()
+    resolver = dns_check.SystemResolver()
+    knows = getattr(resolver, "knows_this_server", None)
+    if knows:
+        knows(ips)
+    deadline = time.monotonic() + wait
+    with ui.console.status(f"Waiting until TransIP's nameservers give {host} this server's address…"):
+        while True:
+            try:
+                if resolver.addresses(host) & ips:
+                    ui.success(f"{host} points to this server at its nameservers.")
+                    return True
+            except dns_check.LookupFailed:
+                pass  # asked again in a moment, like an answer that is still the old one
+            if time.monotonic() >= deadline:
+                ui.warn(f"{host} still doesn't point to this server at its nameservers after "
+                        f"{wait // 60} minutes.")
+                return False
+            time.sleep(poll)
+
+
+# The record a dry run writes to see whether TransIP takes a change. Its name is one nothing looks up, and its
+# expire is short, so the few seconds it exists cost nothing even if removing it fails.
+TRY_NAME = "_mailctl-write-test"
+TRY_EXPIRE = 60
+
+
+def try_a_change(session: Session, zone_name: str) -> bool:
+    """Whether TransIP takes a change to the zone, found out by making one and taking it back, and says so.
+
+    A dry run that only reads says nothing about this. TransIP answers a write it won't do with no more than
+    "Internal error occurred", and without this that only comes out when a publish by hand has already been
+    agreed to and half the work after it is waiting on records that were never saved.
+    """
+    client = transip.Client(transip_credentials(session), hostname=session.config.hostname, read_only=False)
+    entry = zone.Entry(TRY_NAME, TRY_EXPIRE, "TXT", "mailctl write test")
+    with ui.console.status("Trying whether TransIP takes a change…"):
+        try:
+            client.add_dns_entry(zone_name, entry)
+        except MailctlError as problem:
+            _say_why(f"TransIP won't take a change to {zone_name}, so publishing would fail too.", problem)
+            return False
+        try:
+            client.remove_dns_entry(zone_name, entry)
+        except MailctlError as problem:
+            _say_why(f"TransIP took the test record {TRY_NAME}.{zone_name} but won't remove it again. "
+                     f"Remove it in TransIP's control panel.", problem)
+            return True
+    ui.success(f"TransIP takes changes to {zone_name}, so publishing would work.")
+    return True
+
+
+def _say_why(what: str, problem: MailctlError) -> None:
+    ui.warn(what)
+    ui.note(problem.message, indent=2)
+    if problem.hint:
+        ui.note(problem.hint, indent=2)
 
 
 def _one_expire_per_record_set(change: "ZoneChange", yes: bool) -> "ZoneChange":

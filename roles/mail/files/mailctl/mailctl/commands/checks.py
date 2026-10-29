@@ -159,7 +159,13 @@ def show(checks: list[Check], everything: bool = True) -> bool:
     width = max(len(check.name) for check in shown)
     for check in shown:
         ui.line(ui.mark(check.status), " ", ui.text(check.name.ljust(width), "bold"), "  ", check.detail, indent=2)
-        ui.records([_short(record) for record in check.fixes] if not everything else check.fixes, indent=4)
+        fixes = [_short(record) for record in check.fixes] if not everything else list(check.fixes)
+        if fixes:
+            # Unlabelled, the records read as the ones the DNS holds now, which the line above just said are
+            # wrong: an MX problem with this server's own address under it looks like the check contradicting
+            # itself. They are what the DNS would hold once they're published.
+            ui.note("The records that put this right:", indent=4)
+        ui.records(fixes, indent=4)
     return True
 
 

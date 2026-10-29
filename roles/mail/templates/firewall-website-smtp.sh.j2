@@ -1,0 +1,16 @@
+# Managed by Ansible (roles/mail/templates/firewall-website-smtp.sh.j2); /usr/local/bin/start_firewall.sh reads it.
+#
+# The websites' PHP may not talk to other mail servers itself: its mail goes through Postfix, where the website
+# sending limits are (templates/postfwd.cf.j2). Postfix runs as its own user, and mail to this server itself
+# goes over lo, so neither is touched. A blocked try is logged as "website-smtp-blocked".
+#
+# start_firewall.sh empties iptables first but not ip6tables, so a rule is only added when it isn't there yet.
+for ipt in iptables ip6tables
+do
+	for rule in "-m limit --limit 6/min -j LOG --log-prefix website-smtp-blocked:" "-j REJECT --reject-with tcp-reset"
+	do
+		# $rule is split into its words on purpose.
+		$ipt -C OUTPUT -p tcp --dport 25 ! -o lo -m owner --uid-owner {{ mail_website_user }} $rule 2>/dev/null ||
+			$ipt -A OUTPUT -p tcp --dport 25 ! -o lo -m owner --uid-owner {{ mail_website_user }} $rule
+	done
+done

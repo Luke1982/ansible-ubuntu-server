@@ -136,6 +136,38 @@ def test_webmail_sync_publishes_a_missing_record_and_then_gets_the_certificate(w
     assert publishing.paths("PUT") == ["/domains/example.nl/dns"]
 
 
+class WebmailPointsHere:
+    """DNS as the world has it once webmail.example.nl is published, wherever the record itself stands."""
+
+    def addresses(self, name):
+        return {ip_address(PUBLIC_IP)} if name.startswith("webmail.") else set()
+
+
+def test_webmail_sync_publishes_nothing_for_a_name_the_world_already_sends_here(webmail_ready, publishing,
+                                                                               monkeypatch):
+    """The record may stand in a zone mailctl doesn't read, and TransIP has handed out a zone without a record its
+    own nameservers were serving. Replacing a whole zone over a name that is already right is all risk."""
+    monkeypatch.setattr(dns_check, "SystemResolver", WebmailPointsHere)
+
+    output = webmail_ready.ok("webmail", "sync")
+
+    assert "Published" not in output
+    assert "https://webmail.example.nl is live, with a new certificate." in output
+    assert publishing.paths("PUT") == []
+
+
+def test_webmail_sync_says_the_sites_are_unchanged_when_a_record_couldnt_be_published(webmail_ready, publishing):
+    publishing.answers[("PUT", "/domains/example.nl/dns")] = [
+        (500, {"error": "Internal error occurred, please contact our support"})]
+
+    output = webmail_ready.ok("webmail", "sync")
+
+    assert "Couldn't publish webmail.example.nl at TransIP: TransIP: Internal error occurred" in output
+    assert "TransIP's own API is failing" in output
+    assert "The webmail sites are as they were; what didn't work is above." in output
+    assert "Nothing changed." not in output
+
+
 def test_webmail_sync_leaves_a_webmail_record_that_is_there(webmail_ready, publishing):
     publishing.zones["example.nl"].append({"name": "webmail", "expire": 300, "type": "CNAME", "content": "@"})
 

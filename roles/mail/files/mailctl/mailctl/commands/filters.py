@@ -13,7 +13,7 @@ from ..session import Session, open_session
 from .dns import DryRun
 from .shared import (
     Address, Yes, activate_imported, ask_address, attempt, group, into_webmail, keep_readable_filters,
-    tell_webmail_to_read_them, warn_no_filter_can_be_read, would_be_in_webmail,
+    tell_about_the_reply, tell_webmail_to_read_them, warn_no_filter_can_be_read, would_be_in_webmail,
 )
 
 app = group("Show the mail filters (Sieve scripts) of an account.")
@@ -133,17 +133,19 @@ def adopt(address: Address = None, dry_run: DryRun = False) -> None:
         else:
             wanted = addresses.list_addresses(session.db)
         for account in wanted:
-            scripts = [(script.name, script.content) for script in mailbox.sieve_scripts(account)
+            scripts = [(script.name, script.content, script.active) for script in mailbox.sieve_scripts(account)
                        if script.name != sogofilters.SCRIPT]
             if not scripts:
                 continue
             if dry_run:
-                filters, left = [], []
-                for name, content in scripts:
-                    found, reasons = sogofilters.translate(content, name)
-                    filters += found
-                    left += reasons
-                ui.line(f"{account}: would put {ui.plural(len(filters), 'rule')} in webmail's filters.")
+                filters, left, replies = [], [], 0
+                for name, content, _ in scripts:
+                    found = sogofilters.translate(content, name)
+                    filters += found.filters
+                    left += found.left
+                    replies += found.vacation is not None
+                ui.line(f"{account}: would put {ui.plural(len(filters), 'rule')} in webmail's filters"
+                        f"{' and the out-of-office reply in its out-of-office settings' if replies else ''}.")
                 for line in left:
                     ui.warn(f"Not in webmail: {line}", indent=2)
                 continue
@@ -151,6 +153,9 @@ def adopt(address: Address = None, dry_run: DryRun = False) -> None:
             if adopted.added:
                 ui.success(f"{account}: {ui.plural(len(adopted.added), 'rule')} in webmail's filters, which run "
                            f"from webmail's own filter now.")
+            if adopted.vacation is not None:
+                ui.line(f"{account}:")
+                tell_about_the_reply(adopted.vacation, indent=2)
             for line in adopted.left:
                 ui.warn(f"Not in webmail: {line}", indent=2)
         if not dry_run:

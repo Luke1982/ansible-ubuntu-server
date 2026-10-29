@@ -154,11 +154,16 @@ class Client:
 
     def replace_dns_entries(self, domain: str, entries: tuple[Entry, ...]) -> None:
         """Replaces the whole zone in one request, so a change is never half made."""
-        body = {"dnsEntries": [
-            {"name": entry.name, "expire": entry.expire, "type": entry.type, "content": entry.content}
-            for entry in entries
-        ]}
+        body = {"dnsEntries": [_as_json(entry) for entry in entries]}
         self._request("PUT", f"/domains/{domain}/dns", body, domain=domain)
+
+    def add_dns_entry(self, domain: str, entry: Entry) -> None:
+        """Adds one entry and leaves the rest of the zone untouched, so nothing else can be lost with it."""
+        self._request("POST", f"/domains/{domain}/dns", {"dnsEntry": _as_json(entry)}, domain=domain)
+
+    def remove_dns_entry(self, domain: str, entry: Entry) -> None:
+        """Removes exactly this entry; TransIP answers 404 when the zone doesn't hold it."""
+        self._request("DELETE", f"/domains/{domain}/dns", {"dnsEntry": _as_json(entry)}, domain=domain)
 
     def nameservers(self, domain: str) -> list[str]:
         response = self._request("GET", f"/domains/{domain}/nameservers", domain=domain)
@@ -184,8 +189,10 @@ class Client:
                      f"mailctl dns show {domain}",
             )
         if status >= 400:
-            raise _failure(status, response)
-        return _json(response) if response.strip() else {}
+            raise _failure(status, response, method, path)
+        # Only a GET answers with something to read. What TransIP sends back when it has saved a change isn't
+        # JSON, and reading it as JSON turns a change it made into "an answer mailctl doesn't understand".
+        return _json(response) if method == "GET" and response.strip() else {}
 
     def _access_token(self) -> str:
         """A token for this command, asked for on first use and signed with the private key."""
@@ -208,7 +215,7 @@ class Client:
                 raise LoginRefused(f"TransIP refused to log in as {self.login}: {_error(response, status)}",
                                    hint=_REFUSED_HINT)
             if status >= 400:
-                raise _failure(status, response)
+                raise _failure(status, response, "POST", "/auth")
             token = _json(response).get("token")
             if not isinstance(token, str):
                 raise MailctlError("TransIP's answer to the login has no token.")
@@ -219,6 +226,10 @@ class Client:
         payload = json.dumps(body).encode() if isinstance(body, dict) else body
         headers = {**headers, "Content-Type": "application/json", "Accept": "application/json"}
         return self._send(method, API + path, headers, payload)
+
+
+def _as_json(entry: Entry) -> dict:
+    return {"name": entry.name, "expire": entry.expire, "type": entry.type, "content": entry.content}
 
 
 def nameserver_addresses(zone: str, name: str, timeout: float = 5.0) -> list[set]:
@@ -283,10 +294,18 @@ def _error(response: bytes, status: int) -> str:
     return str(message) if message else f"HTTP status {status}"
 
 
-def _failure(status: int, response: bytes) -> MailctlError:
+def _failure(status: int, response: bytes, method: str = "", path: str = "") -> MailctlError:
     if status == 429:
         return MailctlError("TransIP's rate limit is reached.", hint="Try again in 15 minutes.")
     if status == 409:
         return MailctlError(f"TransIP: {_error(response, status)}",
                             hint="TransIP is still saving an earlier change. Nothing was changed; try again in a minute.")
+    if status >= 500:
+        # On a bad day TransIP answers no more than "Internal error occurred, please contact our support", which
+        # reads as if something here were wrong. Which request failed, and the status, say whose side it is, so
+        # nobody goes looking through this server for a fault that is at TransIP.
+        where = f"{method} {path}".strip() or "the request"
+        return MailctlError(f"TransIP: {_error(response, status)} (HTTP {status} on {where})",
+                            hint="TransIP's own API is failing, not this server, and nothing was changed. Try again "
+                                 "later, and ask TransIP's support about it if it keeps failing.")
     return MailctlError(f"TransIP: {_error(response, status)}")
