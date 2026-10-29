@@ -8,6 +8,8 @@
       - python3-typer
       - python3-rich
       - python3-dnspython
+      # Unpacks mail Dovecot stored compressed, for mailctl spam learn
+      - zstd
     state: present
 
 - name: Create the mailctl package directory

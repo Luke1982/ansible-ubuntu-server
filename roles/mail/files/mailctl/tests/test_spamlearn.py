@@ -1,5 +1,10 @@
+import bz2
+import gzip
+import lzma
 import os
+import subprocess
 import time
+from pathlib import Path
 
 import pytest
 
@@ -7,6 +12,14 @@ from mailctl.core import spamlearn, system
 from mailctl.core.errors import MailctlError
 
 ADDRESS = "info@example.nl"
+PLAIN = b"Subject: hello\n\nbody\n"
+# What Dovecot can compress mail with, and how to compress it the same way.
+PACKERS = {
+    "gz": gzip.compress,
+    "bz2": bz2.compress,
+    "xz": lzma.compress,
+    "zstd": lambda plain: subprocess.run(["zstd", "-qc"], input=plain, capture_output=True, check=True).stdout,
+}
 
 
 @pytest.fixture
@@ -126,6 +139,44 @@ def test_learn_goes_on_when_one_batch_fails(fake_command, tmp_path, monkeypatch)
 
     assert learned == 1
     assert len(problems) == 1 and "unreadable" in problems[0]
+
+
+@pytest.mark.parametrize("method", PACKERS)
+def test_a_message_dovecot_compressed_goes_to_sa_learn_unpacked(fake_command, maildir, method):
+    """sa-learn reads only plain mail: it would learn from the compressed bytes as if they were words."""
+    stored = maildir / "cur" / "1:2,SZ"
+    stored.write_bytes(PACKERS[method](PLAIN))
+    seen = maildir.parent / "seen"
+    sa_learn = fake_command("sa-learn", f'cat "$3" > "{seen}"; '
+                                        'echo "Learned tokens from 1 message(s) (1 message(s) examined)"')
+
+    learned, problems = spamlearn.learn([stored], spam=True)
+
+    assert (learned, problems) == (1, [])
+    assert seen.read_bytes() == PLAIN
+    assert not Path(sa_learn.calls[0][2]).exists()  # the unpacked copy doesn't stay behind
+
+
+def test_a_plain_message_goes_to_sa_learn_as_it_is(fake_command, maildir):
+    sa_learn = fake_command("sa-learn")
+    plain = message(maildir / "cur", "1:2,S")
+
+    spamlearn.learn([plain], spam=False)
+
+    assert sa_learn.calls[0][2:] == [str(plain)]
+
+
+def test_a_compressed_message_that_cant_be_unpacked_is_left_out_and_said(fake_command, maildir):
+    sa_learn = fake_command("sa-learn", 'echo "Learned tokens from 1 message(s) (1 message(s) examined)"')
+    broken = maildir / "cur" / "1:2,SZ"
+    broken.write_bytes(PACKERS["gz"](PLAIN)[:12])
+    plain = message(maildir / "cur", "2:2,S")
+
+    learned, problems = spamlearn.learn([broken, plain], spam=False)
+
+    assert learned == 1
+    assert sa_learn.calls[0][2:] == [str(plain)]
+    assert len(problems) == 1 and str(broken) in problems[0]
 
 
 def test_learn_without_messages_runs_nothing(fake_command):

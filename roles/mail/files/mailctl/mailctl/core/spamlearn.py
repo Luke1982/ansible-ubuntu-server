@@ -10,10 +10,15 @@ server with years of mail. sa-learn also remembers the messages it has already s
 twice is not learned twice.
 """
 
+import bz2
+import gzip
 import json
+import lzma
 import os
 import re
+import tempfile
 import time
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +36,21 @@ BATCH = 200
 # Where the time of the last run is kept, so the next one only looks at what came after it.
 STATE = Path("/var/lib/mailctl/spam-learn.json")
 _LEARNED = re.compile(r"Learned tokens from (\d+) message")
+
+
+def _unzstd(packed: bytes) -> bytes:
+    """Python has no zstd of its own before 3.14, so the zstd program unpacks it."""
+    return system.run_binary("zstd", "-dcq", stdin=packed)
+
+
+# How Dovecot can store a message compressed, told apart by the first bytes of the file as Dovecot itself does it:
+# the file name doesn't say. sa-learn reads only plain mail, so these are unpacked for it.
+_PACKED = {
+    b"\x1f\x8b": gzip.decompress,
+    b"BZh": bz2.decompress,
+    b"\xfd7zXZ\x00": lzma.decompress,
+    b"\x28\xb5\x2f\xfd": _unzstd,
+}
 
 
 @dataclass(frozen=True)
@@ -116,20 +136,47 @@ def messages(folder: Folder, since: float = 0.0) -> list[Path]:
 def learn(paths: list[Path], spam: bool) -> tuple[int, list[str]]:
     """Hands the messages to sa-learn, in batches. Returns how many it learned from, and what went wrong.
 
+    A message Dovecot stored compressed goes over as an unpacked copy, in a directory that is gone after its batch.
     Nothing is synced here: the caller does that once, at the end, which is what --no-sync is for.
     """
     learned, problems = 0, []
     what = "--spam" if spam else "--ham"
     for start in range(0, len(paths), BATCH):
-        batch = paths[start:start + BATCH]
-        try:
-            output = system.run("sa-learn", "--no-sync", what, *(str(path) for path in batch))
-        except MailctlError as problem:
-            problems.append(problem.message)
-            continue
+        with tempfile.TemporaryDirectory(prefix="mailctl-spam-learn-") as unpacked:
+            batch = []
+            for number, path in enumerate(paths[start:start + BATCH]):
+                try:
+                    batch.append(_readable(path, Path(unpacked) / str(number)))
+                except MailctlError as problem:
+                    problems.append(problem.message)
+            if not batch:
+                continue
+            try:
+                output = system.run("sa-learn", "--no-sync", what, *(str(path) for path in batch))
+            except MailctlError as problem:
+                problems.append(problem.message)
+                continue
         found = _LEARNED.search(output)
         learned += int(found.group(1)) if found else 0
     return learned, problems
+
+
+def _readable(path: Path, copy: Path) -> Path:
+    """The message as sa-learn can read it: the file itself, or an unpacked copy of it at that place when Dovecot
+    stored it compressed. A file that can't be opened goes over as it is, and sa-learn says what is wrong with it."""
+    try:
+        with path.open("rb") as file:
+            start = file.read(6)
+    except OSError:
+        return path
+    unpack = next((unpack for magic, unpack in _PACKED.items() if start.startswith(magic)), None)
+    if unpack is None:
+        return path
+    try:
+        copy.write_bytes(unpack(path.read_bytes()))
+    except (OSError, EOFError, ValueError, lzma.LZMAError, zlib.error, MailctlError) as problem:
+        raise MailctlError(f"Left out {path}: it is compressed and can't be unpacked ({problem}).") from None
+    return copy
 
 
 def sync() -> None:
