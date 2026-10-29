@@ -591,6 +591,32 @@ def test_a_site_this_tool_does_not_move_says_so_before_its_dns_is_touched():
                                                                      "server", "")
 
 
+def _dns_found(**more):
+    return dict({"here": [], "there": [], "away": [], "unknown": [], "mail_there": [], "by_name": []}, **more)
+
+
+def test_the_name_that_still_points_here_is_said_by_name():
+    """One of two websites has moved. Both sides of the DNS row then read "website", which says nothing about
+    which name is left, and you go looking for it by hand."""
+    found = _dns_found(here=["website"], there=["website"],
+                       by_name=[("website", "detestpsycholoog.nl", "there"),
+                                ("website", "together.detestpsycholoog.nl", "here")])
+    assert migrate._dns_notes(found) == [
+        "together.detestpsycholoog.nl still points here. detestpsycholoog.nl points at the new server already."]
+
+
+def test_a_name_that_has_moved_for_one_thing_and_not_another_is_left_to_the_row():
+    """Its website is across and its mail is not: the two words of the row say that, and naming it again
+    would read as if the name had not moved at all."""
+    found = _dns_found(by_name=[("website", "a.nl", "there"), ("mail", "a.nl", "here")])
+    assert migrate._dns_notes(found) == []
+
+
+def test_nothing_is_said_by_name_while_every_name_is_still_here():
+    found = _dns_found(by_name=[("website", "a.nl", "here"), ("mail", "a.nl", "here")])
+    assert migrate._dns_notes(found) == []
+
+
 def test_a_customer_with_no_website_has_no_dns_to_move():
     row = migrate.customers([_mail("a.nl")], _status(**{"mail:a.nl": "new"}))[0]
     connection, said = Connection(), []

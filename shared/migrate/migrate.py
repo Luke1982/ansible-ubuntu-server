@@ -3411,7 +3411,7 @@ def dns_now(row, addresses, ours=None, run=None, look=None):
     looked up at all."""
     run = run or run_command
     ours = _our_addresses() if ours is None else set(str(one) for one in ours)
-    found = {"here": [], "there": [], "away": [], "unknown": [], "mail_there": []}
+    found = {"here": [], "there": [], "away": [], "unknown": [], "mail_there": [], "by_name": []}
     servers = _lookup(run, "NS", row.name, PUBLIC_RESOLVER) or []
     for item in row.items["site"]:
         if item.get("name"):
@@ -3431,7 +3431,10 @@ def dns_now(row, addresses, ours=None, run=None, look=None):
 
 def _put_dns(found, what, name, where, said):
     """One answer in its place. A name that points at neither server, or that can't be looked up, keeps its own
-    name with it: the row above has no room to say which of the customer's names it was."""
+    name with it: the row above has no room to say which of the customer's names it was. Every name is kept
+    beside the kinds as well, for the line that says which of them is still here: a customer with two websites
+    whose first one has moved reads "website" on both sides of the row, which says nothing about the second."""
+    found["by_name"].append((what, name, where))
     if where is None:
         found["unknown"].append((what, name))
     elif where == "away":
@@ -3459,10 +3462,28 @@ def _dns_cells(found):
     return ["DNS", ", ".join(here) or "-", ", ".join(there) or "-", word]
 
 
+STILL_HERE_BY_NAME = "%s still %s here. %s %s at the new server already."
+
+
+def _names_still_here(found):
+    """Which of this customer's names the world is still sent here for, by name, when some of them have moved
+    already. Without it the row says "website" on both sides and leaves you to go looking for the one left."""
+    here = set(name for _what, name, where in found["by_name"] if where == "here")
+    there = set(name for _what, name, where in found["by_name"] if where == "there")
+    # A name that is on both sides has moved for one thing and not for another -- its website but not its
+    # mail -- and the two words in the row say that already. This line is for the names that haven't moved
+    # at all while others have, which the row has no way of showing.
+    left, moved = sorted(here - there), sorted(there)
+    if not left or not moved:
+        return []
+    return [STILL_HERE_BY_NAME % (_and_list(left), "points" if len(left) == 1 else "point",
+                                  _and_list(moved), "points" if len(moved) == 1 else "point")]
+
+
 def _dns_notes(found):
-    """What a cell of the DNS row has no room for: a name that points at neither server, and one that this
-    server can't look up at all."""
-    out = []
+    """What a cell of the DNS row has no room for: which names are still sent here when the others have moved,
+    a name that points at neither server, and one that this server can't look up at all."""
+    out = _names_still_here(found)
     for what, name, said in found["away"]:
         where = {WEBSITE: "The website of %s is served from",
                  SIGNAGE_WHAT: "The piSignage server of %s is reached at",
