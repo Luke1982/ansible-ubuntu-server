@@ -12,8 +12,9 @@ from ..core.errors import MailctlError
 from ..session import Session, open_session
 from .dns import DryRun
 from .shared import (
-    Address, Yes, activate_imported, ask_address, attempt, group, into_webmail, keep_readable_filters,
-    tell_about_the_reply, tell_webmail_to_read_them, warn_no_filter_can_be_read, would_be_in_webmail,
+    WEBMAIL_TAKES_OVER, Address, Yes, activate_imported, ask_address, attempt, group, into_webmail,
+    keep_readable_filters, tell_about_the_reply, tell_webmail_to_read_them, warn_no_filter_can_be_read,
+    would_be_in_webmail,
 )
 
 app = group("Show the mail filters (Sieve scripts) of an account.")
@@ -286,4 +287,7 @@ def show(address: Address = None) -> None:
     if len(own_scripts) > 1:
         # Which is what webmail's own filter does to an imported one, and the other way round.
         ui.note("Only the active filter runs. The others are kept and do nothing.")
+    active = next((script for script in own_scripts if script.active), None)
+    if active is not None and active.name != sogofilters.SCRIPT:
+        ui.warn(WEBMAIL_TAKES_OVER % (active.name, address, active.name))
 

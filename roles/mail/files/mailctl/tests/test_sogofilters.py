@@ -345,3 +345,84 @@ def test_a_reply_under_a_test_webmail_has_no_place_for_stays_in_its_script():
     _, left = translated('if header :is "subject" "x" { vacation "away"; }', "old")
 
     assert "the action vacation" in left[0]
+
+
+# A rule a filter editor has switched off, as Roundcube writes one: "if false", with the rule's own test in the
+# comment behind it, which is where it reads the rule back from when it is switched on again.
+SWITCHED_OFF = """require ["fileinto"];
+# rule:[Github]
+if false # header :contains "from" "notifications@github.com"
+{
+    fileinto "Github";
+}
+"""
+
+
+def test_a_rule_the_other_editor_switched_off_comes_over_switched_off_and_whole():
+    filters, left = translated(SWITCHED_OFF)
+
+    assert left == []
+    assert filters[0]["active"] == 0
+    assert filters[0]["rules"] == [{"field": "from", "operator": "contains",
+                                   "value": "notifications@github.com"}]
+    # It is in webmail's list, where it can be switched on, and it sorts no mail until it is.
+    assert sogofilters.render(filters) == ""
+
+
+def test_a_switched_off_reply_is_in_webmails_out_of_office_settings_switched_off():
+    found = sogofilters.translate('require ["date","relational","vacation"];\n# rule:[Away]\n'
+                                  'if false # allof (currentdate :value "gt" "date" "2098-12-31")\n'
+                                  '{\n\tvacation :days 1 "Away";\n}\n', "managesieve")
+
+    assert found.left == [] and found.vacation["enabled"] == 0
+    assert found.vacation["autoReplyText"] == "Away"
+    assert datetime.fromtimestamp(found.vacation["startDate"]).date() == date(2099, 1, 1)
+
+
+def test_a_comment_that_isnt_a_test_leaves_the_rule_and_the_rest_of_the_script_alone():
+    """Only a filter editor's own "if false # <test>" is read from the comment. A sentence somebody wrote there
+    is not a test, and reading it as one would make the rest of the script parse as something else."""
+    filters, left = translated('# rule:[Old]\nif false # disabled; ask Bert\n{\n    discard;\n}\n'
+                               '# rule:[Bills]\nif header :is "subject" "bill" { discard; }\n')
+
+    assert [one["name"] for one in filters] == ["Bills"]
+    assert "the test false" in left[0]
+
+
+def test_a_reply_that_says_it_comes_from_the_account_itself_is_webmails_own_reply():
+    """Webmail's reply comes from the account, so a :from that names the account says nothing more than it does."""
+    script = 'require ["vacation"];\nvacation :days 1 :from "info@example.nl" "Away";\n'
+
+    found = sogofilters.translate(script, "managesieve", "info@example.nl")
+
+    assert found.left == [] and found.vacation["autoReplyText"] == "Away"
+    assert ":from" not in sogofilters.render([], found.vacation)
+
+
+def test_a_reply_sent_from_another_address_is_left_in_its_own_script():
+    script = 'require ["vacation"];\nvacation :days 1 :from "info@example.nl" "Closed";\n'
+
+    left = sogofilters.translate(script, "roundcube", "siree@example.nl").left
+
+    assert "sent from info@example.nl" in left[0] and "comes from the account itself" in left[0]
+    assert sogofilters.translate(script, "roundcube").left == left  # and the same without an account to compare
+
+
+def test_an_out_of_office_period_on_the_messages_own_date_is_webmails_period():
+    """Some filter editors write the period as a test on the message's Date header instead of on today's."""
+    found = sogofilters.translate('require ["date","relational","vacation"];\n# rule:[Away]\n'
+                                  'if allof (date :value "gt" "Date" "date" "2098-12-31", '
+                                  'date :value "lt" "Date" "date" "2099-02-01")\n'
+                                  '{\n\tvacation :days 1 "Away";\n}\n', "managesieve")
+
+    assert found.left == [] and found.vacation["enabled"] == 1
+    assert datetime.fromtimestamp(found.vacation["startDate"]).date() == date(2099, 1, 1)
+    assert sogofilters.last_day(found.vacation) == date(2099, 1, 31)
+
+
+def test_a_period_on_another_header_than_the_date_stays_where_it_is():
+    found = sogofilters.translate('require ["date","relational","vacation"];\n'
+                                  'if date :value "gt" "Received" "date" "2098-12-31"\n'
+                                  '{\n\tvacation :days 1 "Away";\n}\n', "managesieve")
+
+    assert found.vacation is None and "a date in another header" in found.left[0]

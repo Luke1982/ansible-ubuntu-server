@@ -11,6 +11,9 @@ from typing import Any
 
 # A comment a filter editor writes above a rule to remember its name: "# rule:[Family]".
 RULE_NAME = re.compile(r"#\s*rule:\s*\[(?P<name>[^]]*)]")
+# A rule a filter editor has switched off, which it writes as "if false # <the rule's own test>" so that it can
+# read the rule back when it is switched on again. The test is in the comment, and that is where it is read from.
+SWITCHED_OFF = "false"
 _TOKENS = re.compile(r"""
     (?P<space>\s+)
   | (?P<comment>\#[^\n]*)
@@ -36,6 +39,7 @@ class Call:
     arguments: tuple[Any, ...] = ()
     block: tuple["Call", ...] = ()
     label: str = ""
+    off: bool = False  # a rule the filter editor it came from has switched off
 
 
 @dataclass
@@ -47,6 +51,25 @@ class _Token:
 def parse(content: str) -> list[Call]:
     """The script's top-level commands, in order."""
     return _Parser(_scan(content)).commands()
+
+
+def _test_of_a_switched_off_rule(tokens: list[_Token], comment: str) -> None:
+    """Puts the test in the comment of a switched-off rule where the "false" that stands in for it was, with a
+    token saying the rule is off, so the rule reads as itself and webmail keeps it switched off as well.
+
+    Only a comment that holds nothing but a test is read: one that ends a rule or opens a block would make the
+    rest of the script parse as something else, and a comment anybody wrote by hand is not a test at all.
+    """
+    if not (len(tokens) >= 2 and tokens[-2].kind == "name" and tokens[-2].text.lower() == "if"
+            and tokens[-1].kind == "name" and tokens[-1].text.lower() == SWITCHED_OFF):
+        return
+    try:
+        inside = _scan(comment.removeprefix("#"))
+    except Unreadable:
+        return
+    if not inside or inside[0].kind != "name" or any(one.text in (";", "{", "}") for one in inside):
+        return
+    tokens[-1:] = [_Token("off", "")] + inside
 
 
 def _scan(content: str) -> list[_Token]:
@@ -63,6 +86,8 @@ def _scan(content: str) -> list[_Token]:
             name = RULE_NAME.match(found.group())
             if name:
                 tokens.append(_Token("label", name.group("name")))
+            else:
+                _test_of_a_switched_off_rule(tokens, found.group())
             continue
         if kind != "space":
             tokens.append(_Token(kind, found.group()))
@@ -87,6 +112,9 @@ class _Parser:
         token = self._take()
         if token.kind != "name":
             raise Unreadable(f"expected a command, found {token.text!r}")
+        off = bool(self._peek() and self._peek().kind == "off")
+        if off:
+            self._take()
         tags, arguments = self._arguments()
         block: tuple[Call, ...] = ()
         if self._peek() and self._peek().text == "{":
@@ -95,7 +123,7 @@ class _Parser:
             self._take()
         else:
             raise Unreadable(f"the command {token.text} ends with neither ; nor a block")
-        return Call(token.text.lower(), tags, arguments, block, label)
+        return Call(token.text.lower(), tags, arguments, block, label, off)
 
     def _block(self) -> list[Call]:
         self._take()  # {

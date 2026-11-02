@@ -57,9 +57,10 @@ class Translation(NamedTuple):
     vacation: dict[str, Any] | None = None  # the out-of-office reply, as webmail keeps it
 
 
-def translate(content: str, name: str) -> Translation:
+def translate(content: str, name: str, address: str = "") -> Translation:
     """The rules in a Sieve script as webmail's filters and out-of-office reply, and a line about each rule left
-    behind."""
+    behind. 'address' is the account the script belongs to, which is what an out-of-office reply written to come
+    from the account itself says; without it such a reply is left behind."""
     try:
         commands = parse(content)
     except Unreadable as problem:
@@ -72,11 +73,13 @@ def translate(content: str, name: str) -> Translation:
         number += 1
         where = f"{command.label or f'rule {number}'} in {name}"
         try:
-            reply = _vacation(command)
+            reply = _vacation(command, address)
         except Untranslatable as problem:
             left.append(f"{where}: {problem}")
             continue
         if reply is not None:
+            if command.off:
+                reply = {**reply, "enabled": 0}  # a rule its editor switched off, which webmail can hold as one
             if vacation is not None:
                 left.append(f"{where}: a second out-of-office reply, where webmail has one")
             vacation = vacation or reply
@@ -88,7 +91,8 @@ def translate(content: str, name: str) -> Translation:
             left.append(f"{where}: an if with {len(command.arguments)} tests")
             continue
         try:
-            filters.append(_filter(command.label or f"{name} {number}", command.arguments[0], list(command.block)))
+            filters.append(_filter(command.label or f"{name} {number}", command.arguments[0], list(command.block),
+                                   active=0 if command.off else 1))
         except Untranslatable as problem:
             left.append(f"{where}: {problem}")
     return Translation(filters, left, vacation)
@@ -134,7 +138,7 @@ def adopt(db: Database, address: str, scripts: Iterable[tuple[str, str, bool]]) 
     """
     filters, left, replies = [], [], []
     for name, content, active in scripts:
-        found = translate(content, name)
+        found = translate(content, name, address)
         filters += found.filters
         left += found.left
         if found.vacation is not None:
@@ -236,25 +240,25 @@ def _replying(vacation: Any) -> bool:
     return isinstance(vacation, dict) and bool(vacation.get("enabled") or vacation.get("autoReplyText"))
 
 
-def _vacation(command: Call) -> dict[str, Any] | None:
+def _vacation(command: Call, address: str = "") -> dict[str, Any] | None:
     """The out-of-office reply in a rule, as webmail keeps it, or None when the rule isn't one: a vacation on its
     own, or an if that holds nothing but one, under a first day, a last day or both."""
     if command.name == "vacation":
-        return _reply(command, {})
+        return _reply(command, {}, address)
     if command.name != "if" or len(command.arguments) != 1 or [one.name for one in command.block] != ["vacation"]:
         return None
     dates = _dates(command.arguments[0])
-    return None if dates is None else _reply(command.block[0], dates)
+    return None if dates is None else _reply(command.block[0], dates, address)
 
 
 def _dates(test: Any) -> dict[str, date] | None:
     """The first and last day a test on today's date lets through, or None for a test on anything else."""
     tests = list(test.arguments) if isinstance(test, Call) and test.name == "allof" else [test]
-    if not all(isinstance(one, Call) and one.name in ("true", "currentdate") for one in tests):
+    if not all(isinstance(one, Call) and one.name in ("true", "currentdate", "date") for one in tests):
         return None
     dates: dict[str, date] = {}
     for one in tests:
-        if one.name == "currentdate":
+        if one.name in ("currentdate", "date"):
             end, day = _bound(one)
             if end in dates:
                 raise Untranslatable(f"an out-of-office reply with two {end} dates")
@@ -264,6 +268,12 @@ def _dates(test: Any) -> dict[str, date] | None:
 
 def _bound(test: Call) -> tuple[str, date]:
     options, rest = _options(test, ("value", "zone", "comparator", "count"))
+    if test.name == "date":
+        # The same day written as a test on the message's own Date header, which is how some filter editors write
+        # an out-of-office period. Webmail's period is on today's date, which is the day the reply is sent.
+        if len(rest) != 3 or str(rest[0]).lower() != "date":
+            raise Untranslatable("a test on a date in another header, which webmail's reply doesn't have")
+        rest = rest[1:]
     relation = options.get("value")
     if not isinstance(relation, str) or relation not in _BOUNDS or len(rest) != 2 or rest[0] != "date":
         raise Untranslatable("a test on today's date that isn't 'from' or 'until' a day")
@@ -275,9 +285,15 @@ def _bound(test: Call) -> tuple[str, date]:
     return end, day + timedelta(days=shift)
 
 
-def _reply(call: Call, dates: dict[str, date]) -> dict[str, Any]:
+def _reply(call: Call, dates: dict[str, date], address: str = "") -> dict[str, Any]:
     options, rest = _options(call, ("days", "seconds", "subject", "from", "addresses", "handle"))
-    other = [tag for tag in options if tag not in ("days", "subject", "addresses")]
+    # Webmail's reply comes from the account itself, so a :from that says the account itself says nothing more
+    # than webmail's own does; one that names another sender is beyond it.
+    sender = options.get("from")
+    if sender is not None and (not address or str(sender).lower() != address.lower()):
+        raise Untranslatable(f"an out-of-office reply sent from {sender}, where webmail's comes from the "
+                             f"account itself")
+    other = [tag for tag in options if tag not in ("days", "subject", "addresses", "from")]
     if other:
         raise Untranslatable(f"an out-of-office reply with :{other[0]}, which webmail's doesn't have")
     if len(rest) != 1 or not isinstance(rest[0], str):
@@ -318,12 +334,12 @@ def _day(second: Any) -> date:
     return datetime.fromtimestamp(int(second)).date()
 
 
-def _filter(name: str, test: Any, actions: list[Any]) -> dict[str, Any]:
+def _filter(name: str, test: Any, actions: list[Any], active: int = 1) -> dict[str, Any]:
     match, tests = _match(test)
     return {
         "name": name,
         "match": match,
-        "active": 1,
+        "active": active,
         "rules": [_rule(one) for one in tests],
         "actions": [one for action in actions for one in _actions(action)],
     }

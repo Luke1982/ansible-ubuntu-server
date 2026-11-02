@@ -247,3 +247,31 @@ def test_a_mail_domain_deleted_on_the_new_server_is_offered_again(tmp_path):
     assert migrate.offered([item], gone, notes) == [item]
     assert migrate.GONE_THERE in " ".join(migrate.items_board([item], gone, notes).split())
 
+
+
+def test_what_mailctl_warned_about_on_the_new_server_is_said_on_this_screen():
+    """A domain whose accounts were all made is reported as done. What mailctl couldn't do inside it -- a filter
+    webmail's own filters have no place for, and the offer webmail then makes to take over and leave the account
+    with none -- is only in what mailctl printed over there."""
+    item = {"id": "mail:a.nl", "kind": "mail_domain", "name": "a.nl",
+            "data": {"addresses": [{"address": "x@a.nl", "password_hash": "{SSHA}x"}]}}
+    said = ("✓ Imported 3 accounts of a.nl.\n"
+            "! Not in webmail: Away in managesieve: an out-of-office reply sent from info@b.nl\n"
+            "  ! An external Sieve script is active for this account.\n")
+    replies = [{"ok": False, "needs_password": ["x@a.nl"], "mailctl": {"exit": 1, "stdout": said}},
+               {"ok": True, "mailctl": {"exit": 0, "stdout": said, "stderr": ""}}]
+    screen = []
+
+    class Connection(object):
+        def ask(self, request):
+            return replies.pop(0)
+
+    answer, _skipped = migrate.apply_item(Connection(), item, ask_password=lambda prompt: "a password",
+                                          say=screen.append)
+    text = " ".join(" ".join(screen).split())
+
+    assert answer["ok"] is True
+    assert "an out-of-office reply sent from info@b.nl" in text
+    assert "An external Sieve script is active for this account." in text
+    assert text.count("An external Sieve script") == 1  # said once, not after every reply
+    assert "Imported 3 accounts" not in text  # what worked is reported as done by the run itself

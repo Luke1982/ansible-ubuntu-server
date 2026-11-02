@@ -1036,6 +1036,54 @@ def test_filters_import_can_show_what_it_would_do(mailctl, example_domain, tmp_p
     assert sogofilters.read(database, "info@example.nl") == []
 
 
+# A rule webmail's filter editor has no place for: it stays in the script it came from, and that script is the
+# one that runs.
+BEYOND_WEBMAIL = 'require ["fileinto"];\n# rule:[Big]\nif size :over 100K { fileinto "Big"; }\n'
+
+
+def test_filters_import_warns_that_webmail_offers_to_take_over_the_rules_it_couldnt_hold(
+        mailctl, example_domain, tmp_path, fake_command):
+    """Webmail offers to handle the filters of an account whose active script isn't its own, in one click, and
+    has nothing of these rules to put in their place. Nobody is told that anywhere else."""
+    add_account(mailctl, "info@example.nl")
+    path = server_file(tmp_path, [a_filter(content=BEYOND_WEBMAIL)])
+
+    output = mailctl.ok("filters", "import", str(path), "--yes")
+
+    assert "the test size" in output and "roundcube is the active filter." in output
+    assert "An external Sieve script is active" in output and "they stop sorting mail" in output
+    assert "doveadm sieve activate -u info@example.nl roundcube" in output
+
+
+def test_filters_import_doesnt_warn_about_webmails_offer_when_webmail_holds_the_rules(
+        mailctl, example_domain, tmp_path):
+    add_account(mailctl, "info@example.nl")
+    path = server_file(tmp_path, [a_filter()])
+
+    output = mailctl.ok("filters", "import", str(path), "--yes")
+
+    assert "in webmail's filters now" in output and "An external Sieve script is active" not in output
+
+
+def test_filters_show_warns_when_the_filter_that_runs_isnt_webmails(mailctl, example_domain, fake_command):
+    fake_command("doveadm", 'if [ "$2" = "list" ]; then echo "managesieve ACTIVE"; '
+                            'elif [ "$2" = "get" ]; then echo "# filter"; fi')
+    add_account(mailctl, "info@example.nl")
+
+    output = mailctl.ok("filters", "show", "info@example.nl")
+
+    assert "An external Sieve script is active" in output
+    assert "doveadm sieve activate -u info@example.nl managesieve" in output
+
+
+def test_filters_show_says_nothing_of_the_sort_about_webmails_own_filter(mailctl, example_domain, fake_command):
+    with_an_active_filter(mailctl, fake_command)
+
+    output = mailctl.ok("filters", "show", "info@example.nl")
+
+    assert "An external Sieve script is active" not in output
+
+
 def test_filters_import_says_when_the_file_holds_no_filters(mailctl, example_domain, tmp_path):
     path = server_file(tmp_path, [])
 

@@ -1518,6 +1518,35 @@ def _typed_password(prompt):
         return ""
 
 
+# How mailctl marks a line it warns about, on the new server: its own mark, or the plain one a terminal that
+# can't print it gets.
+_WARN_MARKS = ("! ", "\u2717 ", "x ")
+
+
+def _mailctl_warnings(answer):
+    """What mailctl warned about on the new server while it made this, each line once. A filter of an account
+    that webmail's own filters have no place for is one of these, and without them nothing on this screen says
+    a rule didn't come over: the item itself worked, so it is reported as done."""
+    said = answer.get("mailctl") if isinstance(answer, dict) else None
+    if not isinstance(said, dict):
+        return []
+    out = []
+    for text in (said.get("stdout"), said.get("stderr")):
+        for raw in str(text or "").splitlines():
+            line = raw.strip()
+            if line[:2] in _WARN_MARKS and line[2:] and line[2:] not in out:
+                out.append(line[2:])
+    return out
+
+
+def _tell_warnings(answer, say, told):
+    """Says what mailctl warned about on the new server, each line once."""
+    for line in _mailctl_warnings(answer):
+        if line not in told:
+            told.add(line)
+            warn(line, say)
+
+
 def _tell_note(answer, say, told):
     """Says what the new server said about an item, once. When it could not tell which accounts it already has,
     this note is the only reason the person is given for being asked to type a password for an account that may
@@ -1543,6 +1572,7 @@ def apply_item(connection, item, ask_password=None, say=print, answers=None):
         request["answers"] = dict(answers)
     answer = _making(connection, request)
     _tell_note(answer, say, told)
+    _tell_warnings(answer, say, told)
     while not answer.get("ok") and answer.get("needs_password"):
         wanted = [name for name in answer["needs_password"] if isinstance(name, str)]
         if not wanted or asked.intersection(wanted):
@@ -1571,6 +1601,7 @@ def apply_item(connection, item, ask_password=None, say=print, answers=None):
                     isinstance(entry, dict) and str(entry.get("target", "")).lower() == address.lower())]
         answer = _making(connection, request)
         _tell_note(answer, say, told)
+        _tell_warnings(answer, say, told)
     return answer, skipped
 
 

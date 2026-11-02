@@ -141,7 +141,7 @@ def tell_about_the_reply(vacation: dict[str, Any], indent: int = 0) -> None:
 
 def would_be_in_webmail(scripts: list) -> None:
     for script in scripts:
-        found = sogofilters.translate(script.content, script.name)
+        found = sogofilters.translate(script.content, script.name, getattr(script, "address", ""))
         ui.line(f"Would put {ui.plural(len(found.filters), 'rule')} of {script.name} in webmail's filters.",
                 indent=2)
         if found.vacation is not None:
@@ -151,6 +151,16 @@ def would_be_in_webmail(scripts: list) -> None:
             ui.warn(f"Not in webmail: {line}", indent=2)
 
 
+# What webmail says about an account whose active filter isn't its own, and what its offer to take over does.
+# It is said here because nothing else says it: the offer is one click, it empties the filter list of an account
+# whose rules webmail never got, and the person who clicks it is not the person who imported them.
+WEBMAIL_TAKES_OVER = (
+    'Webmail shows "An external Sieve script is active" for this account, and offers to handle everything. '
+    "Taking that offer switches %s off and puts webmail's own filters in its place, and webmail has none of "
+    "these rules, so they stop sorting mail. Leave that offer alone, or put the rules in webmail's own filter "
+    "editor first. The script itself stays either way: switch it back on with doveadm sieve activate -u %s %s")
+
+
 def activate_imported(address: str, scripts: list, was_active: str | None) -> None:
     """When nothing went into webmail, the imported filter is the one that runs, as on the other server."""
     for script in scripts:
@@ -158,6 +168,7 @@ def activate_imported(address: str, scripts: list, was_active: str | None) -> No
             continue
         mailbox.activate_sieve(address, script.name)
         ui.success(f"{script.name} is the active filter.")
+        ui.warn(WEBMAIL_TAKES_OVER % (script.name, address, script.name))
         if was_active and was_active != script.name:
             # An account has one active filter, and webmail keeps its own in a filter of its own.
             ui.warn(f"{was_active} was the active filter and stops running: an account has one. Saving filters in "
