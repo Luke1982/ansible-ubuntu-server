@@ -250,3 +250,40 @@ def test_the_dns_of_a_site_that_is_not_across_says_to_copy_it_first():
     said = []
     migrate._point_dns(Server(), _row(_item()), ask=lambda question: "no", say=said.append)
     assert "Type f here first" in " ".join(" ".join(said).split())
+
+
+def test_s_at_the_database_question_leaves_the_site_alone(here):
+    """The database question is the first thing f asks. A customer with two sites that are not WordPress has
+    to be able to get past the one you didn't come for, without a dump or a copy."""
+    server = Server()
+    steps, said, copied = _copy(server, here, typed="s")
+
+    assert steps == [] and copied == [] and server.requests == []
+    assert "boersma-advocaten.nl was left alone." in said
+    assert not os.path.exists(os.path.join(here, "boersma.sql"))
+
+
+def test_the_question_says_how_to_leave_the_site_alone():
+    asked = []
+    answer = migrate.pick_database("boersma-advocaten.nl", {"boersma": 4096}, say=lambda text: None,
+                                   choose=lambda prompt: asked.append(prompt) or "s")
+
+    assert answer is migrate.SKIP_SITE
+    assert "s to leave this site alone" in asked[0]
+
+
+def test_a_database_really_called_s_is_a_database_and_not_an_answer(here):
+    server = Server()
+    steps, _said, copied = _copy(server, here, {"s": 4096}, typed="s")
+
+    assert copied and steps and server.asked_for("adopt_database")[0]["dump"] == "s.sql"
+
+
+def test_a_database_name_this_server_doesnt_have_copies_nothing(here):
+    """It said "Nothing was copied" and then went on to ask about copying the files, which is two answers to
+    one question."""
+    server = Server()
+    steps, said, copied = _copy(server, here, typed="boersmaa")
+
+    assert steps == [] and copied == [] and server.requests == []
+    assert "no database called boersmaa on this server" in said

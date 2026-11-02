@@ -6303,8 +6303,12 @@ def _database_login(database, say=print, typed=None, secret=None):
 OTHER_NO_DOCROOT = ("%s has no web root on this server that I can find, so there are no files to copy. Its "
                     "configuration is in the list above.")
 DUMP_SUFFIX = ".sql"
-PICK_DATABASE = "Number of the database of %s, its name, or Enter for none: "
+PICK_DATABASE = "Number of the database of %s, its name, Enter for none, or s to leave this site alone: "
 NO_DATABASE_PICKED = "No database picked, so only the files of %s go over."
+# What pick_database gives back when the answer is to leave the site where it is: not a database name, and not
+# None either, which is a site that has no database and whose files still go over.
+SKIP_SITE = "leave this site alone"
+SKIP_WORDS = ("s", "skip", "n", "no")
 # mysqldump writes its own message to the screen as it goes, so what went wrong is above this line; what is
 # not there is what to do about it. A table marked as crashed is much the commonest reason a dump stops, and
 # it stops the whole dump, not just that table.
@@ -6333,7 +6337,9 @@ def _database_choices(databases, sites, mail_database):
 
 def pick_database(name, databases, sites=None, mail_database=None, say=print, choose=None):
     """Which database belongs to this site, asked of the person: nothing in the files says it, and guessing it
-    would copy somebody else's data over. Returns the name, or None for a site that has none."""
+    would copy somebody else's data over. Returns the name, None for a site that has none, or SKIP_SITE when
+    the answer is to leave the site alone: this is the first thing f asks, and a customer whose other site is
+    the one you came for has to be able to get past it."""
     choices = _database_choices(databases, sites, mail_database)
     if not choices:
         note("There is no database on this server to pick from, so only the files of %s go over." % name, say)
@@ -6349,9 +6355,11 @@ def pick_database(name, databases, sites=None, mail_database=None, say=print, ch
     if typed.isdigit() and 0 < int(typed) <= len(choices):
         return choices[int(typed) - 1]
     if typed in (databases or {}):
-        return typed
-    warn("There is no database called %s on this server. Nothing was copied." % typed, say)
-    return None
+        return typed  # a database really called s is a database, not an answer
+    if typed.lower() in SKIP_WORDS:
+        return SKIP_SITE
+    warn("There is no database called %s on this server, so nothing was copied." % typed, say)
+    return SKIP_SITE
 
 
 def _dump_into(docroot, database, runner=None):
@@ -6392,6 +6400,9 @@ def copy_other_site(connection, item, databases, sites=None, mail_database=None,
     note(OTHER_WARNING % name, say)
     say("")
     database = pick_database(name, databases, sites, mail_database, say=say, choose=choose)
+    if database is SKIP_SITE:
+        note("%s was left alone." % name, say)
+        return []
     login = (None, None)
     if database:
         say("")
