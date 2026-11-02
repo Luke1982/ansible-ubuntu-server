@@ -1,0 +1,44 @@
+---
+# Mail that a mail program saves in a folder of its own naming goes on to Sent, Trash or Junk.
+#
+# Programs that go by the special_use flags Dovecot advertises find the four standard folders whatever they
+# call them. The ones that don't make a folder of their own: Outlook saves its sent mail in "Sent Items",
+# a Dutch program in "Verzonden items". Each of those folders used to be a symbolic link to the standard one,
+# which Dovecot 2.4 no longer supports and mail programs never understood: a link is a second folder to them,
+# and mail was copied between the two without end. Dovecot moves the mail on instead, as it arrives.
+
+- name: Make the directory for the scripts that move mail to the standard folders
+  file:
+    path: "{{ dovecot_imapsieve_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: 0755
+
+- name: Write the scripts that move mail to the standard folders
+  template:
+    src: to-folder.sieve.j2
+    dest: "{{ dovecot_imapsieve_dir }}/to-{{ item }}.sieve"
+    owner: root
+    group: root
+    mode: 0644
+  vars:
+    folder: "{{ item | capitalize }}"
+  loop: "{{ dovecot_client_folder_names.keys() | list }}"
+  notify: restart dovecot
+
+# Compiled here on every run, since Dovecot can't save the compiled copy itself. It costs a moment and
+# leaves no script behind whose compiled copy is older than it is; the task above reports the change.
+- name: Compile those scripts
+  command: "sievec {{ dovecot_imapsieve_dir }}/to-{{ item }}.sieve"
+  loop: "{{ dovecot_client_folder_names.keys() | list }}"
+  changed_when: no
+
+- name: Say which folder names those scripts are for
+  template:
+    src: 95-imapsieve-folders.conf.j2
+    dest: /etc/dovecot/conf.d/95-imapsieve-folders.conf
+    owner: root
+    group: root
+    mode: 0644
+  notify: restart dovecot

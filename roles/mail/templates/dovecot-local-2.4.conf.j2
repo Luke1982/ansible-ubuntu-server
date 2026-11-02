@@ -49,10 +49,10 @@ ssl_server_key_file = /etc/letsencrypt/live/{{hostname}}/privkey.pem
 
 ## Overrides conf.d/15-mailboxes.conf
 # Dovecot 2.4 dropped the mailbox_alias plugin, so "Sent Items" and the like
-# are no longer aliases of Sent. Clients find Sent and Trash by special_use.
-# The standard folders are always subscribed, so webmail, which only shows
-# subscribed folders, shows them. The alias folders for other mail programs
-# aren't, so webmail hides them.
+# are no longer other names for Sent. Clients find the four folders below by
+# special_use, and mail that a client does put in a folder of its own naming is
+# moved on to them (see conf.d/95-imapsieve-folders.conf). They are always
+# subscribed, so webmail, which only shows subscribed folders, shows them.
 namespace inbox {
   mailbox INBOX {
     auto = subscribe
@@ -72,6 +72,11 @@ namespace inbox {
   mailbox Junk {
     auto = subscribe
     special_use = \Junk
+  }
+  # conf.d/15-mailboxes.conf also flags "Sent Messages" as \Sent. Two \Sent
+  # folders confuse mail clients, so Sent is the only one.
+  mailbox "Sent Messages" {
+    special_use =
   }
 }
 
@@ -113,13 +118,15 @@ fts_search_read_fallback = no
 protocol imap {
   # A protocol's mail_plugins replace the global ones, so fts is listed again.
   # last_login records login times for mailctl (see conf.d/95-last-login.conf);
-  # webmail logs in over IMAP too.
+  # webmail logs in over IMAP too. imap_sieve runs the scripts that move mail
+  # out of client-made folders (see conf.d/95-imapsieve-folders.conf).
   mail_plugins {
     fts = yes
     fts_xapian = yes
     acl = yes
     imap_acl = yes
     last_login = yes
+    imap_sieve = yes
   }
   # SOGo connects from 127.0.0.1 for everyone, and each of its processes can
   # keep an IMAP connection open per user, so the limit per user and address

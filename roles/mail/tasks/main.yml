@@ -27,6 +27,8 @@
       - dovecot-imapd
       - dovecot-lmtpd
       - dovecot-managesieved
+      # Filters, the spam rule, and the scripts that move mail to the standard folders
+      - dovecot-sieve
       - dovecot-fts-xapian
       - spamassassin
       - spamass-milter
@@ -213,6 +215,8 @@
     owner: root
 
 - include_tasks: configure-dovecot.yml
+- include_tasks: configure-imapsieve.yml
+  when: dovecot_version == "2.4"
 - include_tasks: remove-roundcube.yml
 - include_tasks: configure-sogo.yml
 # After SOGo: its jail reads SOGo's log.

@@ -18,10 +18,12 @@ esac
 
 
 @pytest.fixture
-def account(mailctl, fake_command):
+def account(mailctl, fake_command, config):
     fake_command("doveadm", DOVEADM)
     mailctl.ok("domain", "add", "example.nl")
     mailctl.ok("address", "add", "info@example.nl", "--password-stdin", stdin=f"{PASSWORD}\n")
+    # An account made before mailctl stopped linking folders still has ".Sent Items" pointing at ".Sent".
+    (config.vmail_root / "example.nl" / "info" / "Maildir" / ".Sent Items").symlink_to(".Sent")
     return "info@example.nl"
 
 

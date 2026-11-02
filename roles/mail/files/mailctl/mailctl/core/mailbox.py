@@ -5,7 +5,7 @@ import os
 import shutil
 import stat
 from collections.abc import Callable
-from contextlib import ExitStack, suppress
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,12 +13,11 @@ from . import names, sieve, system
 from .config import Config
 from .errors import MailctlError
 
-# Folder names that mail clients look for, linked to the folder they mean.
-FOLDER_ALIASES = {
-    "Sent": ("Verzonden items", "Verzonden Items", "Sent Messages", "Sent Items"),
-    "Trash": ("Verwijderde items", "Deleted Messages"),
-    "Junk": ("Ongewenste e-mail",),
-}
+# The standard folders every Maildir gets. Mail clients find them by the special_use flag (RFC 6154) Dovecot
+# advertises for each of them, whatever a client calls them itself, so there are no folders under other names
+# linked to these: a link looks like a second folder to a client, which then moves mail between the two and
+# copies it endlessly.
+STANDARD_FOLDERS = ("Drafts", "Sent", "Trash", "Junk")
 _STATUS_FIELDS = ("messages", "vsize")
 
 
@@ -27,6 +26,8 @@ class Folder:
     name: str
     messages: int
     size: int
+    # The folder this one is a link to. mailctl doesn't make those any more, but accounts made before it
+    # stopped still have them, and a link holds the same mail as the folder it points at.
     alias_of: str | None = None
 
 
@@ -49,18 +50,16 @@ def home_dir(config: Config, address: str) -> Path:
 
 
 def create_maildir(config: Config, address: str) -> None:
-    """Creates the Maildir with the standard folders and their aliases, as the vmail user, so they're vmail's.
-    Existing mail and folders stay."""
+    """Creates the Maildir with the standard folders, as the vmail user, so they're vmail's. Existing mail and
+    folders stay."""
     local_part, domain = names.split(address)
     with system.as_user(config.vmail_user), ExitStack() as opened:
         folder = _MailFolder.root(config, opened)
         for name in (domain, local_part, "Maildir"):
             folder = folder.enter(name, create=True)
         _complete(folder)  # INBOX
-        for standard, aliases in FOLDER_ALIASES.items():
+        for standard in STANDARD_FOLDERS:
             _complete(folder.enter(f".{standard}", create=True))
-            for alias in aliases:
-                folder.link(f".{alias}", f".{standard}")
 
 
 def _complete(folder: "_MailFolder") -> None:
@@ -193,11 +192,6 @@ class _MailFolder:
             raise self._failed("open", name, error) from None
         self._opened.callback(os.close, fd)
         return _MailFolder(fd, self.path / name, self.user, self._opened)
-
-    def link(self, name: str, target: str) -> None:
-        """Makes a symbolic link in this folder, unless something by that name is there already."""
-        with suppress(FileExistsError):  # A mail client may have made a real folder with this name.
-            os.symlink(target, name, dir_fd=self.fd)
 
     def remove(self, name: str) -> None:
         """Deletes a folder in this one, with everything in it. Messages that Dovecot expunges meanwhile are skipped."""

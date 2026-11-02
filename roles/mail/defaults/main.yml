@@ -7,6 +7,20 @@ dovecot_versions:
 
 dovecot_version: "{{ dovecot_versions[ansible_distribution_version] }}"
 
+# Folder names mail programs make themselves when they don't go by the
+# special_use flags: Outlook saves sent mail in "Sent Items", a Dutch one in
+# "Verzonden items". A message put in one of these is moved on to the folder of
+# that kind, so each sort of mail stays in one folder whatever program made it
+# (see tasks/configure-imapsieve.yml). Drafts are not among them: a mail
+# program has to find its draft again in the folder it saved it in.
+# Where the scripts that do the moving are kept. Dovecot compiles a script it has no compiled copy of
+# as it runs, but it can't save that copy itself, because /etc isn't the mail user's to write in.
+dovecot_imapsieve_dir: /etc/dovecot/sieve-imap
+dovecot_client_folder_names:
+  sent: ["Sent Items", "Sent Messages", "Sent Mail", "Verzonden items", "Verzonden Items", "Verzonden berichten"]
+  trash: ["Deleted Items", "Deleted Messages", "Verwijderde items", "Verwijderde Items", "Prullenbak"]
+  junk: ["Junk E-mail", "Junk Email", "Spam", "Ongewenste e-mail", "Ongewenste E-mail"]
+
 # Where the mailctl Python package is installed (see tasks/install-mailctl.yml)
 mailctl_lib: /usr/local/lib/mailctl
 

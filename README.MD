@@ -466,6 +466,41 @@ Every address record it publishes is the server's IPv4 address. A name is publis
 
 `dns publish` only touches the mail records: it replaces the MX, `mail`, DKIM and SRV records, removes a previous provider's `autoconfig` and `autodiscover` records, adds the server's addresses to an SPF record that doesn't allow the server yet (so the senders it allows keep working), and leaves an existing DMARC policy and every other record alone. A domain like `shop.example.nl` goes into the `example.nl` zone.
 
+### The four mail folders
+
+Every account has Drafts, Sent, Trash and Junk, and nothing else of the kind. Dovecot marks each of them with
+what it is for (`special_use`, RFC 6154), and that is how a mail program finds them whatever it calls them
+itself.
+
+The programs that don't ask make a folder of their own instead: Outlook saves sent mail in "Sent Items", a
+Dutch program in "Verzonden items", and there are a dozen such names. Mail put in one of those is moved on to
+the folder of that kind as it arrives, flags and all, so each sort of mail stays in one folder whatever
+program was used. The names are `dovecot_client_folder_names` in
+[`roles/mail/defaults/main.yml`](roles/mail/defaults/main.yml), and
+[`roles/mail/tasks/configure-imapsieve.yml`](roles/mail/tasks/configure-imapsieve.yml) writes a Sieve script
+per kind and tells Dovecot which names they are for. Mail coming out of the standard folder itself is left
+where it is: a program that moves a message from Sent to "Sent Items" would otherwise lose it. Drafts are
+left alone on purpose, since a program has to find its own draft again where it saved it.
+
+This needs Dovecot 2.4, so it is left out on a server with 2.3. There the `mailbox_alias` plugin in
+`local.conf` makes the handful of names listed there open the standard folder instead; a name that isn't
+listed becomes a folder of its own, as it would on any other server.
+
+Older accounts have a folder like `.Sent Items` as a symbolic link to `.Sent`. mailctl doesn't make those any
+more -- a link is a second folder to a mail program, which then copies mail between the two without end --
+but it still shows one as a link in `mailctl status` and doesn't count its mail twice.
+
+After a deploy, this checks the whole of it over a real IMAP login, on an account of its own:
+
+```bash
+mailctl address add imapsieve-test@example.nl
+python3 -I tests/check-imapsieve.py imapsieve-test@example.nl PASSWORDFILE mail.example.nl
+mailctl address delete imapsieve-test@example.nl --yes --delete-mail
+```
+
+When mail is moved from another server, `migratectl` maps the same names onto the four folders, so a mailbox
+arrives with its sent mail in Sent instead of in a folder per program it was read with.
+
 ### The certificate for mail programs
 
 Postfix and Dovecot present one certificate to everyone, so it has to hold every name mail programs connect to: the server's hostname and `mail.DOMAIN` of each domain. `mailctl certificate sync` keeps it that way. It asks certbot for a certificate with those names under the hostname's name, and afterwards Postfix and Dovecot read it again, without a restart. A name is only taken along once `mail.DOMAIN` points to this server; the others are named in the output, so publish their records first (`mailctl dns publish example.nl`).

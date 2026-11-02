@@ -1,0 +1,23 @@
+## Folder names mail clients make themselves. Clients that don't use special_use
+# save sent mail in "Sent Items", deleted mail in "Verwijderde items" and so on.
+# When a message is saved (APPEND) or copied/moved (COPY) into one of these, an
+# IMAPSieve script moves it on to Sent, Trash or Junk, so each kind of mail
+# stays in one folder whatever client is used. Drafts are left alone: a client
+# must find its draft again in the folder it saved it in.
+sieve_plugins {
+  sieve_imapsieve = yes
+}
+# Remove the message from the client's folder right away, instead of only
+# flagging it \Deleted until the client expunges.
+imapsieve_expunge_discarded = yes
+{% for target, folders in dovecot_client_folder_names.items() %}
+{% for folder in folders %}
+mailbox "{{ folder }}" {
+  sieve_script to-{{ target }} {
+    type = before
+    cause = append copy
+    path = {{ dovecot_imapsieve_dir }}/to-{{ target }}.sieve
+  }
+}
+{% endfor %}
+{% endfor %}

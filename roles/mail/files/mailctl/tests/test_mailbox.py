@@ -23,30 +23,32 @@ def test_home_dir_is_the_local_part_under_the_domain(config):
     assert mailbox.domain_dir(config, "example.nl") == config.vmail_root / "example.nl"
 
 
-def test_create_maildir_makes_the_folders_and_their_aliases(maildir):
-    assert sorted(path.name for path in maildir.iterdir() if not path.is_symlink()) == [
-        ".Junk", ".Sent", ".Trash", "cur", "new", "tmp",
+def test_create_maildir_makes_the_standard_folders_and_nothing_else(maildir):
+    assert sorted(path.name for path in maildir.iterdir()) == [
+        ".Drafts", ".Junk", ".Sent", ".Trash", "cur", "new", "tmp",
     ]
     # Complete Maildir folders, so Dovecot doesn't have to create them when they're first opened.
-    for folder in (".Junk", ".Sent", ".Trash"):
+    for folder in (".Drafts", ".Junk", ".Sent", ".Trash"):
         assert sorted(path.name for path in (maildir / folder).iterdir()) == ["cur", "new", "tmp"]
-    assert os.readlink(maildir / ".Verzonden items") == ".Sent"
-    assert os.readlink(maildir / ".Sent Items") == ".Sent"
-    assert os.readlink(maildir / ".Deleted Messages") == ".Trash"
-    assert os.readlink(maildir / ".Ongewenste e-mail") == ".Junk"
     assert maildir.stat().st_mode & 0o777 == 0o700
     assert (maildir / ".Sent").stat().st_uid == os.getuid()
 
 
+def test_create_maildir_makes_no_folders_under_the_names_clients_use(maildir):
+    """A folder of its own for "Sent Items" or "Verzonden items" would be a second sent folder to a client,
+    which then moves mail between the two. Clients find the standard folders by their special_use flag."""
+    assert not any(path.name.startswith((".Sent ", ".Verzonden", ".Deleted", ".Ongewenste", ".Prullenbak"))
+                   for path in maildir.iterdir())
+
+
 def test_create_maildir_keeps_existing_mail_and_folders(config, maildir):
     (maildir / ".Sent" / "kept").write_text("mail")
-    (maildir / ".Sent Items").unlink()
-    (maildir / ".Sent Items").mkdir()
+    (maildir / ".Projects").mkdir()
 
     mailbox.create_maildir(config, ADDRESS)
 
     assert (maildir / ".Sent" / "kept").read_text() == "mail"
-    assert not (maildir / ".Sent Items").is_symlink()
+    assert (maildir / ".Projects").is_dir()
 
 
 @pytest.fixture
@@ -192,6 +194,8 @@ def test_delete_mail_refuses_folders_outside_the_vmail_root(config, tmp_path):
 
 
 def test_parse_folders_reads_doveadm_output_and_marks_aliased_folders(maildir):
+    # An account made before mailctl stopped linking folders: ".Sent Items" points at ".Sent".
+    (maildir / ".Sent Items").symlink_to(".Sent")
     output = "mailbox\tmessages\tvsize\nINBOX\t12\t34567\nSent\t3\t4000\nSent Items\t3\t4000\nProjects.2026\t1\t10\n"
 
     assert mailbox.parse_folders(output, maildir) == [
