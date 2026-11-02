@@ -23,3 +23,21 @@
     owner: root
     group: root
   notify: restart mysql
+
+# Tuning for the machine MariaDB runs on, in a file of its own: it is written from the machine's size on
+# every run, so the my.cnf above stays whatever this server made of it.
+- name: Write MariaDB's tuning for this machine
+  template:
+    src: mariadb-tuning.cnf.j2
+    dest: /etc/mysql/mariadb.conf.d/90-tuning.cnf
+    mode: 0644
+    owner: root
+    group: root
+  notify: restart mysql
+
+- name: Take away MariaDB tuning that was put there by hand
+  file:
+    path: "/etc/mysql/mariadb.conf.d/{{ item }}"
+    state: absent
+  loop: "{{ db_tuning_by_hand }}"
+  notify: restart mysql

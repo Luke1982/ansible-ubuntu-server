@@ -15,6 +15,7 @@
     state: present
 
 - include_tasks: setup-openlitespeed.yml
+- include_tasks: setup-lsphp.yml
 - include_tasks: setup-webhosting.yml
 
 - name: Install PHP and some PHP modules

@@ -146,6 +146,67 @@ Each server has its own playbook (e.g. `web01.whservice.nl.yml`) in the project 
 | `db` | MariaDB, phpMyAdmin on a site of its own at `pma.<hostname>`, and a gzipped dump of every database every night (below) |
 | `mail` | Postfix, Dovecot with full-text IMAP search (fts-xapian) and login tracking, OpenDKIM, SpamAssassin, SOGo (webmail, calendars, address books and ActiveSync), per-user and per-website sending limits (postfwd), a warning mail when the queue gets long, fail2ban jails for SMTP, IMAP and webmail brute force, and `mailctl` (below) |
 
+## Tuning for the machine
+
+OpenLiteSpeed, its PHP and MariaDB are installed with settings for a small
+machine: a handful of PHP processes, a 128 MB opcache with room for 10,000
+files, and 128 MB of memory for the databases. A server with forty sites on it
+runs out of all three at once -- the opcache fills up and throws everything away,
+so every request compiles the same files again, and MariaDB reads the disk for
+pages it had a moment ago.
+
+Every playbook run writes the settings below from the size of the machine, so
+they are the same after a run as before it, and a new server gets them without
+anyone remembering to. They are worked out from the number of cores and the
+amount of memory, which Ansible reads from the server itself.
+
+| Setting | What it is | Where it goes |
+|---------|-----------|---------------|
+| `maxConns`, `PHP_LSAPI_CHILDREN` | How many pages the sites' PHP serves at once: five per core, no more than half the memory would hold with every one of them at `memory_limit`, and never fewer than four | the `lsphp` block of `httpd_config.conf` |
+| `PHP_INI_SCAN_DIR` | The directory the settings file below is read from, after the extensions in `mods-available` | the same block |
+| `LSAPI_AVOID_FORK` | Keeps the PHP processes that are there instead of stopping and starting them around every busy moment | the same block |
+| `memSoftLimit`, `memHardLimit` | Off. The opcache is memory every PHP process shares, but each is counted for the whole of it, so a limit here stops processes using nothing of their own | the same block |
+| `memory_limit`, `opcache.*` | The most memory one page may use, and how much compiled PHP is kept in memory for all the sites together | `/usr/local/lsws/lsphp83/etc/php/8.3/main-pool.d/99-tuning.ini` |
+| `innodb_buffer_pool_size`, `tmp_table_size`, `max_heap_table_size` | How much of the databases MariaDB keeps in memory, and how big a temporary table may get before a query writes it to disk | `/etc/mysql/mariadb.conf.d/90-tuning.cnf` |
+
+The two files say at the top that Ansible wrote them, so changing them on the
+server lasts until the next run. The values are in
+[`roles/web/defaults/main.yml`](roles/web/defaults/main.yml) and
+[`roles/db/defaults/main.yml`](roles/db/defaults/main.yml), and any of them can
+be set for one server in its inventory file -- `lsphp_children` and
+`db_buffer_pool_mb`, for instance.
+
+The first run also takes away the files that held this tuning before Ansible
+did (`99-majorlabel-tuning.ini` and `90-majorlabel-tuning.cnf`), so the settings
+have one place they are changed. Those names are in the two defaults files as
+well, and can go once every server has had a run.
+
+Of `httpd_config.conf`, only the lines in the four rows above are Ansible's; the
+rest is left the way WebAdmin wrote it. They go in the `extProcessor lsphp`
+block, and a run stops with an error if the server's config hasn't got one,
+rather than leave the settings somewhere they mean nothing.
+
+A VPS sometimes reports the whole host's cores and memory instead of its own
+share. Put the real numbers in that server's inventory file and everything above
+is worked out from them:
+
+```yaml
+      server_cpus: 8
+      server_memory_mb: 32089
+```
+
+PHP reads these settings when a process starts, and OpenLiteSpeed's graceful
+restart leaves the processes that are already running in place. So a run that
+changes them restarts OpenLiteSpeed and then stops the PHP processes that are
+still going (`pkill lsphp`); the next request starts new ones. A run that
+changes MariaDB's file restarts MariaDB, which is a few seconds in which the
+sites have no database.
+
+A site that needs to write somewhere still gets that directory opened up by
+hand, which the playbook does not undo: `domainctl sync` sets the permissions on
+the site's home, its web root and its log directory, and leaves everything
+inside them alone.
+
 ## Database backups
 
 Every night at three, a dump of every database on the server, gzipped, in `/home/dbbackups`. The ones older than 14 days go, but only after a run in which every database was dumped: failing backups shouldn't quietly eat the last good ones. A dump is written under a temporary name and renamed once it is whole, so nothing that looks like a backup is half a backup.

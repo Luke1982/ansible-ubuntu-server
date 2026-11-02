@@ -11,6 +11,46 @@ php_version: "{{ php_versions[ansible_distribution_version] }}"
 # their databases, so more of it means fewer queries; it is not storage, and losing it costs nothing but speed.
 redis_max_memory: 256mb
 
+# --- How big this machine is -------------------------------------------------
+# What the settings below are worked out from. Both are read from the server itself; a VPS that reports the
+# whole host instead of its own share gets the real numbers in its inventory file, which win over these.
+server_cpus: "{{ ansible_processor_vcpus }}"
+server_memory_mb: "{{ ansible_memtotal_mb }}"
+
+# --- The PHP that serves the sites -------------------------------------------
+# OpenLiteSpeed brings its own PHP, next to the one from Ubuntu above. Its name is both the package and the
+# directory it is installed in.
+lsphp_version: "8.3"
+lsphp_package: "lsphp{{ lsphp_version | replace('.', '') }}"
+lsphp_ini_dir: "{{ ols_root }}/{{ lsphp_package }}/etc/php/{{ lsphp_version }}"
+# Where Ansible puts the settings for it. PHP reads every .ini in here, after the ones in mods-available.
+lsphp_tuning_dir: "{{ lsphp_ini_dir }}/main-pool.d"
+# Settings files put in that directory by hand, before Ansible wrote its own. They are taken away, so the
+# settings have one place they are changed. These names can go once every server has had a playbook run.
+lsphp_tuning_by_hand:
+  - 99-majorlabel-tuning.ini
+# Not a setting: the line that opens the block in httpd_config.conf Ansible writes a few lines of. Older
+# versions of OpenLiteSpeed write it as "extprocessor".
+lsphp_block: 'ext[pP]rocessor[ \t]+lsphp[ \t]*\{'
+
+# How many pages the sites' PHP may serve at once: five per core, and no more than half the machine's memory
+# would hold with every one of them at the memory_limit below, but never fewer than four, since a server that
+# serves nothing is worse than one that is slow. OpenLiteSpeed is installed with room for a handful, which is
+# too few for a server full of sites.
+lsphp_children_per_cpu: 5
+lsphp_children_least: 4
+lsphp_memory_limit_mb: 256
+lsphp_children: >-
+  {{ [ [ (server_cpus | int) * (lsphp_children_per_cpu | int),
+         (server_memory_mb | int) // 2 // (lsphp_memory_limit_mb | int) ] | min,
+       lsphp_children_least | int ] | max }}
+# The compiled PHP of all the sites together, in memory they share. They hold over a hundred thousand PHP
+# files between them, and PHP's own 128 MB with room for 10,000 of them means the cache is thrown away and
+# everything compiled again on the next request. A machine too small for 512 MB gets an eighth of its memory.
+lsphp_opcache_mb: "{{ [512, (server_memory_mb | int) // 8] | min }}"
+lsphp_opcache_strings_mb: 32
+lsphp_opcache_files: 100000
+
 # --- Sites and domainctl -----------------------------------------------------
 # Where a site's Linux user gets its home directory, which is the virtual host's root.
 web_home_root: /home

@@ -1,0 +1,9 @@
+# Written by Ansible, from roles/db/templates/mariadb-tuning.cnf.j2, and worked out from the size of this
+# machine -- memory: {{ server_memory_mb }} MB. Anything changed here is overwritten by the next playbook run:
+# change the values in roles/db/defaults/main.yml, or per server in its inventory file.
+#
+# MariaDB reads this file after /etc/my.cnf, so what is here wins.
+[mysqld]
+innodb_buffer_pool_size = {{ db_buffer_pool_mb }}M
+tmp_table_size          = {{ db_tmp_table_mb }}M
+max_heap_table_size     = {{ db_tmp_table_mb }}M

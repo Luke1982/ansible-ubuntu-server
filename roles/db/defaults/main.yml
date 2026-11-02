@@ -22,6 +22,25 @@ phpmyadmin_group: nogroup
 phpmyadmin_certificate: yes
 letsencrypt_dir: /etc/letsencrypt
 
+# --- Tuning for this machine -------------------------------------------------
+# How much memory the server has, which the settings below are worked out from. It is read from the server
+# itself; a VPS that reports the whole host instead of its own share gets the real number in its inventory
+# file, which wins over this. The web role has the same setting, for the same reason.
+server_memory_mb: "{{ ansible_memtotal_mb }}"
+# What InnoDB keeps the databases in: a sixteenth of the machine's memory, in whole steps of 256 MB, rounded
+# up -- MariaDB rounds what it is given up to a multiple of its own chunk size anyway, so a round number here
+# is the number it really uses. These servers run the sites and the mail as well, and the databases on them
+# come to a gigabyte or two, so the usual advice of half the machine would be memory nothing reads. MariaDB
+# is installed with 128 MB, little enough that it reads the disk for pages it had a moment ago.
+db_buffer_pool_mb: "{{ ((server_memory_mb | int) / 16 / 256) | round(0, 'ceil') | int * 256 }}"
+# How big a temporary table a query that sorts or groups may build in memory before it is written to disk
+# instead. MariaDB uses whichever of the two settings is smaller, so they are one number here.
+db_tmp_table_mb: 64
+# Tuning put in /etc/mysql/mariadb.conf.d by hand, before Ansible wrote its own. It is taken away, so the
+# settings have one place they are changed. These names can go once every server has had a playbook run.
+db_tuning_by_hand:
+  - 90-majorlabel-tuning.cnf
+
 # A dump of every database, every night, by a user MariaDB knows by its Linux
 # name (unix_socket): no password anywhere, and read rights only. The dumps are
 # gzipped in its home directory, and the ones older than this many days go.

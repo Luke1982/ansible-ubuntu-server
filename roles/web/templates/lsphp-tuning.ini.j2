@@ -1,0 +1,15 @@
+; Written by Ansible, from roles/web/templates/lsphp-tuning.ini.j2, and worked out from the size of this
+; machine -- cores: {{ server_cpus }}, memory: {{ server_memory_mb }} MB. Anything changed here is overwritten by the
+; next playbook run: change the values in roles/web/defaults/main.yml, or per server in its inventory file.
+;
+; The PHP that serves the sites reads this directory because PHP_INI_SCAN_DIR in OpenLiteSpeed's lsphp block
+; says so, after the extensions in mods-available.
+
+; The most memory one page may use before PHP stops it.
+memory_limit = {{ lsphp_memory_limit_mb }}M
+
+; The compiled PHP of every site, in memory all the processes share, so a page is compiled once instead of on
+; every request.
+opcache.memory_consumption = {{ lsphp_opcache_mb }}
+opcache.interned_strings_buffer = {{ lsphp_opcache_strings_mb }}
+opcache.max_accelerated_files = {{ lsphp_opcache_files }}

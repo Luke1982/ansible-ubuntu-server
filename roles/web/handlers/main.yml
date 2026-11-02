@@ -4,6 +4,7 @@
 # lswsctrl may start OpenLiteSpeed and its watchdog in the background, which keeps the command's output open,
 # so nothing is read from it.
 - name: restart openlitespeed
+  listen: the sites' PHP changed
   shell: "{{ ols_root }}/bin/lswsctrl restart </dev/null >/dev/null 2>&1"
 
 - name: restart redis
@@ -15,3 +16,15 @@
   service:
     name: fail2ban
     state: restarted
+
+# The sites' PHP reads its settings when a process starts, and OpenLiteSpeed's graceful restart leaves the
+# processes that are already running in place. Stopping them here, after that restart, is what makes a changed
+# setting count: the next request starts new ones. A page being built at that moment is cut off. This handler has
+# to stay below "restart openlitespeed", because handlers run in the order they are written here.
+- name: restart lsphp
+  listen: the sites' PHP changed
+  command: pkill lsphp
+  register: lsphp_stopped
+  # 1 is "there were none running", which is not a failure. Anything above that is.
+  failed_when: lsphp_stopped.rc > 1
+  changed_when: lsphp_stopped.rc == 0

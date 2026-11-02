@@ -39,6 +39,15 @@ all:
       # Check /etc/resolv.conf on the server; 127.0.0.53 is systemd-resolved.
       dns_servers: 127.0.0.53
 
+      # --- How big this machine is (only when it reports it wrong) ------------
+      # The number of cores and the amount of memory decide how many PHP
+      # processes serve the sites, how much compiled PHP is held in memory and
+      # how much of the databases MariaDB keeps there. Ansible reads both from
+      # the server itself, so these two are only for a VPS that reports the
+      # whole host instead of its own share. Check with "nproc" and "free -m".
+      # server_cpus: 8
+      # server_memory_mb: 32089
+
       # --- mail role (only if the playbook includes it) -----------------------
       # Primary mail domain, used to create the DKIM key and by SpamAssassin.
       # Leave it out for servers without mail.

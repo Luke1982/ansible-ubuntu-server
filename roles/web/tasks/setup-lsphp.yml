@@ -1,0 +1,99 @@
+---
+# The PHP OpenLiteSpeed serves the sites with, and the one its own panel runs on.
+
+# WebAdmin, on port 7080, gets the opcache settings of the sites' PHP (lsphp83's mods-available/opcache.ini), but
+# OpenLiteSpeed always caps the panel's PHP at 500 MB of memory. An opcache sized for the sites doesn't fit in that
+# (512 MB doesn't, and 256 MB didn't either), and the panel's PHP then crashes on every start: a 503 on port 7080.
+# The panel doesn't need opcache, so it is off there, whatever the sites have. An OpenLiteSpeed upgrade can replace
+# this php.ini; the next playbook run puts the line back.
+- name: Turn opcache off for WebAdmin's PHP
+  ini_file:
+    path: "{{ ols_root }}/admin/conf/php.ini"
+    section: opcache
+    option: opcache.enable
+    value: "0"
+    no_extra_spaces: yes
+  notify: restart openlitespeed
+
+# What the sites' PHP keeps in memory. PHP is installed with a small opcache, too small for a server full of
+# sites: it fills up, is thrown away, and every request compiles the same files again.
+- name: Make the directory the sites' PHP reads its settings from
+  file:
+    path: "{{ lsphp_tuning_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: 0755
+
+- name: Write the settings for the sites' PHP
+  template:
+    src: lsphp-tuning.ini.j2
+    dest: "{{ lsphp_tuning_dir }}/99-tuning.ini"
+    owner: root
+    group: root
+    mode: 0644
+  notify: the sites' PHP changed
+
+- name: Take away settings for the sites' PHP that were put there by hand
+  file:
+    path: "{{ lsphp_tuning_dir }}/{{ item }}"
+    state: absent
+  loop: "{{ lsphp_tuning_by_hand }}"
+  notify: the sites' PHP changed
+
+# The three tasks below are the only ones that write in httpd_config.conf; the rest of it is left the way
+# WebAdmin wrote it. Their lines go inside the lsphp block, and without that block there is nowhere to put
+# them: lineinfile would leave them at the end of the config, where they belong to nothing at all. So the
+# playbook stops here instead.
+- name: Look at OpenLiteSpeed's config
+  slurp:
+    src: "{{ ols_root }}/conf/httpd_config.conf"
+  register: ols_config
+
+- name: Make sure it has a block for the sites' PHP
+  assert:
+    that: ols_config.content | b64decode is search(lsphp_block)
+    fail_msg: >-
+      {{ ols_root }}/conf/httpd_config.conf has no "extProcessor lsphp" block, so there is nowhere to say how
+      the sites' PHP runs. Add it as an external application in WebAdmin, or install OpenLiteSpeed again.
+    quiet: yes
+
+- name: Let the sites' PHP serve {{ lsphp_children }} pages at once
+  replace:
+    path: "{{ ols_root }}/conf/httpd_config.conf"
+    after: "{{ lsphp_block }}"
+    before: '\n\}'
+    regexp: '^([ \t]*maxConns[ \t]+)\d+[ \t]*$'
+    replace: '\g<1>{{ lsphp_children }}'
+  notify: the sites' PHP changed
+
+# The opcache is one piece of memory that every PHP process shares, but each of them is counted for the whole
+# of it, so a limit here stops processes that are using nothing of their own. The machine's memory is what
+# limits them, through the number of processes and the memory_limit each of them has.
+- name: Don't stop the sites' PHP for memory it shares
+  replace:
+    path: "{{ ols_root }}/conf/httpd_config.conf"
+    after: "{{ lsphp_block }}"
+    before: '\n\}'
+    regexp: '^([ \t]*mem(?:Soft|Hard)Limit[ \t]+)\S+[ \t]*$'
+    replace: '\g<1>0'
+  notify: the sites' PHP changed
+
+# PHP_LSAPI_CHILDREN is the same number as maxConns above: OpenLiteSpeed hands out that many connections and
+# PHP keeps that many processes to answer them. PHP_INI_SCAN_DIR has to name mods-available as well, because
+# setting it replaces the list PHP was built with, and that is where the extensions are. LSAPI_AVOID_FORK
+# keeps the processes that are already there instead of stopping and starting them around every busy moment.
+- name: Tell the sites' PHP how many processes to keep and where its settings are
+  lineinfile:
+    path: "{{ ols_root }}/conf/httpd_config.conf"
+    regexp: '^[ \t]*env[ \t]+{{ item.key }}='
+    line: "    env                             {{ item.key }}={{ item.value }}"
+    insertafter: "^{{ lsphp_block }}"
+  loop:
+    - { key: PHP_LSAPI_CHILDREN, value: "{{ lsphp_children }}" }
+    - { key: PHP_INI_SCAN_DIR, value: "{{ lsphp_ini_dir }}/mods-available:{{ lsphp_tuning_dir }}" }
+    - { key: LSAPI_AVOID_FORK, value: "200M" }
+  loop_control:
+    label: "{{ item.key }}"
+  notify: the sites' PHP changed
+
