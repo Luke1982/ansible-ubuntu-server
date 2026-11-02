@@ -4222,14 +4222,21 @@ def set_passwords(connection, row, say=print, database=None, ask=None, old_serve
     return done
 
 
-# The same folder mapping the new server's own copy uses, so a copy run by hand lands the mail in the same
-# folders. --automap puts Sent and Drafts and Trash in the folders the new server calls them; the expression
-# after it does the same for those folders with INBOX. in front of their names, which this server has for
-# every mailbox that was moved here from a server before. Without it the sent mail of such a mailbox is
-# copied into Sent and into INBOX.Sent both, and takes twice the room on the new server for ever.
-MAP_FOLDERS = ("--automap --regextrans2 's,^INBOX\\.(Sent|Sent Items|Sent Messages|Verzonden items|Verzonden "
-               "Items|Drafts|Concepten|Trash|Deleted Items|Verwijderde items|Junk|Junk E-mail|Spam|Ongewenste "
-               "e-mail)$,$1,i'")
+# The same folder mapping the new server's own copy uses (FOLDER_RULES in migratectl.py, which these have to
+# stay the same as), so a copy run by hand lands the mail in the same folders. --automap puts Sent and Drafts
+# and Trash in the folders the new server calls them; the expressions after it do the same for the names it
+# doesn't know, the folders a mail program makes for itself -- "Sent Items", "Verzonden items" -- and for
+# those names with INBOX. in front of them, which this server has for every mailbox that was moved here from
+# a server before. Without them the sent mail of such a mailbox arrives spread over a folder per mail program
+# it was ever read with, taking that much more room on the new server for ever.
+MAP_FOLDERS = (
+    "--automap",
+    "--regextrans2 's,^(INBOX\\.)?(Sent Items|Sent Messages|Sent Mail|Verzonden items|Verzonden berichten)$,Sent,i'",
+    "--regextrans2 's,^(INBOX\\.)?(Deleted Items|Deleted Messages|Verwijderde items|Prullenbak)$,Trash,i'",
+    "--regextrans2 's,^(INBOX\\.)?(Junk E-mail|Junk Email|Spam|Ongewenste e-mail)$,Junk,i'",
+    "--regextrans2 's,^(INBOX\\.)?(Concepten)$,Drafts,i'",
+    "--regextrans2 's,^INBOX\\.(Sent|Trash|Junk|Drafts)$,$1,i'",
+)
 
 
 def _imapsync_line(old, new, address, password=None):
@@ -4239,7 +4246,7 @@ def _imapsync_line(old, new, address, password=None):
     return "\n".join(["imapsync \\"] + [
         "  --host%s %s --user%s %s \\" % (n, shlex.quote(host), n, shlex.quote(address))
         + "\n  --password%s %s --ssl%s \\" % (n, secret, n)
-        for n, host in ((1, old), (2, new))] + ["  " + MAP_FOLDERS]).splitlines()
+        for n, host in ((1, old), (2, new))] + ["  " + " \\\n  ".join(MAP_FOLDERS)]).splitlines()
 
 
 # ---- The contacts and calendars that webmail keeps ---------------------------

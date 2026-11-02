@@ -1606,11 +1606,18 @@ def test_empty_folders_are_not_taken_for_one_another():
         ["Drafts", "Templates", "Archive"]
 
 
-def test_the_command_to_copy_by_hand_maps_the_folders_under_inbox():
-    """Pasted and run as it stands, it must not make the second Sent folder the copy here never makes."""
-    line = " ".join(migrate._imapsync_line("178.21.114.195", "web03.majorlabel.nl", "info@a.nl"))
-    assert "--automap" in line and "--regextrans2" in line
-    assert "^INBOX\\.(Sent|" in line and "Verzonden items" in line
+def test_the_command_to_copy_by_hand_maps_the_folders_the_same_way():
+    """Pasted and run as it stands, it must put the mail in the folders the copy from here would: the new
+    server has no second names for its four folders, so every name a mail program uses has to land in one."""
+    lines = migrate._imapsync_line("178.21.114.195", "web03.majorlabel.nl", "info@a.nl")
+    line = " ".join(lines)
+    assert "--automap" in line
+    assert line.count("--regextrans2") == 5
+    for name, standard in (("Verzonden items", "Sent"), ("Verwijderde items", "Trash"),
+                           ("Ongewenste e-mail", "Junk"), ("Concepten", "Drafts")):
+        assert name in line and "$,%s,i" % standard in line
+    # Every line but the last ends in a backslash, so the whole of it can be pasted at once.
+    assert all(one.endswith("\\") for one in lines[:-1]) and not lines[-1].endswith("\\")
 
 
 def test_counting_a_customer_whose_mail_is_not_moved_yet_says_to_move_it_first():
