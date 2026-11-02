@@ -1,6 +1,7 @@
 import os
 import io
 import json
+import re
 import types
 
 import pytest
@@ -1259,23 +1260,50 @@ def test_counting_a_mailbox_asks_imapsync_itself_what_each_folder_holds(server, 
     assert answer["folders"][2]["there"] is None
 
 
-def test_counting_and_copying_both_map_the_folders_under_inbox(server, counting):
-    """A mailbox moved here from an older server has its sent mail in INBOX.Sent as well as in Sent, and both
-    names open the one folder there. --automap doesn't know that name, so without this imapsync makes an
-    INBOX.Sent here too and the mailbox keeps its sent mail twice. The counting carries the same mapping, so
-    it pairs up the folders the copy would really write into."""
+def _as_imapsync_would(name):
+    """What imapsync makes of a folder name, applying the rules in order as Perl would: s,PATTERN,TEXT,i."""
+    for rule in migratectl.FOLDER_RULES:
+        _, pattern, replacement, flags = rule.split(",")
+        name = re.sub(pattern, replacement.replace("$1", r"\1"), name, flags=re.I if "i" in flags else 0)
+    return name
+
+
+def test_the_folders_of_the_old_server_land_in_the_four_this_one_has(server, counting):
+    """A mail program that doesn't go by the special_use flags makes a folder of its own naming, and a
+    mailbox that has moved before has those under INBOX as well. This server has no second names for its
+    four folders, so every one of them has to end up in the folder of that kind here."""
+    assert _as_imapsync_would("Sent Items") == "Sent"
+    assert _as_imapsync_would("INBOX.Verzonden items") == "Sent"
+    assert _as_imapsync_would("INBOX.VERZONDEN ITEMS") == "Sent"
+    assert _as_imapsync_would("Verwijderde items") == "Trash"
+    assert _as_imapsync_would("INBOX.Deleted Items") == "Trash"
+    assert _as_imapsync_would("Ongewenste e-mail") == "Junk"
+    assert _as_imapsync_would("INBOX.Spam") == "Junk"
+    assert _as_imapsync_would("Concepten") == "Drafts"
+    # The four under INBOX lose the prefix and keep their name.
+    for standard in ("Sent", "Trash", "Junk", "Drafts"):
+        assert _as_imapsync_would("INBOX." + standard) == standard
+        assert _as_imapsync_would(standard) == standard
+
+
+def test_a_folder_of_the_customers_own_is_left_where_it_is(server, counting):
+    """Anything else under INBOX is the only copy of that mail there is, and taking it out from under INBOX
+    would put it somewhere the customer doesn't look."""
+    assert _as_imapsync_would("INBOX.Projecten") == "INBOX.Projecten"
+    assert _as_imapsync_would("INBOX.Sent.2024") == "INBOX.Sent.2024"
+    assert _as_imapsync_would("Facturen") == "Facturen"
+
+
+def test_counting_and_copying_both_map_the_folders(server, counting):
+    """The counting carries the same rules as the copy, so it pairs up the folders the copy would really
+    write into. Each rule is an option of its own."""
     server.here = {"a.nl": ["old@a.nl"]}
     _compare()
-    command = counting.commands[0]
-    assert "--regextrans2" in command
-    mapping = command[command.index("--regextrans2") + 1]
-    assert mapping == migratectl.UNDER_INBOX
-    assert mapping.startswith("s,^INBOX\\.(Sent|")
-    # Only the folders both servers have a name of their own for lose the prefix: anything else under INBOX is
-    # the only copy of that mail there is, and belongs where the customer keeps it.
-    for name in ("Sent", "Verzonden items", "Trash", "Drafts", "Junk", "Spam"):
-        assert "|%s|" % name in mapping or "(%s|" % name in mapping or "|%s)" % name in mapping
-    assert migratectl.UNDER_INBOX in migratectl._imapsync_command("old@a.nl", "old.example", "/x/pass")
+    counted = counting.commands[0]
+    copied = migratectl._imapsync_command("old@a.nl", "old.example", "/x/pass")
+    for command in (counted, copied):
+        assert [rule for option, rule in zip(command, command[1:]) if option == "--regextrans2"] \
+               == list(migratectl.FOLDER_RULES)
 
 
 def test_the_password_of_a_counted_mailbox_is_not_left_behind(server, counting, tmp_path):

@@ -1084,30 +1084,43 @@ def _account_here(address):
                for row in _table_rows(["mailctl", "address", "list", domain], f"the accounts of {domain}"))
 
 
-# A mailbox that has been moved from server to server before carries the scars of it: its sent mail sits in a
-# folder called INBOX.Sent as well as in Sent, its deleted mail in INBOX.Trash as well as in Trash, and on the
-# old server both names open the same folder. --automap knows Sent and Trash and Drafts and Junk by those
-# names, but not with INBOX. in front of them, so without this imapsync makes a folder called INBOX.Sent here
-# too and the mailbox ends up holding its sent mail twice, in two folders, taking twice the room. This says
-# that a folder whose name is one of those with INBOX. in front belongs in the folder of that name here. Only
-# those names lose the prefix: a folder under INBOX that is nobody's Sent or Trash is the only copy of the
-# customer's mail there is, and moving it out from under INBOX would put it somewhere they don't look.
-# imapsync applies this only to the folders --automap didn't recognise, and lets several of the old server's
-# folders meet in one of ours.
-UNDER_INBOX = ("s,^INBOX\\.(Sent|Sent Items|Sent Messages|Verzonden items|Verzonden Items|Drafts|Concepten|"
-               "Trash|Deleted Items|Verwijderde items|Junk|Junk E-mail|Spam|Ongewenste e-mail)$,$1,i")
+# Where the old server's folders land in this one. A mail program that doesn't go by the special_use flags
+# makes a folder of its own naming -- "Sent Items", "Verzonden items" -- and a mailbox that has been moved
+# from server to server before has those under INBOX as well: INBOX.Sent next to Sent, both opening the one
+# folder there. This server has no second names for its four folders, so every one of these has to end up in
+# the folder of that kind here; without it the mailbox arrives holding its sent mail twice, in two folders,
+# taking twice the room. Only these names are moved: a folder under INBOX that is nobody's Sent or Trash is
+# the only copy of the customer's mail there is, and taking it out from under INBOX would put it somewhere
+# they don't look. imapsync applies the rules to the folders --automap didn't recognise, in this order, and
+# lets several of the old server's folders meet in one of ours. The i at the end makes the names
+# case-insensitive, which is why each spelling is here only once.
+#
+# roles/mail/defaults/main.yml has the same names, for the mail programs that still write them here.
+FOLDER_RULES = (
+    "s,^(INBOX\\.)?(Sent Items|Sent Messages|Sent Mail|Verzonden items|Verzonden berichten)$,Sent,i",
+    "s,^(INBOX\\.)?(Deleted Items|Deleted Messages|Verwijderde items|Prullenbak)$,Trash,i",
+    "s,^(INBOX\\.)?(Junk E-mail|Junk Email|Spam|Ongewenste e-mail)$,Junk,i",
+    "s,^(INBOX\\.)?(Concepten)$,Drafts,i",
+    "s,^INBOX\\.(Sent|Trash|Junk|Drafts)$,$1,i",
+)
+
+
+def _folder_options():
+    """The rules above as imapsync arguments: --regextrans2 before each of them."""
+    return [part for rule in FOLDER_RULES for part in ("--regextrans2", rule)]
 
 
 def _imapsync_command(address, host, passfile):
     """What is run. --automap puts Sent, Drafts and Trash in the folders this server calls them, whatever the
-    other server's names for them are; --regextrans2 takes care of the same folders with INBOX. in front of
-    them; --nofoldersizes starts copying at once instead of first counting a mailbox that may be tens of
-    gigabytes; --nolog keeps imapsync's own second copy of the log out of the way. A message that is on both
-    servers is left alone, so a copy that is started again adds only what is new."""
+    other server's names for them are; --regextrans2 takes care of the names it doesn't know and of the same
+    folders with INBOX. in front of them; --nofoldersizes starts copying at once instead of first counting a
+    mailbox that may be tens of gigabytes; --nolog keeps imapsync's own second copy of the log out of the
+    way. A message that is on both servers is left alone, so a copy that is started again adds only what is
+    new."""
     return [IMAPSYNC,
             "--host1", host, "--user1", address, "--passfile1", passfile, "--ssl1",
             "--host2", "localhost", "--user2", address, "--passfile2", passfile, "--ssl2",
-            "--automap", "--regextrans2", UNDER_INBOX, "--nofoldersizes", "--nolog", "--noreleasecheck"]
+            "--automap", *_folder_options(), "--nofoldersizes", "--nolog", "--noreleasecheck"]
 
 
 def copy_mail(request):
@@ -1181,7 +1194,7 @@ def _compare_command(address, host, passfile):
     return [IMAPSYNC,
             "--host1", host, "--user1", address, "--passfile1", passfile, "--ssl1",
             "--host2", "localhost", "--user2", address, "--passfile2", passfile, "--ssl2",
-            "--automap", "--regextrans2", UNDER_INBOX, "--justfoldersizes", "--nolog", "--noreleasecheck"]
+            "--automap", *_folder_options(), "--justfoldersizes", "--nolog", "--noreleasecheck"]
 
 
 def _total(text, side, what):
