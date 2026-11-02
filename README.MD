@@ -498,6 +498,9 @@ python3 -I tests/check-imapsieve.py imapsieve-test@example.nl PASSWORDFILE mail.
 mailctl address delete imapsieve-test@example.nl --yes --delete-mail
 ```
 
+[`tests/check-mail-ux.py`](tests/check-mail-ux.py) checks the rest the same way, run as root on the server
+itself: the spam learning, the hidden folder for deleted mail, and the limit on a mailbox with its warnings.
+
 When mail is moved from another server, `migratectl` maps the same names onto the four folders, so a mailbox
 arrives with its sent mail in Sent instead of in a folder per program it was read with.
 
