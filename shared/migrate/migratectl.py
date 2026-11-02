@@ -1333,6 +1333,20 @@ def _last_sync(address):
             "errors": _last_number(r"Detected ([0-9]+) errors?", text), "ago": max(ago, 0)}
 
 
+def _mail_is_not_new(address):
+    """Says that the mail just copied into the mailbox needn't be learned from.
+
+    Every message of it carries the time it was copied, so to the nightly spam learning the whole mailbox is
+    new mail: it would hand hundreds of thousands of messages to SpamAssassin, for a filter the old server
+    taught long ago. Nothing here depends on it, so a failure is left alone.
+    """
+    try:
+        subprocess.run(["mailctl", "spam", "skip", address], capture_output=True, text=True,
+                       timeout=LIST_TIMEOUT, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def copy_mail_status(request):
     """How far the copy of one mailbox is. It can be asked at any time, by any run of the old server's tool:
     what is running is looked up here, never remembered there."""
@@ -1355,6 +1369,8 @@ def copy_mail_status(request):
             os.unlink(passfile)
         except OSError:
             pass
+        else:
+            _mail_is_not_new(address)  # the first time this copy is seen to have stopped, and only then
     text = _last_run(text)  # this copy's own numbers, not every copy this mailbox ever had
     lines = [line for line in text.splitlines() if line.strip()]
     return {"ok": True, "started": True, "running": running,

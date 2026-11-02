@@ -966,12 +966,18 @@ Exiting with return value 0 (EX_OK: successful termination) 0/50 nb_errors/max_e
 
 
 class Imapsync(object):
-    """A stand-in for imapsync: it says how it was started and pretends to go on running."""
+    """A stand-in for imapsync: it says how it was started and pretends to go on running.
 
-    def __init__(self):
-        self.commands, self.named, self.pid = [], {}, 4321
+    Only for imapsync. Anything else migratectl starts -- mailctl, when a copy has finished -- goes to the
+    real Popen, so those commands behave as they would on a server that hasn't got them.
+    """
+
+    def __init__(self, real):
+        self.commands, self.named, self.pid, self._real = [], {}, 4321, real
 
     def __call__(self, command, **named):
+        if str(list(command)[0]) != migratectl.IMAPSYNC:
+            return self._real(command, **named)
         self.commands.append(list(command))
         self.named = named
         named["stdout"].write("Host1: connecting\n")
@@ -986,7 +992,7 @@ def imapsync(monkeypatch, tmp_path):
     binary.chmod(0o755)
     monkeypatch.setattr(migratectl, "IMAPSYNC", str(binary))
     monkeypatch.setattr(migratectl, "COPY_ROOT", str(tmp_path / "mail"))
-    started = Imapsync()
+    started = Imapsync(migratectl.subprocess.Popen)
     monkeypatch.setattr(migratectl.subprocess, "Popen", started)
     return started
 
@@ -1039,6 +1045,35 @@ def test_a_copy_that_is_already_running_is_not_started_a_second_time(server, ima
     answer = _copy()
     assert answer["ok"] is True and answer["started"] is False and answer["running"] is True
     assert len(imapsync.commands) == 1
+
+
+def test_a_finished_copy_says_its_mail_needn_t_be_learned_from(imapsync, tmp_path, monkeypatch):
+    """Every message imapsync wrote carries the time it was copied, so to the nightly spam learning the whole
+    mailbox is new mail: hours of sa-learn for a filter the old server taught long ago."""
+    (tmp_path / "mail").mkdir()
+    (tmp_path / "mail" / "old@a.nl.log").write_text(LOG_OF_A_FINISHED_COPY)
+    (tmp_path / "mail" / "old@a.nl.password").write_text("Kw7mRt2xPqL9sVbn\n")
+    ran = []
+    monkeypatch.setattr(migratectl.subprocess, "run", lambda command, **named: ran.append(list(command)))
+
+    first = migratectl.answer({"request": "copy_mail_status", "address": "old@a.nl"})
+    second = migratectl.answer({"request": "copy_mail_status", "address": "old@a.nl"})
+
+    assert ran == [["mailctl", "spam", "skip", "old@a.nl"]], "once, when the copy is first seen to have ended"
+    assert first["ok"] is True and second["ok"] is True
+
+
+def test_the_status_of_a_copy_is_an_answer_even_when_mailctl_is_not_there(imapsync, tmp_path, monkeypatch):
+    (tmp_path / "mail").mkdir()
+    (tmp_path / "mail" / "old@a.nl.log").write_text(LOG_OF_A_FINISHED_COPY)
+    (tmp_path / "mail" / "old@a.nl.password").write_text("Kw7mRt2xPqL9sVbn\n")
+
+    def missing(command, **named):
+        raise OSError(2, "No such file or directory")
+
+    monkeypatch.setattr(migratectl.subprocess, "run", missing)
+
+    assert migratectl.answer({"request": "copy_mail_status", "address": "old@a.nl"})["ok"] is True
 
 
 def test_a_copy_request_that_makes_no_sense_is_refused(server, imapsync):
