@@ -144,7 +144,7 @@ Each server has its own playbook (e.g. `web01.whservice.nl.yml`) in the project 
 | `basic` | Hostname, base packages, unattended-upgrades, Linux users, SSH hardening, iptables firewall (applied at boot), fail2ban |
 | `web` | OpenLiteSpeed with LiteSpeed's PHP 8.3, PHP-FPM and CLI from Ubuntu (8.3 on Ubuntu 24.04, 8.5 on 26.04), Composer (global), wp-cli, nvm (system-wide), Redis with the PHP extension for it (object caching), certbot, fail2ban jails for WordPress password guessing, Let's Encrypt directory, the shared virtual host template, and `domainctl` (below) |
 | `db` | MariaDB, phpMyAdmin on a site of its own at `pma.<hostname>`, and a gzipped dump of every database every night (below) |
-| `mail` | Postfix, Dovecot with full-text IMAP search (fts-xapian) and login tracking, OpenDKIM, SpamAssassin, SOGo (webmail, calendars, address books and ActiveSync), per-user and per-website sending limits (postfwd), a warning mail when the queue gets long, fail2ban jails for SMTP, IMAP and webmail brute force, and `mailctl` (below) |
+| `mail` | Postfix, Dovecot with full-text IMAP search (fts-xapian) and login tracking, OpenDKIM, SpamAssassin that also learns from the mail people file by hand, SOGo (webmail, calendars, address books and ActiveSync), one folder per kind of mail whatever the mail program calls it, a limit per mailbox with a warning before it is reached, 30 days in Trash and 14 more to undo a deletion, per-user and per-website sending limits (postfwd), a warning mail when the queue gets long, fail2ban jails for SMTP, IMAP and webmail brute force, and `mailctl` (below) |
 
 ## Tuning for the machine
 
@@ -521,7 +521,39 @@ Postfix hands every message to spamass-milter, which asks spamd to score it and 
 
 SpamAssassin's Bayes half only helps when it is shown what spam and good mail look like here, and nobody has the time to do that by hand. They don't have to: every account's `Junk` folder is what people called spam themselves, and everything they keep elsewhere is what they didn't. `mailctl spam learn` hands both to `sa-learn`, which writes what it learns to the shared `bayes` database -- `bayes.cf` overrides the username, so every account teaches the same one.
 
-A `mailctl-spam-learn.timer` runs it every night, so nothing has to be remembered. It only reads the messages that arrived or were moved since the last run, which keeps it short on a server with years of mail; `--all` reads everything again (`sa-learn` skips what it has already seen), and `--dry-run` says how much it would read. Mail nobody has opened yet is left out of the **inbox**, since it may be spam that hasn't been filed; a message filed in a folder counts whether it was read or not, because somebody put it there. That is also how a message marked as spam wrongly is put right: drag it out of `Junk` into the folder it belongs in, and the next run learns it as good mail, wherever it landed. `Trash` and `Drafts` teach nothing and are left out.
+A `mailctl-spam-learn.timer` runs it every night, so nothing has to be remembered. It only reads the messages that arrived or were moved since the last run, which keeps it short on a server with years of mail; `--all` reads everything again (`sa-learn` skips what it has already seen), and `--dry-run` says how much it would read. Mail nobody has opened yet is left out of the **inbox**, since it may be spam that hasn't been filed; a message filed in a folder counts whether it was read or not, because somebody put it there. That is also how a message marked as spam wrongly is put right: drag it out of `Junk` into the folder it belongs in, and the next run learns it as good mail, wherever it landed. `Trash`, `Drafts` and `EXPUNGED` teach nothing and are left out.
+
+Each account is written down as soon as it is learned, not only at the end of the run. A run that is stopped halfway -- a timeout, a reboot -- then keeps what it did instead of starting the whole server over the next night.
+
+A mailbox that has just been copied from another server is a special case: every message in it looks as if it arrived this minute, and the first run would hand hundreds of thousands of them to `sa-learn` for a filter the old server taught long ago. `mailctl spam skip ADDRESS` says that what is in the mailbox now needn't be learned from; mail that comes in after it still is. The migration tool does it by itself when a copy finishes.
+
+Moving mail by hand teaches it too, without waiting for the night. A message moved into `Junk` -- or into "Spam" or another name a mail program uses for it -- is learned as spam, and one moved out of `Junk` as good mail, unless it goes to the trash, which says nothing about it. Dovecot's own Sieve scripts only drop the message in a queue (`/var/spool/spam-learn`), so moving forty messages takes a moment rather than a minute; `spam-learn-queue.timer` hands the queue to `sa-learn` every five minutes. `journalctl -u spam-learn-queue` says what it learned.
+
+### How much mail an account may hold
+
+Every account may hold 25 GB (`dovecot_quota_default`), and the few that need more get a limit of their own:
+
+```bash
+mailctl address quota info@example.nl          # what it holds, and what it may hold
+mailctl address quota info@example.nl 90G      # more room for this one
+mailctl address quota info@example.nl default  # the server's limit again
+mailctl address add info@example.nl --quota 90G
+```
+
+The limit is kept in the database (`virtual_users.quota`), which Dovecot reads with the account itself, so nothing has to be restarted; mailctl tells Dovecot to forget what it cached. `mailctl status ADDRESS` shows how full the mailbox is, mail programs and webmail show it too, and `mailctl doctor` warns about every mailbox over 85%. The account itself gets a mail at 85% and at 95%, in Dutch and English, from `mail_quota_warn_from`.
+
+A full mailbox refuses new mail with "552 Mailbox full", which the sender hears about at once; the message that crosses the limit is still let in, so nothing is lost on the way. `mailctl export` and `mailctl import` carry the limits, so moving a server keeps them.
+
+### Deleted mail, and emptying Trash and Junk
+
+Mail in `Trash` and `Junk` goes after 30 days, counted from when it was put there (`dovecot_trash_days`). Everything that is expunged -- by emptying the trash, by deleting for good, or by that clearing out -- waits 14 more days in a hidden folder called `EXPUNGED` (`dovecot_expunged_days`) before it is really gone. Mail programs and webmail don't show that folder, it doesn't count towards the quota, and a message that was only moved isn't kept there twice. To put something back:
+
+```bash
+doveadm move -u info@example.nl INBOX mailbox EXPUNGED SINCE 2026-11-01
+doveadm move -u info@example.nl INBOX mailbox EXPUNGED HEADER Subject "the invoice"
+```
+
+Tell a customer who keeps mail in `Trash` before the first clearing out: after a migration everything there counts from the day it was copied.
 
 ### Webmail
 
@@ -550,6 +582,8 @@ A rule left behind leaves the account in a state worth knowing about: webmail's 
 ### Autoconfig and autodiscover
 
 `mailctl autodiscover publish example.nl` sets up a site at `autodiscover.example.nl`, with `autoconfig.example.nl` as alias, which gives Thunderbird (autoconfig) and Outlook (autodiscover) the settings for `mail.example.nl`, and publishes both names at TransIP. A phone asking the same site for ActiveSync is sent to `https://webmail.example.nl/Microsoft-Server-ActiveSync`, which is where SOGo serves it: `mail.example.nl` has no web site at all, so a phone left to guess it is answered with a 404. The site is a member of an OpenLiteSpeed virtual host template the playbook installs, so it shows up in WebAdmin under Virtual Host Templates; mailctl adds the templates to `httpd_config.conf` the first time.
+
+Apple is the exception: Apple Mail asks neither autoconfig nor autodiscover for an IMAP account. The site has a page for it at `https://autoconfig.example.nl/apple`, where somebody fills in their address and gets a configuration profile for iPhone, iPad or Mac: IMAP and SMTP at `mail.example.nl` over SSL, with the device asking for the password while it installs. Only addresses of that domain are accepted, and the page never says whether an address exists. It is on HTTPS only, and iOS calls the profile "not verified" because nothing signs it. An Apple device set up as an **Exchange** account instead needs no profile at all: it finds everything through autodiscover, and gets push mail, calendars and contacts from SOGo.
 
 The site goes on HTTP first, since that is where Let's Encrypt checks a name and no mail program should meet another site's certificate in the meantime. The command then waits until both names point to this server — up to two minutes, for the records it has just published — asks certbot for the certificate itself, and switches the site to HTTPS.
 

@@ -1,0 +1,28 @@
+## SpamAssassin learns from what people file by hand: a message moved into
+# Junk is spam, one moved out of Junk (except to Trash) is ham. The Sieve
+# scripts only queue the message ({{ dovecot_sieve_pipe_dir }}), so moving many
+# messages at once stays fast; spam-learn-queue.timer feeds sa-learn.
+# The nightly "mailctl spam learn" still learns everyone's Junk and inbox.
+sieve_plugins {
+  sieve_imapsieve = yes
+  sieve_extprograms = yes
+}
+# pipe only for the administrator's scripts, not in users' own filters.
+sieve_global_extensions {
+  vnd.dovecot.pipe = yes
+}
+sieve_pipe_bin_dir = {{ dovecot_sieve_pipe_dir }}
+mailbox Junk {
+  sieve_script report-spam {
+    type = before
+    cause = copy
+    path = {{ dovecot_imapsieve_dir }}/report-spam.sieve
+  }
+}
+imapsieve_from Junk {
+  sieve_script report-ham {
+    type = before
+    cause = copy
+    path = {{ dovecot_imapsieve_dir }}/report-ham.sieve
+  }
+}

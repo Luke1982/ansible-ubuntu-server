@@ -57,11 +57,19 @@ virtualHostConfig  {
   # Outlook posts to /autodiscover/autodiscover.xml (in any case); Thunderbird
   # asks for /mail/config-v1.1.xml. Besides the scripts, the web root only
   # holds certbot's challenges.
+{% if item.https %}
+  # /apple is the page where somebody with an Apple device gets a profile for
+  # their mail. It is here and not on the HTTP template: a profile holds the
+  # account's settings, and isn't handed out over a connection nobody checks.
+{% endif %}
   rewrite  {
     enable                1
     rules                 <<<END_rules
 RewriteRule ^/autodiscover/autodiscover\.xml$ /autodiscover.php [NC,L]
 RewriteRule ^/(\.well-known/autoconfig/)?mail/config-v1\.1\.xml$ /autoconfig.php [NC,L]
+{% if item.https %}
+RewriteRule ^/apple/?$ /apple.php [NC,L]
+{% endif %}
     END_rules
   }
 {% if item.https %}

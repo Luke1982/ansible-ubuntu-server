@@ -1,9 +1,8 @@
-## Folder names mail clients make themselves. Clients that don't use special_use
-# save sent mail in "Sent Items", deleted mail in "Verwijderde items" and so on.
-# When a message is saved (APPEND) or copied/moved (COPY) into one of these, an
-# IMAPSieve script moves it on to Sent, Trash or Junk, so each kind of mail
-# stays in one folder whatever client is used. Drafts are left alone: a client
-# must find its draft again in the folder it saved it in.
+## Folder names mail clients make themselves. When a message is saved (APPEND)
+# or copied/moved (COPY) into one, an IMAPSieve script moves it on to Sent,
+# Trash or Junk, so each kind of mail stays in one folder whatever client is
+# used. Drafts are left alone: a client must find its draft back.
+# Spam learning from the same events is in 95-imapsieve-spam.conf.
 sieve_plugins {
   sieve_imapsieve = yes
 }

@@ -1,0 +1,9 @@
+# IMAPSieve: a message copied or moved out of Junk was spam by mistake, so
+# SpamAssassin learns it as ham (queued, see {{ dovecot_sieve_pipe_dir }}). Unless
+# it goes to the trash: throwing spam away says nothing about it.
+require ["environment", "vnd.dovecot.imapsieve", "vnd.dovecot.pipe", "copy"];
+
+if environment :is "vnd.dovecot.mailbox-to" [{{ (["Trash", "Junk"] + dovecot_client_folder_names.trash + dovecot_client_folder_names.junk) | map('to_json') | join(', ') }}] {
+  stop;
+}
+pipe :copy "learn-ham";

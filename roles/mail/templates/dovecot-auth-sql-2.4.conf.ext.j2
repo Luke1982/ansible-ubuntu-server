@@ -15,7 +15,10 @@ passdb sql {
   query = SELECT email as user, password FROM virtual_users WHERE email='%{user}';
 }
 
+# quota_storage_size is the account's own limit, for the few that need more
+# than the server's (conf.d/96-quota.conf); it is NULL for all the others,
+# which Dovecot reads as "no answer", and the server's limit stands.
 userdb sql {
-  query = SELECT CONCAT('/var/vmail/',(SELECT name FROM virtual_domains WHERE id=domain_id),'/',REPLACE('%{user}',CONCAT('@',(SELECT name FROM virtual_domains WHERE id=domain_id)),'')) AS home, 5000 AS uid, 5000 AS gid FROM virtual_users WHERE email ='%{user}';
+  query = SELECT CONCAT('/var/vmail/',(SELECT name FROM virtual_domains WHERE id=domain_id),'/',REPLACE('%{user}',CONCAT('@',(SELECT name FROM virtual_domains WHERE id=domain_id)),'')) AS home, 5000 AS uid, 5000 AS gid, quota AS quota_storage_size FROM virtual_users WHERE email ='%{user}';
   iterate_query = SELECT email AS user FROM virtual_users;
 }

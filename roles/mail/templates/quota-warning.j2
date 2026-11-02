@@ -1,0 +1,28 @@
+#!/bin/sh
+# Run by Dovecot (conf.d/96-quota.conf) when an account passes 85% or 95% of
+# its quota: tells the account, in its own mailbox.
+set -eu
+percent=$1
+user=$2
+/usr/sbin/sendmail -f {{ mail_quota_warn_from }} -- "$user" <<MAIL
+From: {{ mail_quota_warn_name }} mailserver <{{ mail_quota_warn_from }}>
+To: $user
+Subject: Uw mailbox is voor $percent% vol / Your mailbox is $percent% full
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+Auto-Submitted: auto-generated
+
+De mailbox $user is voor $percent% vol.
+
+Is de mailbox vol, dan kan er geen nieuwe mail meer binnenkomen. Ruim
+daarom oude mail op, vooral grote bijlagen, of verplaats mail naar een
+archief op uw computer. Leeg daarna de prullenbak.
+
+Meer ruimte nodig? Neem contact op met {{ mail_quota_warn_name }}: {{ mail_quota_warn_from }}.
+
+--
+
+The mailbox $user is $percent% full. When it is full, no new mail can
+arrive. Please delete old mail, large attachments especially, and empty
+the trash. Need more room? Contact {{ mail_quota_warn_name }}: {{ mail_quota_warn_from }}.
+MAIL

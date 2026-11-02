@@ -1,0 +1,42 @@
+---
+# The queue that the scripts in configure-imapsieve.yml write a message to, and the timer that hands it to
+# SpamAssassin: what people file as spam or as not-spam by hand is learned within five minutes, and the mail
+# program that moved it waits for none of it.
+
+- name: Make the queue of messages waiting to be learned
+  file:
+    path: "{{ spam_learn_queue }}/{{ item }}"
+    state: directory
+    owner: vmail
+    group: vmail
+    mode: 0700
+  loop:
+    - ""  # the queue itself, which is the mail user's as well
+    - spam
+    - ham
+
+- name: Install the script that teaches SpamAssassin what is in the queue
+  template:
+    src: spam-learn-queue.j2
+    dest: /usr/local/sbin/spam-learn-queue
+    owner: root
+    group: root
+    mode: 0755
+
+- name: Install the timer that runs it
+  template:
+    src: "spam-learn-queue.{{ item }}.j2"
+    dest: "/etc/systemd/system/spam-learn-queue.{{ item }}"
+    owner: root
+    group: root
+    mode: 0644
+  loop:
+    - service
+    - timer
+
+- name: Turn the timer on
+  systemd:
+    name: spam-learn-queue.timer
+    enabled: yes
+    state: started
+    daemon_reload: yes

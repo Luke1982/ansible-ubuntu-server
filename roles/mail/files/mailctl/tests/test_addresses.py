@@ -130,3 +130,53 @@ def test_delete_removes_the_account_with_its_permissions_settings_and_logins(dat
 def test_delete_refuses_an_unknown_address(database):
     with pytest.raises(MailctlError, match="isn't an account on this server"):
         addresses.delete(database, "info@example.nl")
+
+
+def test_an_account_has_the_servers_limit_until_it_is_given_one(database):
+    addresses.add(database, "info@example.nl", PASSWORD)
+
+    assert addresses.quota_of(database, "info@example.nl") is None
+
+
+def test_an_account_can_be_given_a_limit_of_its_own(database):
+    addresses.add(database, "info@example.nl", PASSWORD)
+
+    addresses.set_quota(database, "info@example.nl", "90G")
+
+    assert addresses.quota_of(database, "info@example.nl") == "90G"
+
+
+def test_an_account_can_be_put_back_on_the_servers_limit(database):
+    addresses.add(database, "info@example.nl", PASSWORD, "90G")
+
+    addresses.set_quota(database, "info@example.nl", None)
+
+    assert addresses.quota_of(database, "info@example.nl") is None
+
+
+def test_an_account_can_be_created_with_a_limit(database):
+    addresses.add(database, "info@example.nl", PASSWORD, "90G")
+
+    assert addresses.quota_of(database, "info@example.nl") == "90G"
+
+
+def test_a_limit_dovecot_cant_read_is_refused(database):
+    addresses.add(database, "info@example.nl", PASSWORD)
+
+    for size in ("90 gigabytes", "lots", "90%", "-5G", "90000000000000000G", "25", "10GB"):
+        with pytest.raises(MailctlError, match="isn't a size Dovecot reads"):
+            addresses.set_quota(database, "info@example.nl", size)
+    assert addresses.quota_of(database, "info@example.nl") is None
+
+
+def test_the_sizes_dovecot_reads_are_taken(database):
+    addresses.add(database, "info@example.nl", PASSWORD)
+
+    for size in ("25G", "500M", "1T", "100k"):
+        addresses.set_quota(database, "info@example.nl", size)
+        assert addresses.quota_of(database, "info@example.nl") == size
+
+
+def test_a_limit_for_an_unknown_account_is_refused(database):
+    with pytest.raises(MailctlError, match="isn't an account on this server"):
+        addresses.set_quota(database, "info@example.nl", "90G")

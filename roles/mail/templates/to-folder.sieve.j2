@@ -2,7 +2,7 @@
 # conf.d/95-imapsieve-folders.conf): a message saved (APPEND) or copied/moved
 # (COPY) into such a folder goes on to {{ folder }}, flags included, so it isn't
 # scattered over a folder per client.
-require ["fileinto", "environment", "vnd.dovecot.imapsieve"];
+require ["fileinto", "environment", "vnd.dovecot.imapsieve"{% if kind == 'junk' %}, "vnd.dovecot.pipe", "copy"{% endif %}];
 
 # Coming from {{ folder }} itself, it's in {{ folder }} already (COPY), or would be lost from
 # it (MOVE: the original is gone once the copy is discarded). Leave it be.
@@ -10,5 +10,10 @@ if environment :is "vnd.dovecot.mailbox-from" "{{ folder }}" {
   keep;
   stop;
 }
+{% if kind == 'junk' %}
+# Filed as spam by hand: SpamAssassin learns from it, like from a move into
+# Junk itself (report-spam.sieve), which this fileinto doesn't trigger.
+pipe :copy "learn-spam";
+{% endif %}
 fileinto "{{ folder }}";
 discard;

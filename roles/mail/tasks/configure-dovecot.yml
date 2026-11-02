@@ -96,6 +96,19 @@
       mariadb mailserver -e 'DELETE old FROM last_login old JOIN last_login newer
       ON newer.userid = old.userid AND newer.service = old.service AND newer.last_access > old.last_access'
 
+# Mail that is expunged -- Trash emptied, a message deleted for good, the clearing out of Trash and Junk --
+# waits in a hidden folder first, so it can be put back. The folder isn't listed, doesn't count towards the
+# quota, and empties itself after dovecot_expunged_days.
+- name: Keep deleted mail for a while longer
+  template:
+    src: 96-lazy-expunge.conf.j2
+    dest: /etc/dovecot/conf.d/96-lazy-expunge.conf
+    owner: root
+    group: root
+    mode: 0644
+  when: dovecot_version == "2.4"
+  notify: restart dovecot
+
 - name: Copy over local Dovecot conf file
   template:
     src: "dovecot-local-{{ dovecot_version }}.conf.j2"

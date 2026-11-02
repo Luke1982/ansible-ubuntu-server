@@ -19,7 +19,7 @@ import re
 import tempfile
 import time
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import mailbox, system
@@ -29,8 +29,10 @@ from .errors import MailctlError
 JUNK = ".Junk"
 # Folders that teach nothing: mail somebody threw away is often spam they never filed, and a draft is half a
 # message. The Dutch names are here too, because a server set up before this one has them as folders of their own
-# rather than as the aliases Dovecot links to the standard ones.
-NOT_HAM = {"junk", "spam", "trash", "drafts", "ongewenste e-mail", "verwijderde items", "prullenbak", "concepten"}
+# rather than as the aliases Dovecot links to the standard ones. EXPUNGED is where Dovecot keeps mail that was
+# deleted for good until it is really gone: spam somebody threw away is no ham.
+NOT_HAM = {"junk", "spam", "trash", "drafts", "ongewenste e-mail", "verwijderde items", "prullenbak", "concepten",
+           "expunged", "deleted messages", "deleted items"}
 # Files per sa-learn call: a command line can't hold everything, and each call says what it learned.
 BATCH = 200
 # Where the time of the last run is kept, so the next one only looks at what came after it.
@@ -184,14 +186,45 @@ def sync() -> None:
     system.run("sa-learn", "--sync")
 
 
-def last_run(state: Path = STATE) -> float:
-    """When mailctl last learned, as a timestamp. 0 when it never did, so everything counts."""
+@dataclass(frozen=True)
+class State:
+    """When mailctl last learned: for the server as a whole, and for the accounts it got through on its own.
+
+    A run that is cut short -- a timeout, a reboot, a Ctrl-C -- would otherwise start every account over the
+    next time, and on a server with years of mail it would never get to the end.
+    """
+    last_run: float = 0.0
+    accounts: dict[str, float] = field(default_factory=dict)
+
+    def since(self, address: str) -> float:
+        """The moment after which that account's mail counts as new. 0 for one never learned from, so
+        everything counts."""
+        return max(self.last_run, self.accounts.get(address, 0.0))
+
+
+def read(state: Path = STATE) -> State:
+    """What the last runs left behind. A file that isn't there or can't be read means nothing was learned yet,
+    which costs a long first run and never loses mail."""
     try:
-        return float(json.loads(state.read_text())["last_run"])
-    except (OSError, ValueError, KeyError, TypeError):
-        return 0.0
+        loaded = json.loads(state.read_text())
+        accounts = {str(address): float(when) for address, when in (loaded.get("accounts") or {}).items()}
+        return State(float(loaded["last_run"]), accounts)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return State()
 
 
 def remember(when: float, state: Path = STATE) -> None:
-    state.parent.mkdir(parents=True, exist_ok=True)
-    state.write_text(json.dumps({"last_run": when, "written": time.strftime("%Y-%m-%d %H:%M:%S")}) + "\n")
+    """A run that got through every account: one moment for all of them, and the accounts' own go."""
+    _write(State(when), state)
+
+
+def remember_account(address: str, when: float, state: Path = STATE) -> None:
+    """One account is done, written as soon as it is."""
+    known = read(state)
+    _write(State(known.last_run, {**known.accounts, address: when}), state)
+
+
+def _write(state: State, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"last_run": state.last_run, "accounts": state.accounts,
+                                "written": time.strftime("%Y-%m-%d %H:%M:%S")}) + "\n")

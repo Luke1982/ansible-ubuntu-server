@@ -1,0 +1,21 @@
+---
+# How much mail an account may hold. Without a limit one mailbox can fill the disk and stop the mail of every
+# other account on the server; with one, a mail program shows how full the mailbox is, and the account hears
+# about it before new mail is refused.
+
+- name: Say how much mail an account may hold
+  template:
+    src: 96-quota.conf.j2
+    dest: /etc/dovecot/conf.d/96-quota.conf
+    owner: root
+    group: root
+    mode: 0644
+  notify: restart dovecot
+
+- name: Install the warning an account gets at 85% and 95% of that
+  template:
+    src: quota-warning.j2
+    dest: /usr/local/bin/quota-warning
+    owner: root
+    group: root
+    mode: 0755

@@ -256,3 +256,64 @@ def test_kick_logs_out_sessions_and_ignores_failures(fake_command):
     mailbox.kick(ADDRESS)
 
     assert doveadm.calls == [["kick", "info@example.nl"]]
+
+
+QUOTA_ONE = "Quota name\tType\tValue\tLimit\t%\nUser quota\tSTORAGE\t11344694\t26214400\t43\n" \
+            "User quota\tMESSAGE\t147578\t-\t0\n"
+QUOTA_ALL = ("Username\tQuota name\tType\tValue\tLimit\t%\n"
+             "info@example.nl\tUser quota\tSTORAGE\t209\t26214400\t0\n"
+             "info@example.nl\tUser quota\tMESSAGE\t8\t-\t0\n"
+             "sales@example.nl\tUser quota\tSTORAGE\t13107200\t-\t0\n")
+
+
+def says(output: str) -> str:
+    """A fake command that prints that, tabs and all."""
+    return f"cat <<'END_OF_OUTPUT'\n{output}END_OF_OUTPUT\n"
+
+
+def test_how_full_one_mailbox_is(fake_command):
+    doveadm = fake_command("doveadm", says(QUOTA_ONE))
+
+    found = mailbox.quota(ADDRESS)
+
+    assert found == mailbox.Quota(used=11344694 * 1024, limit=26214400 * 1024)
+    assert found.percent == 43
+    assert doveadm.calls == [["-f", "tab", "quota", "get", "-u", ADDRESS]]
+
+
+def test_how_full_every_mailbox_is(fake_command):
+    """One call for the whole server: asking per account takes a minute on a server with fifty of them."""
+    doveadm = fake_command("doveadm", says(QUOTA_ALL))
+
+    found = mailbox.quotas()
+
+    assert found["info@example.nl"] == mailbox.Quota(used=209 * 1024, limit=26214400 * 1024)
+    assert doveadm.calls == [["-f", "tab", "quota", "get", "-A"]]
+
+
+def test_a_mailbox_without_a_limit_has_no_percentage():
+    found = mailbox.parse_quotas(QUOTA_ALL)["sales@example.nl"]
+
+    assert found == mailbox.Quota(used=13107200 * 1024, limit=None)
+    assert found.percent is None
+
+
+def test_dovecot_counting_nothing_for_an_account_is_not_a_mailbox_of_nothing(fake_command):
+    """It hasn't opened the mailbox yet, which is not the same as an empty one."""
+    fake_command("doveadm", says("Quota name\tType\tValue\tLimit\t%\n"))
+
+    assert mailbox.quota(ADDRESS) is None
+
+
+def test_what_dovecot_remembers_of_an_account_can_be_dropped(fake_command):
+    doveadm = fake_command("doveadm")
+
+    mailbox.forget_cached_account(ADDRESS)
+
+    assert doveadm.calls == [["auth", "cache", "flush", ADDRESS]]
+
+
+def test_a_server_without_an_auth_cache_is_no_failure(fake_command):
+    fake_command("doveadm", "echo 'auth cache is disabled' >&2; exit 1")
+
+    mailbox.forget_cached_account(ADDRESS)  # no error: the change counts right away on such a server

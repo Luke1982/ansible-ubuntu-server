@@ -1,0 +1,34 @@
+#!/bin/sh
+# Teaches SpamAssassin the messages people filed by hand since the last run:
+# what they moved into Junk is spam, what they moved out of it (except to
+# Trash) is ham. Queued by {{ dovecot_sieve_pipe_dir }}/learn-spam and learn-ham.
+# Runs as vmail, every 5 minutes (spam-learn-queue.timer).
+set -eu
+base={{ spam_learn_queue }}
+cd "$base"
+status=0
+
+# sa-learn exits 1 when it learned nothing new (all known already), so success
+# is the "N message(s) examined" line, not the exit status.
+learn() {  # learn spam|ham DIR
+    out=$(sa-learn --"$1" "$2" 2>&1) || true
+    if echo "$out" | grep -q 'message(s) examined'; then
+        echo "$1: $(echo "$out" | tail -1)"
+        rm -rf "$2"
+    else
+        echo "$1: sa-learn failed, messages kept in $2: $out" >&2
+        status=1
+    fi
+}
+
+for kind in spam ham; do
+    # Batches a failed run left behind come first.
+    for work in "$base"/work-$kind.*; do
+        [ -d "$work" ] && learn "$kind" "$work"
+    done
+    [ -n "$(find "$kind" -maxdepth 1 -type f ! -name '.tmp.*' -print -quit)" ] || continue
+    work=$(mktemp -d "$base/work-$kind.XXXXXXXX")
+    find "$kind" -maxdepth 1 -type f ! -name '.tmp.*' -exec mv -t "$work" {} +
+    learn "$kind" "$work"
+done
+exit $status

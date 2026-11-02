@@ -9,6 +9,9 @@ CREATE TABLE IF NOT EXISTS `virtual_domains` (
  `domain_id` int(11) NOT NULL,
  `email` varchar(100) NOT NULL,
  `password` varchar(150) NOT NULL,
+ -- How much mail this account may hold (Dovecot's quota_storage_size, like '90G'). NULL for the
+ -- server's own limit, which is what nearly every account has: mailctl address quota ADDRESS.
+ `quota` varchar(16) DEFAULT NULL,
  PRIMARY KEY (`id`),
  UNIQUE KEY `email` (`email`),
  FOREIGN KEY (domain_id) REFERENCES virtual_domains(id) ON DELETE CASCADE

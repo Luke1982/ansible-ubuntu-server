@@ -8,6 +8,10 @@ from .errors import MailctlError
 
 MIN_PASSWORD_LENGTH = 8
 MAX_HASH_LENGTH = 150  # the size of the password column
+MAX_QUOTA_LENGTH = 16  # the size of the quota column
+# How much mail an account may hold, as Dovecot reads it in quota_storage_size: a number and a unit, like 90G.
+# The unit is required: Dovecot takes a bare number as bytes, which is never what anybody means here.
+_QUOTA = re.compile(r"\d+[kKmMgGtT]")
 # A hash as Dovecot reads it: with its scheme in braces, or a crypt hash like $6$..., which Dovecot checks with crypt().
 _PASSWORD_HASH = re.compile(r"(\{[A-Za-z0-9.-]+\}\S+|\$[0-9a-z]+\$\S+)")
 SCHEME = "SHA512-CRYPT"  # what this server hashes passwords with, and what webmail (SOGo) expects
@@ -75,18 +79,42 @@ def supported_schemes() -> set[str]:
     return {scheme.upper() for scheme in system.run("doveadm", "pw", "-l").split()}
 
 
-def add(db: Database, address: str, password: str) -> None:
+def check_quota(size: str) -> None:
+    """Whether that is a size Dovecot reads as a limit on a mailbox."""
+    if not _QUOTA.fullmatch(size.strip()) or len(size.strip()) > MAX_QUOTA_LENGTH:
+        raise MailctlError(f"{size} isn't a size Dovecot reads as a limit.", hint="Like 25G, 500M or 1T.")
+
+
+def quota_of(db: Database, address: str) -> str | None:
+    """The account's own limit, or None when it has the server's."""
+    require(db, address)
+    return db.value("SELECT quota FROM virtual_users WHERE email = %s", address)
+
+
+def set_quota(db: Database, address: str, size: str | None) -> None:
+    """Gives the account a limit of its own, or None to put it back on the server's."""
+    require(db, address)
+    if size is not None:
+        check_quota(size)
+        size = size.strip()
+    db.execute("UPDATE virtual_users SET quota = %s WHERE email = %s", size, address)
+
+
+def add(db: Database, address: str, password: str, quota: str | None = None) -> None:
     """Creates the account, lets it send as itself, and keeps it a copy if the address already has forwards."""
-    add_hashed(db, address, _hash_password(password))
+    add_hashed(db, address, _hash_password(password), quota)
 
 
-def add_hashed(db: Database, address: str, password_hash: str) -> None:
+def add_hashed(db: Database, address: str, password_hash: str, quota: str | None = None) -> None:
     """Like add(), with the password as its hash, as another server stores it."""
     check_hash(password_hash)
+    if quota is not None:
+        check_quota(quota)
     domain_id = domains.id_of(db, names.split(address)[1])
     require_available(db, address)
     db.execute(
-        "INSERT INTO virtual_users (domain_id, email, password) VALUES (%s, %s, %s)", domain_id, address, password_hash,
+        "INSERT INTO virtual_users (domain_id, email, password, quota) VALUES (%s, %s, %s, %s)",
+        domain_id, address, password_hash, quota,
     )
     senders.allow(db, address, address)
     forwards.keep_copy(db, address)

@@ -102,6 +102,18 @@
     target: /tmp/setup_mailserver_tables.sql
     login_unix_socket: /var/run/mysqld/mysqld.sock
 
+# CREATE TABLE IF NOT EXISTS above leaves a table that is already there as it is, so a column added later is
+# added here. NULL means the account has no limit of its own, which Dovecot reads as "no answer": then the
+# server's own limit stands (conf.d/96-quota.conf). mailctl writes this column on every server, so it is not
+# only for the ones whose Dovecot keeps quotas.
+- name: Give the accounts a place for a mail limit of their own
+  community.mysql.mysql_query:
+    login_db: mailserver
+    login_unix_socket: /var/run/mysqld/mysqld.sock
+    query: >-
+      ALTER TABLE virtual_users ADD COLUMN IF NOT EXISTS quota VARCHAR(16) NULL DEFAULT NULL
+      COMMENT 'Dovecot quota_storage_size for this account, like 90G; NULL: the server default'
+
 - name: Create spamassassin database schema
   mysql_db:
     state: import
@@ -216,6 +228,10 @@
 
 - include_tasks: configure-dovecot.yml
 - include_tasks: configure-imapsieve.yml
+  when: dovecot_version == "2.4"
+- include_tasks: configure-spam-learning.yml
+  when: dovecot_version == "2.4"
+- include_tasks: configure-quota.yml
   when: dovecot_version == "2.4"
 - include_tasks: remove-roundcube.yml
 - include_tasks: configure-sogo.yml

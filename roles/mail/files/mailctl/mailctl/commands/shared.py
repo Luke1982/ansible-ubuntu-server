@@ -40,6 +40,13 @@ def ask_domain(value: str | None) -> str:
     return names.domain(ui.ask("Domain", value, "DOMAIN"))
 
 
+def how_full(found: mailbox.Quota) -> str:
+    """What the mailbox holds against what it may hold: "11.3 GB of 25 GB (43% full)"."""
+    if found.limit is None:
+        return f"{ui.size(found.used)}, with no limit"
+    return f"{ui.size(found.used)} of {ui.size(found.limit)} ({found.percent}% full)"
+
+
 def ask_address(value: str | None, prompt: str = "Address", argument: str = "ADDRESS") -> str:
     return names.address(ui.ask(prompt, value, argument))
 

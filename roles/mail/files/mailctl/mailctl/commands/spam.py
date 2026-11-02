@@ -1,17 +1,17 @@
 """mailctl spam: SpamAssassin settings for an account, a domain or the whole server."""
 
+import time
+from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
-
-import time
 
 from .. import ui
 from ..core import addresses, spam, spamlearn
 from ..core.spam import Scope
 from ..session import Session, open_session
 from .dns import DryRun
-from .shared import Yes, ask_target, group
+from .shared import Address, Yes, ask_address, ask_target, group
 
 app = group("Show and change SpamAssassin settings for an account, a domain or the whole server.")
 
@@ -49,33 +49,72 @@ def learn(everything: Everything = False, dry_run: DryRun = False) -> None:
     started = time.time()
     with open_session() as session:
         state = session.config.spam_learn_state
-        since = 0.0 if everything else spamlearn.last_run(state)
+        known = spamlearn.read(state)
         accounts = addresses.list_addresses(session.db)
         folders = spamlearn.folders(session.config, accounts)
         with ui.console.status("Looking for mail to learn from…"):
-            found = {folder: spamlearn.messages(folder, since) for folder in folders}
-    spam_messages = [path for folder, paths in found.items() if folder.spam for path in paths]
-    ham_messages = [path for folder, paths in found.items() if not folder.spam for path in paths]
-    if not spam_messages and not ham_messages:
-        ui.success("Nothing new to learn from." if since else "There is no mail to learn from.")
+            found = {folder: spamlearn.messages(folder, 0.0 if everything else known.since(folder.address))
+                     for folder in folders}
+    per_account = _per_account(found)
+    spam_count = sum(len(spam_here) for spam_here, _ in per_account.values())
+    ham_count = sum(len(ham_here) for _, ham_here in per_account.values())
+    if not spam_count and not ham_count:
+        learned_before = bool(known.last_run or known.accounts)
+        ui.success("Nothing new to learn from." if learned_before else "There is no mail to learn from.")
         return
-    counted = f"{ui.plural(len(spam_messages), 'spam message')} and {ui.plural(len(ham_messages), 'other message')}"
+    counted = f"{ui.plural(spam_count, 'spam message')} and {ui.plural(ham_count, 'other message')}"
     if dry_run:
         ui.line(f"Would learn from {counted}, of {ui.plural(len(accounts), 'account')}.")
         ui.note("Nothing was learned (--dry-run).")
         return
     problems = []
+    learned_spam = learned_ham = 0
+    # Account by account, each one written down as soon as it is learned: a run that is stopped halfway then
+    # keeps what it did instead of starting the whole server over the next night.
     with ui.console.status(f"Learning from {counted}…"):
-        learned_spam, trouble = spamlearn.learn(spam_messages, spam=True)
-        problems += trouble
-        learned_ham, trouble = spamlearn.learn(ham_messages, spam=False)
-        problems += trouble
+        for address, (spam_here, ham_here) in per_account.items():
+            if not spam_here and not ham_here:
+                continue
+            learned, trouble = spamlearn.learn(spam_here, spam=True)
+            learned_spam += learned
+            problems += trouble
+            learned, trouble = spamlearn.learn(ham_here, spam=False)
+            learned_ham += learned
+            problems += trouble
+            spamlearn.remember_account(address, started, state)
         spamlearn.sync()
     spamlearn.remember(started, state)
     ui.success(f"Learned from {ui.plural(learned_spam, 'new spam message')} and "
                f"{ui.plural(learned_ham, 'new other message')}; the rest was known already.")
     for problem in problems:
         ui.warn(problem)
+
+
+def _per_account(found: dict[spamlearn.Folder, list[Path]]) -> dict[str, tuple[list[Path], list[Path]]]:
+    """The messages to learn from, per account: the spam ones and the others."""
+    per_account: dict[str, tuple[list[Path], list[Path]]] = {}
+    for folder, paths in found.items():
+        spam_here, ham_here = per_account.setdefault(folder.address, ([], []))
+        (spam_here if folder.spam else ham_here).extend(paths)
+    return per_account
+
+
+@app.command()
+def skip(address: Address = None) -> None:
+    """Leave the mail that is in a mailbox now out of the learning.
+
+    A mailbox that has just been copied from another server holds nothing but mail that looks as if it
+    arrived this minute, and the next nightly run would hand every message of it to SpamAssassin: hours of
+    work for a filter that was taught on the other server already. This says that what is there now needn't
+    be learned from. Mail that comes in after it still is.
+
+    [dim]Example:[/] mailctl spam skip info@example.nl
+    """
+    with open_session() as session:
+        address = ask_address(address)
+        addresses.require(session.db, address)
+        spamlearn.remember_account(address, time.time(), session.config.spam_learn_state)
+    ui.success(f"The mail {address} holds now won't be learned from; what comes in after this will.")
 
 
 @app.command()

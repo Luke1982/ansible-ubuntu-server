@@ -1,0 +1,12 @@
+[Unit]
+Description=Teach SpamAssassin the mail people moved into or out of Junk
+Documentation=man:sa-learn(1)
+After=mariadb.service
+
+[Service]
+Type=oneshot
+User=vmail
+Group=vmail
+ExecStart=/usr/local/sbin/spam-learn-queue
+Nice=10
+IOSchedulingClass=idle

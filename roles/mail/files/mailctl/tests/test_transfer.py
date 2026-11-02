@@ -387,6 +387,38 @@ def test_export_writes_what_import_reads(mailctl, filled_server, tmp_path):
     transfer.read(path)
 
 
+def test_export_carries_an_accounts_own_limit(mailctl, filled_server, tmp_path, database):
+    """Without it, moving a server puts every mailbox that needed more room back on the server's limit."""
+    addresses.set_quota(database, "info@example.nl", "90G")
+    path = tmp_path / "export.json"
+
+    mailctl.ok("export", str(path))
+
+    exported = json.loads(path.read_text())["addresses"]
+    assert {"address": "info@example.nl", "password_hash": HASH, "quota": "90G"} in exported
+    assert all("quota" not in entry for entry in exported if entry["address"] != "info@example.nl"), \
+        "an account on the server's own limit says nothing about it"
+
+
+def test_import_gives_an_account_the_limit_the_file_names(mailctl, doveadm, tmp_path, database):
+    file = {"domains": ["example.nl"],
+            "addresses": [{"address": "info@example.nl", "password_hash": HASH, "quota": "90G"},
+                          {"address": "sales@example.nl", "password_hash": HASH}]}
+
+    mailctl.ok("import", str(write(tmp_path, file)), "--yes")
+
+    assert addresses.quota_of(database, "info@example.nl") == "90G"
+    assert addresses.quota_of(database, "sales@example.nl") is None
+
+
+def test_import_refuses_a_limit_dovecot_cant_read(mailctl, doveadm, tmp_path, database):
+    file = {"domains": ["example.nl"],
+            "addresses": [{"address": "info@example.nl", "password_hash": HASH, "quota": "lots"}]}
+
+    assert "isn't a size Dovecot reads" in mailctl.fails("import", str(write(tmp_path, file)), "--yes")
+    assert database.value("SELECT COUNT(*) FROM virtual_users") == 0
+
+
 def test_export_asks_before_overwriting_a_file(mailctl, filled_server, tmp_path):
     path = tmp_path / "export.json"
     path.write_text("keep me")

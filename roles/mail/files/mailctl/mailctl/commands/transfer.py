@@ -255,9 +255,9 @@ class _Plan:
             had_mail = home.exists()
             with db.transaction():
                 if account.password is not None:
-                    addresses.add(db, account.address, account.password)
+                    addresses.add(db, account.address, account.password, account.quota)
                 else:
-                    addresses.add_hashed(db, account.address, account.password_hash)
+                    addresses.add_hashed(db, account.address, account.password_hash, account.quota)
                 mailbox.create_maildir(config, account.address)
             ui.success(f"Created {account.address}." +
                        (f" The mail that was kept in {home} is in the account again." if had_mail else ""))

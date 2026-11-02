@@ -1,0 +1,10 @@
+#!/bin/sh
+# Run by IMAPSieve (see conf.d/95-imapsieve-spam.conf) with a message on stdin
+# that somebody filed as {{ kind }}. It only queues the message, so moving many at
+# once stays fast; spam-learn-queue hands the queue to sa-learn.
+set -eu
+umask 077
+dir={{ spam_learn_queue }}/{{ kind }}
+tmp=$(mktemp "$dir/.tmp.XXXXXXXX")
+cat > "$tmp"
+mv "$tmp" "$dir/$(date +%s).${tmp##*.tmp.}"

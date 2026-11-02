@@ -33,10 +33,14 @@ mail_inbox_path = .
 # Full-text search (dovecot-fts-xapian, configured in the fts section below).
 # acl: SOGo's ActiveSync needs the IMAP ACL extension (imap_acl below). There
 # are no ACL files, so everyone keeps full rights to their own folders.
+# quota: conf.d/96-quota.conf. lazy_expunge: conf.d/96-lazy-expunge.conf; it's
+# in every protocol's list, so no expunge anywhere skips it (doveadm included).
 mail_plugins {
   fts = yes
   fts_xapian = yes
   acl = yes
+  quota = yes
+  lazy_expunge = yes
 }
 acl_driver = vfile
 
@@ -65,13 +69,17 @@ namespace inbox {
     auto = subscribe
     special_use = \Sent
   }
+  # Deleted mail and spam go after {{ dovecot_trash_days }} days (counted from when they were put
+  # there), into EXPUNGED for {{ dovecot_expunged_days }} more (conf.d/96-lazy-expunge.conf).
   mailbox Trash {
     auto = subscribe
     special_use = \Trash
+    autoexpunge = {{ dovecot_trash_days }}d
   }
   mailbox Junk {
     auto = subscribe
     special_use = \Junk
+    autoexpunge = {{ dovecot_trash_days }}d
   }
   # conf.d/15-mailboxes.conf also flags "Sent Messages" as \Sent. Two \Sent
   # folders confuse mail clients, so Sent is the only one.
@@ -127,6 +135,9 @@ protocol imap {
     imap_acl = yes
     last_login = yes
     imap_sieve = yes
+    quota = yes
+    imap_quota = yes
+    lazy_expunge = yes
   }
   # SOGo connects from 127.0.0.1 for everyone, and each of its processes can
   # keep an IMAP connection open per user, so the limit per user and address
@@ -147,6 +158,8 @@ protocol lmtp {
     fts_xapian = yes
     acl = yes
     sieve = yes
+    quota = yes
+    lazy_expunge = yes
   }
 }
 

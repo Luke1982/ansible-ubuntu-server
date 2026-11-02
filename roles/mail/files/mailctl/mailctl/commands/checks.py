@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from .. import ui
-from ..core import autodiscover, certificate, dkim, dns_check, reach, spamscan, system, webmail
+from ..core import autodiscover, certificate, dkim, dns_check, mailbox, reach, spamscan, system, webmail
 from ..core.certificate import Certificate
 from ..core.dns_check import Check, DnsRecord, IPAddress, Status
 from ..core.errors import MailctlError
@@ -51,7 +51,36 @@ def server_checks(facts: Server, now: datetime) -> list[Check]:
     checks.append(spamscan.check())
     # Where other mail servers deliver: a hostname address that doesn't answer there delays every message.
     reachable = reach.check({facts.hostname: reach.SMTP_PORT}, facts.resolver)
-    return checks + ([reachable] if reachable else [])
+    nearly_full = full_mailboxes()
+    return checks + ([reachable] if reachable else []) + ([nearly_full] if nearly_full else [])
+
+
+# A mailbox this full is worth hearing about before it refuses mail: the account has had its warning at 85%,
+# and somebody has to decide whether to clear it out or give it more room.
+NEARLY_FULL = 85
+
+
+def full_mailboxes() -> Check | None:
+    """The accounts that are nearly at their limit. Asked of Dovecot in one go, for every account at once.
+
+    None when Dovecot keeps no quota on this server, which is a server where nothing can be too full, and
+    when it won't answer: that is a server where every other command says so too.
+    """
+    try:
+        found = mailbox.quotas()
+    except MailctlError:
+        return None
+    if not found:
+        return None
+    full = sorted((address for address, quota in found.items() if (quota.percent or 0) >= NEARLY_FULL),
+                  key=lambda address: -(found[address].percent or 0))
+    if not full:
+        return Check("Mailbox space", Status.OK, f"No mailbox is over {NEARLY_FULL}% full.")
+    which = ", ".join(f"{address} ({found[address].percent}%)" for address in full[:5])
+    more = f" and {len(full) - 5} more" if len(full) > 5 else ""
+    return Check("Mailbox space", Status.WARN,
+                 f"{which}{more}. Clear the mailbox out, or give it more room with: mailctl address quota "
+                 f"{full[0]} SIZE")
 
 
 def domain_checks(session: Session, facts: Server, domain: str, now: datetime | None = None) -> list[Check]:

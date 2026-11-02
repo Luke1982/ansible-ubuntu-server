@@ -11,7 +11,7 @@ from ..core import activity, domains, mailbox, names
 from ..core.errors import MailctlError
 from ..session import Session, open_session
 from . import checks
-from .shared import ask_target
+from .shared import ask_target, how_full
 
 Target = Annotated[Optional[str], typer.Argument(
     metavar="[ADDRESS_OR_DOMAIN]", help="An e-mail address or a domain. Asked for when left out.", show_default=False)]
@@ -47,6 +47,7 @@ def _account_status(session: Session, address: str) -> None:
     now = datetime.now().astimezone()
     ui.heading(address)
     _section("Folders", lambda: _folders(mailbox.folders(session.config, address)))
+    _section("Room in the mailbox", lambda: _room(address))
     _section("Last login (IMAP and webmail)", lambda: _logins(activity.last_login_per_service(session.db, address), now))
     _section("Sending", lambda: _sending(session, address, now))
 
@@ -67,6 +68,14 @@ def _folders(folders: list[mailbox.Folder]) -> None:
         ui.size(sum(folder.size for folder in stored)),
     )
     ui.console.print(table)
+
+
+def _room(address: str) -> None:
+    found = mailbox.quota(address)
+    if found is None:
+        ui.note("Dovecot isn't counting this mailbox yet; it starts when the account is next opened.", indent=2)
+        return
+    ui.line(f"{how_full(found)}.", indent=2)
 
 
 def _logins(logins: list[activity.Login], now: datetime) -> None:

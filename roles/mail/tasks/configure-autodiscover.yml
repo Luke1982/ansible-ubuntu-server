@@ -52,4 +52,5 @@
   loop:
     - autoconfig.php
     - autodiscover.php
+    - apple.php
     - mailsettings.php

@@ -16,28 +16,41 @@ from .checks import offer_the_certificate
 from .dns import DryRun
 from .shared import (
     Address, DeleteMail, DomainFilter, PasswordStdin, Yes, activate_imported, ask_address, attempt, decide_mail,
-    domain_filter, group, into_webmail, warn_about_incoming_forwards, would_be_in_webmail,
+    domain_filter, group, how_full, into_webmail, warn_about_incoming_forwards, would_be_in_webmail,
 )
+
+# What to type to put an account back on the server's own limit, instead of a size of its own.
+DEFAULT_QUOTA = "default"
 
 AccountFile = Annotated[str, typer.Argument(
     metavar="FILE", help="A JSON file of addresses with their passwords.", show_default=False)]
+QuotaSize = Annotated[Optional[str], typer.Argument(
+    metavar="[SIZE]", help=f"How much mail the account may hold, like 90G, or '{DEFAULT_QUOTA}' for the server's "
+                           f"own limit. Shown when left out.", show_default=False)]
+NewQuota = Annotated[Optional[str], typer.Option(
+    "--quota", metavar="SIZE", help="How much mail the account may hold, like 90G. The server's own limit when "
+                                    "left out.", show_default=False)]
 
 app = group("Add, list and delete mail accounts, and change their passwords.")
 
 
 @app.command()
-def add(address: Address = None, password_stdin: PasswordStdin = False) -> None:
+def add(address: Address = None, password_stdin: PasswordStdin = False, quota: NewQuota = None) -> None:
     """Create a mail account with its mailbox.
 
     Asks for the password, and offers to add the domain when it isn't on this server yet.
 
     [dim]Example:[/] mailctl address add info@example.nl
 
+    [dim]More room than the server's limit:[/] mailctl address add info@example.nl --quota 90G
+
     [dim]In a script:[/] mailctl address add info@example.nl --password-stdin < password.txt
     """
     with open_session() as session:
         address = ask_address(address)
         addresses.require_available(session.db, address)
+        if quota is not None:
+            addresses.check_quota(quota)
         domain = names.split(address)[1]
         new_domain = _domain_to_add(session, domain)
         password = _new_password(password_stdin)
@@ -46,7 +59,7 @@ def add(address: Address = None, password_stdin: PasswordStdin = False) -> None:
         home = mailbox.home_dir(session.config, address)
         had_mail = home.exists()
         with session.db.transaction():
-            addresses.add(session.db, address, password)
+            addresses.add(session.db, address, password, quota)
             mailbox.create_maildir(session.config, address)
     ui.success(f"Created {address}.")
     if had_mail:
@@ -55,6 +68,48 @@ def add(address: Address = None, password_stdin: PasswordStdin = False) -> None:
         with open_session() as session:
             if offer_the_certificate(session, domain):
                 certificate_command.sync(yes=True)
+
+
+@app.command()
+def quota(address: Address = None, size: QuotaSize = None) -> None:
+    """Show or change how much mail an account may hold.
+
+    Every account has the server's limit unless it is given one of its own here, which is for the few that need
+    more: a mailbox that holds years of a company's post. A mail program shows how full the mailbox is, and the
+    account gets a warning at 85% and at 95%; after that new mail is refused and the sender hears about it.
+
+    [dim]Example:[/] mailctl address quota info@example.nl
+
+    [dim]More room:[/] mailctl address quota info@example.nl 90G
+
+    [dim]The server's limit again:[/] mailctl address quota info@example.nl default
+    """
+    with open_session() as session:
+        address = ask_address(address)
+        addresses.require(session.db, address)
+        if size is not None:
+            wanted = None if size.strip().lower() == DEFAULT_QUOTA else size
+            addresses.set_quota(session.db, address, wanted)
+            mailbox.forget_cached_account(address)
+        own = addresses.quota_of(session.db, address)
+    if size is not None:
+        ui.success(f"{address} may hold {own}." if own else
+                   f"{address} has the server's own limit again.")
+    _show_quota(address, own)
+
+
+def _show_quota(address: str, own: str | None) -> None:
+    """What the mailbox holds against what it may hold, as Dovecot counts it."""
+    try:
+        found = mailbox.quota(address)
+    except MailctlError as problem:
+        ui.warn(f"Can't ask Dovecot how full the mailbox is: {problem.message}")
+        return
+    if found is None:
+        ui.note("Dovecot isn't counting this mailbox yet; it starts when the account is next opened.")
+        return
+    whose = "its own limit" if own else "the server's limit"
+    ui.line(f"{how_full(found)}, {whose}." if found.limit else f"{how_full(found)}.")
 
 
 @app.command(name="import")

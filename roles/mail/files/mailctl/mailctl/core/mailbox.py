@@ -32,6 +32,18 @@ class Folder:
 
 
 @dataclass(frozen=True)
+class Quota:
+    """How much mail an account holds and how much it may hold, in bytes. No limit is None."""
+    used: int
+    limit: int | None = None
+
+    @property
+    def percent(self) -> int | None:
+        """How full the mailbox is, or None when it has no limit."""
+        return round(self.used * 100 / self.limit) if self.limit else None
+
+
+@dataclass(frozen=True)
 class SieveScript:
     name: str
     active: bool
@@ -101,6 +113,40 @@ def parse_folders(output: str, maildir: Path) -> list[Folder]:
         alias_of = os.readlink(path).removeprefix(".") if path.is_symlink() else None
         result.append(Folder(name, int(messages), int(size), alias_of))
     return result
+
+
+def quota(address: str) -> Quota | None:
+    """What Dovecot says the account holds, or None when it keeps no quota for it."""
+    return parse_quotas(system.run("doveadm", "-f", "tab", "quota", "get", "-u", address)).get("")
+
+
+def quotas() -> dict[str, Quota]:
+    """The same for every account on the server, in one go: a call per account would take minutes."""
+    return parse_quotas(system.run("doveadm", "-f", "tab", "quota", "get", "-A"))
+
+
+def parse_quotas(output: str) -> dict[str, "Quota"]:
+    """Reads 'doveadm -f tab quota get'. Asked about one account it leaves out the Username column, and that
+    one is keyed by the empty name. Sizes are in kilobytes, and a limit of "-" is no limit."""
+    found = {}
+    for line in output.splitlines():
+        parts = [part.strip() for part in line.split("\t")]
+        if len(parts) < 5:
+            continue
+        address, rest = ("", parts) if len(parts) == 5 else (parts[0], parts[1:])
+        if rest[1].upper() != "STORAGE" or not rest[2].isdigit():
+            continue  # the header line, or the count of messages, which has no limit here
+        found[address] = Quota(int(rest[2]) * 1024, int(rest[3]) * 1024 if rest[3].isdigit() else None)
+    return found
+
+
+def forget_cached_account(address: str) -> None:
+    """Drops what Dovecot cached from the database about the account, so a change to it counts at once
+    instead of whenever the auth cache lets go of it."""
+    try:
+        system.run("doveadm", "auth", "cache", "flush", address)
+    except MailctlError:
+        pass  # A server with no auth cache has nothing to flush, and the change counts right away.
 
 
 def sieve_scripts(address: str) -> list[SieveScript]:

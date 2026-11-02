@@ -1,0 +1,20 @@
+## Undo for permanently deleted mail. A message that is expunged (Trash
+# emptied, deleted for good, autoexpunged) goes to the hidden folder EXPUNGED
+# first, and stays there {{ dovecot_expunged_days }} days. Users don't see it; to put mail back:
+#   doveadm move -u ADDRESS INBOX mailbox EXPUNGED SEARCH...
+# A message that still has a copy elsewhere (a move) isn't kept twice.
+lazy_expunge_mailbox = EXPUNGED
+lazy_expunge_only_last_instance = yes
+namespace inbox {
+  mailbox EXPUNGED {
+    autoexpunge = {{ dovecot_expunged_days }}d
+    # Deleted mail doesn't count, so deleting frees quota right away.
+    quota_ignore = yes
+    fts_autoindex = no
+    # No l (lookup): the folder isn't listed, so mail programs and webmail
+    # don't show it.
+    acl owner {
+      rights = rwstipe
+    }
+  }
+}

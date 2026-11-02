@@ -207,18 +207,53 @@ def test_sa_learn_that_isnt_installed_is_reported_not_raised(tmp_path, monkeypat
 def test_the_time_of_the_last_run_is_kept_between_runs(tmp_path):
     state = tmp_path / "state" / "spam-learn.json"
 
-    assert spamlearn.last_run(state) == 0.0
+    assert spamlearn.read(state).since(ADDRESS) == 0.0
 
     spamlearn.remember(1700000000.5, state)
 
-    assert spamlearn.last_run(state) == 1700000000.5
+    assert spamlearn.read(state).since(ADDRESS) == 1700000000.5
+
+
+def test_an_account_that_is_learned_is_written_down_before_the_rest_are(tmp_path):
+    """A run that is stopped halfway keeps what it did: the next one starts the other accounts over, not
+    this one."""
+    state = tmp_path / "spam-learn.json"
+    spamlearn.remember_account("info@example.nl", 1700000000.5, state)
+
+    known = spamlearn.read(state)
+
+    assert known.since("info@example.nl") == 1700000000.5
+    assert known.since("sales@example.nl") == 0.0
+    assert known.last_run == 0.0
+
+
+def test_a_finished_run_leaves_one_time_for_every_account(tmp_path):
+    state = tmp_path / "spam-learn.json"
+    spamlearn.remember_account("info@example.nl", 1700000000.5, state)
+
+    spamlearn.remember(1800000000.0, state)
+
+    assert spamlearn.read(state).accounts == {}
+    assert spamlearn.read(state).since("info@example.nl") == 1800000000.0
+
+
+def test_an_account_learned_after_the_last_whole_run_keeps_its_own_time(tmp_path):
+    state = tmp_path / "spam-learn.json"
+    spamlearn.remember(1700000000.0, state)
+    spamlearn.remember_account("info@example.nl", 1800000000.0, state)
+
+    known = spamlearn.read(state)
+
+    assert known.since("info@example.nl") == 1800000000.0
+    assert known.since("sales@example.nl") == 1700000000.0
 
 
 def test_a_state_file_that_cant_be_read_means_everything_is_learned_again(tmp_path):
     state = tmp_path / "spam-learn.json"
     state.write_text("{not json")
 
-    assert spamlearn.last_run(state) == 0.0
+    assert spamlearn.read(state).since(ADDRESS) == 0.0
+    assert spamlearn.read(state).last_run == 0.0
 
 
 def test_a_folder_that_cant_be_read_says_which_one(config, maildir, monkeypatch):

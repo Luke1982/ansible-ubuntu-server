@@ -1,0 +1,28 @@
+## Quota per account: the size from the userdb (virtual_users.quota, for
+# accounts that need more), else quota_storage_size below. Mail programs and
+# webmail show how full the mailbox is (IMAP QUOTA); at 85% and 95% the
+# account gets a warning (/usr/local/bin/quota-warning).
+quota_storage_size = {{ dovecot_quota_default }}
+quota "User quota" {
+  driver = count
+  warning warn-95 {
+    quota_storage_percentage = 95
+    execute quota-warning {
+      args = 95 %{user}
+    }
+  }
+  warning warn-85 {
+    quota_storage_percentage = 85
+    execute quota-warning {
+      args = 85 %{user}
+    }
+  }
+}
+service quota-warning {
+  executable = script /usr/local/bin/quota-warning
+  user = vmail
+  unix_listener quota-warning {
+    user = vmail
+    mode = 0600
+  }
+}

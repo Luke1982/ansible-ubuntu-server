@@ -634,6 +634,40 @@ def test_spam_learn_only_reads_what_came_in_since_the_last_run(mailctl, example_
     assert db_config.spam_learn_state.exists()
 
 
+def test_spam_learn_writes_down_each_account_as_it_goes(mailctl, example_domain, db_config, fake_command):
+    """A run that doesn't reach the end keeps what it did: here the writing to the database fails, and the
+    accounts it got through are still written down, so the next run starts at the others."""
+    add_account(mailctl, "info@example.nl")
+    add_account(mailctl, "sales@example.nl")
+    junk_and_inbox(db_config, "info@example.nl")
+    junk_and_inbox(db_config, "sales@example.nl")
+    fake_command("sa-learn", 'case "$*" in --sync) exit 1 ;; esac\n' + SA_LEARN)
+
+    mailctl.fails("spam", "learn")
+    state = json.loads(db_config.spam_learn_state.read_text())
+
+    assert sorted(state["accounts"]) == ["info@example.nl", "sales@example.nl"]
+    assert state["last_run"] == 0  # the run never got to the end, so nothing stands for the server as a whole
+
+
+def test_spam_skip_leaves_the_mail_that_is_there_out_of_the_learning(mailctl, example_domain, db_config,
+                                                                     fake_command):
+    """What imapsync has just copied over looks new, and is not worth a night of sa-learn."""
+    add_account(mailctl, "info@example.nl")
+    junk_and_inbox(db_config, junk=3, inbox=2)
+    sa_learn = fake_command("sa-learn", SA_LEARN)
+
+    output = mailctl.ok("spam", "skip", "info@example.nl")
+
+    assert "won't be learned from" in output
+    assert "Nothing new to learn from." in mailctl.ok("spam", "learn")
+    assert sa_learn.calls == []
+
+
+def test_spam_skip_refuses_an_address_that_is_not_here(mailctl, example_domain):
+    assert "isn't an account on this server" in mailctl.fails("spam", "skip", "nobody@example.nl")
+
+
 def test_spam_learn_can_read_everything_again(mailctl, example_domain, db_config, fake_command):
     add_account(mailctl, "info@example.nl")
     junk_and_inbox(db_config)
@@ -1117,3 +1151,65 @@ def test_address_delete_that_keeps_the_mail_keeps_webmails_data_too(mailctl, exa
     mailctl.ok("address", "delete", "info@example.nl", "--yes", "--keep-mail")
 
     assert database.value("SELECT COUNT(*) FROM sogo.sogo_user_profile WHERE c_uid = %s", "info@example.nl") == 1
+
+
+QUOTA_OUTPUT = ("Quota name\tType\tValue\tLimit\t%\n"
+                "User quota\tSTORAGE\t11344694\t26214400\t43\n"
+                "User quota\tMESSAGE\t147578\t-\t0\n")
+
+
+def fake_doveadm_quota(fake_command, output=QUOTA_OUTPUT):
+    return fake_command("doveadm", f"cat <<'END_OF_OUTPUT'\n{output}END_OF_OUTPUT\n")
+
+
+def test_address_quota_shows_how_full_the_mailbox_is(mailctl, example_domain, fake_command):
+    fake_doveadm_quota(fake_command)
+    add_account(mailctl, "info@example.nl")
+
+    output = mailctl.ok("address", "quota", "info@example.nl")
+
+    assert "10.8 GB of 25.0 GB (43% full), the server's limit." in output
+
+
+def test_address_quota_gives_an_account_a_limit_of_its_own(mailctl, example_domain, database, fake_command):
+    doveadm = fake_doveadm_quota(fake_command)
+    add_account(mailctl, "info@example.nl")
+
+    output = mailctl.ok("address", "quota", "info@example.nl", "90G")
+
+    assert "may hold 90G" in output
+    assert database.value("SELECT quota FROM virtual_users WHERE email = 'info@example.nl'") == "90G"
+    # Dovecot keeps what it read from the database, so it is told to read it again.
+    assert ["auth", "cache", "flush", "info@example.nl"] in doveadm.calls
+
+
+def test_address_quota_puts_an_account_back_on_the_servers_limit(mailctl, example_domain, database, fake_command):
+    fake_doveadm_quota(fake_command)
+    add_account(mailctl, "info@example.nl")
+    mailctl.ok("address", "quota", "info@example.nl", "90G")
+
+    output = mailctl.ok("address", "quota", "info@example.nl", "default")
+
+    assert "has the server's own limit again" in output
+    assert database.value("SELECT quota FROM virtual_users WHERE email = 'info@example.nl'") is None
+
+
+def test_address_quota_refuses_a_size_dovecot_cant_read(mailctl, example_domain, fake_command):
+    fake_doveadm_quota(fake_command)
+    add_account(mailctl, "info@example.nl")
+
+    assert "isn't a size Dovecot reads" in mailctl.fails("address", "quota", "info@example.nl", "90 gigs")
+
+
+def test_an_account_can_be_created_with_a_limit_of_its_own(mailctl, example_domain, database, fake_command):
+    fake_doveadm_quota(fake_command)
+
+    mailctl.ok("address", "add", "info@example.nl", "--quota", "90G", "--password-stdin", stdin=f"{PASSWORD}\n")
+
+    assert database.value("SELECT quota FROM virtual_users WHERE email = 'info@example.nl'") == "90G"
+
+
+def test_an_account_is_not_created_with_a_limit_dovecot_cant_read(mailctl, example_domain, database, fake_command):
+    assert "isn't a size Dovecot reads" in mailctl.fails(
+        "address", "add", "info@example.nl", "--quota", "lots", "--password-stdin", stdin=f"{PASSWORD}\n")
+    assert database.value("SELECT COUNT(*) FROM virtual_users") == 0

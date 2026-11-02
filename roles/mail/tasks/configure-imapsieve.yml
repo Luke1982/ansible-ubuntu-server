@@ -1,5 +1,6 @@
 ---
-# Mail that a mail program saves in a folder of its own naming goes on to Sent, Trash or Junk.
+# What Dovecot does with mail that is moved from one folder to another: it puts it in the standard folder of
+# that kind, and tells SpamAssassin what was filed as spam and what wasn't.
 #
 # Programs that go by the special_use flags Dovecot advertises find the four standard folders whatever they
 # call them. The ones that don't make a folder of their own: Outlook saves its sent mail in "Sent Items",
@@ -7,7 +8,25 @@
 # which Dovecot 2.4 no longer supports and mail programs never understood: a link is a second folder to them,
 # and mail was copied between the two without end. Dovecot moves the mail on instead, as it arrives.
 
-- name: Make the directory for the scripts that move mail to the standard folders
+- name: Say which folder names the scripts below are for
+  template:
+    src: 95-imapsieve-folders.conf.j2
+    dest: /etc/dovecot/conf.d/95-imapsieve-folders.conf
+    owner: root
+    group: root
+    mode: 0644
+  notify: restart dovecot
+
+- name: Say when SpamAssassin should learn from a message
+  template:
+    src: 95-imapsieve-spam.conf.j2
+    dest: /etc/dovecot/conf.d/95-imapsieve-spam.conf
+    owner: root
+    group: root
+    mode: 0644
+  notify: restart dovecot
+
+- name: Make the directory for the scripts Dovecot runs on mail that is moved
   file:
     path: "{{ dovecot_imapsieve_dir }}"
     state: directory
@@ -23,22 +42,55 @@
     group: root
     mode: 0644
   vars:
+    kind: "{{ item }}"
     folder: "{{ item | capitalize }}"
   loop: "{{ dovecot_client_folder_names.keys() | list }}"
   notify: restart dovecot
 
-# Compiled here on every run, since Dovecot can't save the compiled copy itself. It costs a moment and
-# leaves no script behind whose compiled copy is older than it is; the task above reports the change.
-- name: Compile those scripts
-  command: "sievec {{ dovecot_imapsieve_dir }}/to-{{ item }}.sieve"
-  loop: "{{ dovecot_client_folder_names.keys() | list }}"
-  changed_when: no
-
-- name: Say which folder names those scripts are for
+- name: Write the scripts that hand a message to SpamAssassin
   template:
-    src: 95-imapsieve-folders.conf.j2
-    dest: /etc/dovecot/conf.d/95-imapsieve-folders.conf
+    src: "{{ item }}.sieve.j2"
+    dest: "{{ dovecot_imapsieve_dir }}/{{ item }}.sieve"
     owner: root
     group: root
     mode: 0644
+  loop:
+    - report-spam
+    - report-ham
+  notify: restart dovecot
+
+# Compiled here on every run, since Dovecot can't save the compiled copy itself: /etc isn't the mail user's
+# to write in. It costs a moment and leaves no script behind whose compiled copy is older than it is; the
+# tasks above report the change. The scripts that hand a message over need the pipe extension named, which
+# is only allowed to the administrator's own scripts (conf.d/95-imapsieve-spam.conf).
+- name: Compile those scripts
+  shell: |
+    set -e
+    for script in {{ dovecot_imapsieve_dir }}/*.sieve; do
+      sievec -x +vnd.dovecot.pipe "$script"
+    done
+  changed_when: no
+
+- name: Make the directory for the scripts Dovecot pipes a message into
+  file:
+    path: "{{ dovecot_sieve_pipe_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: 0755
+
+# They only write the message to the queue: handing it to sa-learn there and then would make moving a
+# folder's worth of mail take a second per message.
+- name: Write the scripts that queue a message for SpamAssassin
+  template:
+    src: learn-mail.j2
+    dest: "{{ dovecot_sieve_pipe_dir }}/learn-{{ item }}"
+    owner: root
+    group: root
+    mode: 0755
+  vars:
+    kind: "{{ item }}"
+  loop:
+    - spam
+    - ham
   notify: restart dovecot

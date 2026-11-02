@@ -12,7 +12,8 @@ another server. mailctl export writes it, and export-mailserver.sh writes the sa
       "sieve": [{"address": "info@example.nl", "name": "roundcube", "active": true, "content": "require ..."}]
     }
 
-Every part may be left out. An account has its password as a hash, as the other server stores it, or in plain text.
+Every part may be left out. An account has its password as a hash, as the other server stores it, or in plain
+text, and a "quota" of its own ("90G") when it may hold more than the server's own limit.
 The file is read and checked whole, so a mistake in it is found before anything is created.
 """
 
@@ -36,6 +37,7 @@ class Account:
     address: str
     password: str | None = None  # in plain text
     password_hash: str | None = None
+    quota: str | None = None  # how much mail it may hold, when that isn't the server's own limit
 
 
 @dataclass(frozen=True)
@@ -109,12 +111,13 @@ def read(path: Path) -> Contents:
 
 def collect(db: Database, filters_of: Callable[[str], list[SieveScript]]) -> dict:
     """This server's contents in the shape read() reads, with the accounts' filters as filters_of gives them."""
-    accounts = db.rows("SELECT email, password FROM virtual_users ORDER BY email")
+    accounts = db.rows("SELECT email, password, quota FROM virtual_users ORDER BY email")
     preferences = db.rows("SELECT username, preference, value FROM spamassassin.userpref ORDER BY prefid")
     return {
         "version": VERSION,
         "domains": [row["name"] for row in db.rows("SELECT DISTINCT name FROM virtual_domains ORDER BY name")],
-        "addresses": [{"address": row["email"], "password_hash": row["password"]} for row in accounts],
+        "addresses": [{"address": row["email"], "password_hash": row["password"],
+                       **({"quota": row["quota"]} if row["quota"] else {})} for row in accounts],
         "forwards": [{"source": forward.source, "destination": forward.destination, "send_as": forward.send_as}
                      for forward in forwards.list_forwards(db)],
         "spam": [{"target": spam.target_of(row["username"]), "setting": row["preference"], "value": row["value"]}
@@ -177,7 +180,10 @@ def _account(entry: object, place: str) -> Account:
     else:
         _checked(f"{place} ({address})", lambda: addresses.check_hash(password_hash))
         password_hash = addresses.labelled(password_hash)
-    return Account(address, password, password_hash)
+    quota = _text(entry, "quota", place, None)
+    if quota is not None:
+        _checked(f"{place} ({address})", lambda: addresses.check_quota(quota))
+    return Account(address, password, password_hash, quota)
 
 
 def _forward(entry: object, place: str) -> Forward:

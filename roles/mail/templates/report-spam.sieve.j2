@@ -1,0 +1,6 @@
+# IMAPSieve: a message copied or moved into Junk was filed as spam by hand,
+# so SpamAssassin learns from it (queued, see {{ dovecot_sieve_pipe_dir }}).
+# Mail the spam filter itself puts in Junk arrives by delivery, not IMAP, and
+# doesn't come here.
+require ["vnd.dovecot.pipe", "copy"];
+pipe :copy "learn-spam";
