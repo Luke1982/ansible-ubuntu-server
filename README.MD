@@ -682,6 +682,8 @@ Webmail carries the colours and the logo of whoever runs the server. `mailctl we
 
 Calendars, address books and SOGo's settings live in the MariaDB database `sogo`: back it up along with the mail.
 
+Outlook and the phones on ActiveSync ask two things of the server. One worker each while they wait for changes, for up to 280 seconds: `sogo_workers` has to be about the number of devices plus five, or webmail waits behind them. And the first sync of a mailbox in batches (`SOGoMaximumSyncWindowSize`, `SOGoMaximumSyncResponseSize` in `sogo.conf`): in one answer a full mailbox takes minutes to build, Outlook hangs up before it is done, and the folders arrive while the mail in them never does.
+
 ### Mail filters
 
 An account's filters are Sieve scripts, and Dovecot runs **one** of them: the active one. Webmail (SOGo) is where filters are edited: it keeps them in its own database, renders them into the script named `sogo` and makes that one active, so a filter kept in any other script stops running the moment someone saves filters in webmail.

@@ -89,6 +89,16 @@
   SOGoMaximumSyncInterval = 280;
   SOGoInternalSyncInterval = 30;
 
+  /* How much of a mailbox one ActiveSync answer may hold: at most a hundred
+     messages, and about five megabytes. Without a limit, the first sync of a
+     big mailbox is answered in one go -- 180 MB seen, one to three minutes to
+     build -- and Outlook hangs up after about a minute ("client disconnected
+     during delivery of response" in /var/log/sogo/sogo.log): the folders
+     arrive and the mail in them never does. In batches, each answer takes
+     about a second and Outlook asks for the next one. */
+  SOGoMaximumSyncWindowSize = 100;
+  SOGoMaximumSyncResponseSize = 5172;
+
   /* The name in the browser tab, which is SOGo's own unless it is told otherwise. */
   SOGoPageTitle = "{{ sogo_page_title }}";
 
