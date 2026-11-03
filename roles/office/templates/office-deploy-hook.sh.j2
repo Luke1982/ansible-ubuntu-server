@@ -1,0 +1,9 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# The certificates of Collabora's site ({{ office_host }}) and of the Nextclouds
+# at the names under it: OpenLiteSpeed reads certificates when it starts, so a
+# renewed one only reaches visitors after a restart. Graceful: requests in
+# progress are finished first.
+case "$RENEWED_LINEAGE" in
+        */{{ office_host }}|*/*.{{ office_host }}) {{ ols_root }}/bin/lswsctrl restart </dev/null >/dev/null 2>&1 ;;
+esac

@@ -1,0 +1,99 @@
+---
+# Collabora Online, and the Nextclouds that use it.
+#
+# Collabora is one daemon for the whole server, reached at office.<domain>; each
+# Nextcloud is a site of its own at a name under it, set up with "officectl add".
+# The role installs both and leaves the Nextclouds themselves to officectl: they
+# hold people's files, and a playbook run is no place to change those.
+#
+# It needs the other roles. OpenLiteSpeed and certbot come from the web role,
+# MariaDB from the db role, and the Postfix a Nextcloud sends its mail through
+# from the mail role.
+
+- name: Check that what Collabora and Nextcloud need is installed
+  stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ ols_root }}/conf/httpd_config.conf"
+    - /usr/bin/certbot
+    - /usr/bin/mariadb
+    - /usr/local/bin/domainctl
+  register: office_needs
+
+- name: Stop when a role this one builds on hasn't run
+  assert:
+    that: item.stat.exists
+    fail_msg: >-
+      {{ item.item }} doesn't exist. The office role needs the web role (OpenLiteSpeed, certbot, domainctl) and
+      the db role (MariaDB): put those in this server's playbook above it.
+    quiet: yes
+  loop: "{{ office_needs.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- include_tasks: setup-collabora.yml
+- include_tasks: setup-nextcloud-php.yml
+- include_tasks: setup-officectl.yml
+
+# certbot runs every script in here after it renewed a certificate.
+- name: Create certbot's directory for hooks
+  file:
+    path: "{{ letsencrypt_dir }}/renewal-hooks/deploy"
+    state: directory
+    owner: root
+    group: root
+    mode: 0755
+
+- name: Install certbot's hook for the certificates of Collabora and the Nextclouds
+  template:
+    src: office-deploy-hook.sh.j2
+    dest: "{{ letsencrypt_dir }}/renewal-hooks/deploy/3-post-deploy-hook-office.sh"
+    owner: root
+    group: root
+    mode: 0755
+
+# Everything officectl owns, written again from this repository: Collabora's
+# settings, the sites in OpenLiteSpeed, the PHP settings, the background jobs and
+# the file permissions. It never adds or removes a Nextcloud and never touches
+# Nextcloud's own settings.
+- name: Bring Collabora and the Nextclouds up to date
+  command: /usr/local/bin/officectl sync
+  register: office_sync
+  changed_when: "'Changed' in office_sync.stdout"
+
+- name: Say what that did
+  debug:
+    msg: "{{ office_sync.stdout_lines }}"
+
+# The DNS record and the certificate of Collabora's own name. A refusal doesn't
+# stop the playbook: everything else on the server works without it, and the same
+# command finishes it later.
+- name: Set Collabora's own site up, with its DNS record and its certificate
+  command: /usr/local/bin/officectl endpoint --yes
+  register: office_site
+  failed_when: false
+  changed_when: "'is live with' in office_site.stdout"
+  when: office_endpoint | bool
+
+- name: Say how far that got
+  debug:
+    msg: "{{ (office_site.stdout_lines | default([])) + (office_site.stderr_lines | default([])) }}"
+  when: office_endpoint | bool
+
+- name: Say that Collabora's site isn't finished
+  debug:
+    msg: >-
+      {{ office_host }} has no certificate yet, so no Nextcloud can use Collabora. Publish an A record for
+      {{ office_host }} pointing to this server, then run "officectl endpoint" on the server, or the playbook
+      again.
+  when: office_endpoint | bool and office_site.rc | default(0) != 0
+
+# The Nextclouds themselves are added with "officectl add NAME", which makes a
+# database, downloads Nextcloud and asks Let's Encrypt for a certificate. That is
+# run by hand, never by a playbook.
+- name: Say that the Nextclouds are added by hand
+  debug:
+    msg: >-
+      Add a Nextcloud with "officectl add NAME" on the server; it is served at NAME.{{ office_host }}.
+      "officectl list" shows them, "officectl doctor" says how they are doing, and "officectl update" puts the
+      newest Nextcloud in place.

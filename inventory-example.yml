@@ -54,3 +54,19 @@ all:
       defaultdomain: example.com
       # What the browser tab says above webmail. "Webmail" when left out.
       sogo_page_title: "Example Webmail"
+
+      # --- office role (only if the playbook includes it) ---------------------
+      # Collabora Online is served at office.<this domain>, and every Nextcloud
+      # on this server at a name under it (NAME.office.<this domain>). The mail
+      # domain above is used when this is left out.
+      # office_domain: example.com
+      # Set this to no to keep the playbook from publishing that name's DNS
+      # record at TransIP and asking Let's Encrypt for its certificate.
+      # "officectl endpoint" on the server does the same thing when you are
+      # there to read what it says.
+      # office_endpoint: yes
+      # Nextclouds on this server that officectl didn't make -- an older one, set
+      # up by hand at a name of its own. Collabora keeps letting these in, so the
+      # people using them can still open a document.
+      # office_other_nextclouds:
+      #   - nc.example.com

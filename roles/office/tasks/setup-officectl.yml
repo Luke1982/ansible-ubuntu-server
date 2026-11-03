@@ -1,0 +1,137 @@
+---
+# officectl manages Collabora's own site and the Nextclouds on this server: a
+# Linux user per Nextcloud, its directories and permissions, its database, its
+# PHP pool, its virtual host, its Let's Encrypt certificate, its background jobs,
+# and which Nextclouds Collabora may open documents for.
+# Its code is in roles/office/files/officectl, the library it shares with mailctl
+# and domainctl in shared/serverctl. Run "officectl --help" on the server.
+
+- name: Install the packages officectl needs
+  apt:
+    pkg:
+      - python3-typer
+      - python3-rich
+      - python3-dnspython
+      # setfacl and getfacl: a Nextcloud's files stay its own user's, and
+      # OpenLiteSpeed is let in by ACL.
+      - acl
+    state: present
+
+# Both package directories by name: the tasks below only create the subdirectories a package has, and
+# shared/serverctl has none, so nothing would create the directory its files are copied into.
+- name: Create the directories officectl is installed in
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: 0755
+  loop:
+    - "{{ officectl_lib }}"
+    - "{{ officectl_lib }}/serverctl"
+    - "{{ officectl_lib }}/officectl"
+
+# Only .py files, so __pycache__ directories from local test runs stay behind.
+- name: Create the package subdirectories of the shared library
+  file:
+    path: "{{ officectl_lib }}/serverctl/{{ item.path }}"
+    state: directory
+    mode: 0755
+  with_community.general.filetree: "{{ serverctl_src }}"
+  when: item.state == "directory" and "__pycache__" not in item.path
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Copy the shared library
+  copy:
+    src: "{{ item.src }}"
+    dest: "{{ officectl_lib }}/serverctl/{{ item.path }}"
+    mode: 0644
+  with_community.general.filetree: "{{ serverctl_src }}"
+  when: item.state == "file" and item.path.endswith(".py")
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Create the officectl package subdirectories
+  file:
+    path: "{{ officectl_lib }}/officectl/{{ item.path }}"
+    state: directory
+    mode: 0755
+  with_community.general.filetree: officectl/officectl/
+  when: item.state == "directory" and "__pycache__" not in item.path
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Copy the officectl package
+  copy:
+    src: "{{ item.src }}"
+    dest: "{{ officectl_lib }}/officectl/{{ item.path }}"
+    mode: 0644
+  with_community.general.filetree: officectl/officectl/
+  when: item.state == "file" and item.path.endswith(".py")
+  loop_control:
+    label: "{{ item.path }}"
+
+# -P keeps the current directory off the module path, so nothing there can pose as officectl or serverctl.
+- name: Install the officectl command
+  copy:
+    dest: /usr/local/bin/officectl
+    mode: 0755
+    content: |
+      #!/bin/sh
+      PYTHONPATH={{ officectl_lib }} exec /usr/bin/python3 -P -m officectl "$@"
+
+- name: Create the officectl configuration directory
+  file:
+    path: /etc/officectl
+    state: directory
+    mode: 0755
+
+# The TransIP login is the one domainctl and mailctl use: /etc/transip, created by
+# the web role. officectl only reads it, and says where to enter it when there is
+# none.
+- name: Write the officectl configuration
+  copy:
+    dest: /etc/officectl/config.json
+    mode: 0644
+    content: "{{ officectl_config | to_nice_json }}\n"
+  vars:
+    officectl_config:
+      hostname: "{{ hostname }}"
+      office_host: "{{ office_host }}"
+      office_root: "{{ office_root }}"
+      coolwsd_config: "{{ collabora_config }}"
+      coolwsd_service: "{{ collabora_service }}"
+      coolwsd_address: "{{ collabora_address }}"
+      coolwsd_port: "{{ collabora_port | int }}"
+      coolwsd_listen: "{{ collabora_listen }}"
+      coolwsd_protocol: "{{ collabora_protocol }}"
+      coolwsd_connections: "{{ collabora_connections | int }}"
+      user_prefix: "{{ office_user_prefix }}"
+      other_nextclouds: "{{ office_other_nextclouds | join(',') }}"
+      home_root: "{{ web_home_root }}"
+      docroot: "{{ web_docroot }}"
+      logs: "{{ web_logs_dir }}"
+      ols_root: "{{ ols_root }}"
+      ols_user: "{{ ols_config_user }}"
+      web_user: "{{ web_ols_user }}"
+      web_group: "{{ web_ols_group }}"
+      php_package: "{{ office_lsphp_package }}"
+      php_version: "{{ office_lsphp_version }}"
+      php_children: "{{ office_php_children | int }}"
+      php_memory_mb: "{{ office_php_memory_mb | int }}"
+      php_upload_gb: "{{ office_php_upload_gb | int }}"
+      php_time_limit: "{{ office_php_time_limit | int }}"
+      php_opcache_mb: "{{ office_php_opcache_mb | int }}"
+      php_opcache_files: "{{ office_php_opcache_files | int }}"
+      php_apcu_mb: "{{ office_php_apcu_mb | int }}"
+      letsencrypt_dir: "{{ letsencrypt_dir }}"
+      letsencrypt_email: "{{ office_admin_email }}"
+      nextcloud_url: "{{ office_nextcloud_url }}"
+      cron_minutes: "{{ office_cron_minutes | int }}"
+      redis_host: "{{ office_redis_host }}"
+      redis_port: "{{ office_redis_port | int }}"
+      redis_database: "{{ office_redis_database | int }}"
+      mail_host: "{{ office_mail_host }}"
+      mail_port: "{{ office_mail_port | int }}"
+      mail_from: "{{ office_mail_from }}"
+      mail_domain: "{{ office_mail_domain }}"
+      phone_region: "{{ office_phone_region }}"

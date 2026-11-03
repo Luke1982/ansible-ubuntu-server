@@ -1,0 +1,113 @@
+---
+
+# --- Where Collabora is served -----------------------------------------------
+# Collabora Online answers at one name on this server, and every Nextcloud on it
+# gets a name under that one: SLUG.office.example.nl. The domain is the mail
+# role's primary domain, since that is the customer this server belongs to; give
+# office_domain in the inventory for another one.
+office_domain: "{{ defaultdomain | default(hostname) }}"
+office_host: "office.{{ office_domain }}"
+# The web root of Collabora's own site. It holds nothing but Let's Encrypt's
+# challenges: everything else is handed to Collabora itself.
+office_root: /var/www/office
+# Whether the playbook publishes the DNS record of that name at TransIP and asks
+# Let's Encrypt for its certificate. Set it to no to do that by hand later with
+# "officectl endpoint".
+office_endpoint: yes
+
+# --- Collabora Online --------------------------------------------------------
+# Collabora's own packages. CODE is the edition without a support contract; the
+# supported one is another repository with the same packages in it.
+collabora_repo_url: https://www.collaboraoffice.com/repos/CollaboraOnline/CODE-deb
+collabora_key_url: https://collaboraoffice.com/downloads/gpg/collaboraonline-release-keyring.gpg
+collabora_keyring: /usr/share/keyrings/collaboraonline-release-keyring.gpg
+collabora_config: /etc/coolwsd/coolwsd.xml
+collabora_service: coolwsd
+# Where it listens for OpenLiteSpeed, which stands in front of it with the
+# certificate. Nothing outside this server reaches it.
+collabora_address: 127.0.0.1
+collabora_port: 9980
+collabora_listen: loopback
+collabora_protocol: IPv4
+# How many requests OpenLiteSpeed may have open to it at once.
+collabora_connections: 200
+
+# --- The PHP the Nextclouds run on -------------------------------------------
+# LiteSpeed's PHP, a version of its own: newer than the one the web sites share,
+# because Nextcloud asks for a newer one than Ubuntu's release has. Its packages
+# come from the repository the web role already added.
+office_lsphp_version: "8.5"
+office_lsphp_package: "lsphp{{ office_lsphp_version | replace('.', '') }}"
+# The modules Nextcloud needs that aren't in the package itself. GD, zip, XML,
+# bcmath, GMP and sodium are built into -common.
+office_lsphp_modules:
+  - common
+  - curl
+  - intl
+  - imagick
+  - mysql
+  - apcu
+  - redis
+  - igbinary
+  - msgpack
+
+# What each Nextcloud's own pool of that PHP is given. Uploads are cut into
+# chunks by Nextcloud itself, so the upload limit is only reached by a browser
+# that sends a file in one piece; the time limits are for the long jobs occ and
+# the background jobs run.
+office_php_children: 10
+office_php_memory_mb: 512
+office_php_upload_gb: 16
+office_php_time_limit: 3600
+office_php_opcache_mb: 256
+office_php_opcache_files: 20000
+office_php_apcu_mb: 128
+
+# --- The Nextclouds themselves -----------------------------------------------
+# A Nextcloud's Linux user is this and its name: nc and "acme" make "ncacme". It
+# keeps them apart from the web sites' users, which are named after their domain.
+office_user_prefix: nc
+# Nextclouds on this server that officectl didn't make: an older one, set up by
+# hand at a name of its own. Collabora has to keep letting them in, or nobody
+# there can open a document any more. Give their names in the inventory file, as
+# a list.
+office_other_nextclouds: []
+# Where "officectl add" and "officectl update" fetch Nextcloud from. The checksum
+# published next to it is checked before anything is unpacked.
+office_nextcloud_url: https://download.nextcloud.com/server/releases/latest.tar.bz2
+# How often Nextcloud's background jobs run. It asks for every five minutes, and
+# says so on its own settings page when they are late.
+office_cron_minutes: 5
+# How a new Nextcloud reads phone numbers without a country code.
+office_phone_region: NL
+# Redis, installed by the web role. Every Nextcloud may share one database:
+# the keys it writes all start with its own instance id.
+office_redis_host: localhost
+office_redis_port: 6379
+office_redis_database: 0
+# How a new Nextcloud sends its mail: over SMTP to this server's own Postfix.
+# Only set when it is installed, so it can be changed in Nextcloud afterwards.
+office_mail_host: localhost
+office_mail_port: 25
+office_mail_from: nextcloud
+office_mail_domain: "{{ office_domain }}"
+
+# --- Where everything lives --------------------------------------------------
+# The same values the web role uses, so this role also works in a play of its
+# own. A value given in the inventory wins over both.
+ols_root: /usr/local/lsws
+ols_config_user: lsadm
+web_ols_user: nobody
+web_ols_group: nogroup
+web_home_root: /home
+web_docroot: public_html/www
+web_logs_dir: logs
+letsencrypt_dir: /etc/letsencrypt
+# The address Let's Encrypt writes to, and the one OpenLiteSpeed shows on the
+# error pages of a Nextcloud's site.
+office_admin_email: "{{ web_admin_email | default(letsencrypt_email | default('')) }}"
+
+# Where officectl and the shared library are installed, and where the shared
+# source lives in this repository.
+officectl_lib: /usr/local/lib/officectl
+serverctl_src: "{{ role_path }}/../../shared/serverctl"

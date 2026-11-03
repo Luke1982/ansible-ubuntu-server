@@ -1,0 +1,6 @@
+# {{ ansible_managed }}
+# Collabora Online's own packages (roles/office/tasks/setup-collabora.yml).
+Types: deb
+URIs: {{ collabora_repo_url }}
+Suites: ./
+Signed-By: {{ collabora_keyring }}

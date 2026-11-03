@@ -1,0 +1,22 @@
+---
+# The PHP the Nextclouds run on: LiteSpeed's, in a version of its own next to the
+# one the web sites share. Nextcloud asks for a newer PHP than Ubuntu's release
+# has, and a Nextcloud that is a member of the web sites' template can't have
+# settings of its own at all.
+#
+# The packages come from the repository the web role added. Each Nextcloud gets a
+# pool of this PHP with its own settings, written by officectl; the directory
+# those settings go in is made here, so PHP has it before it is told to read it.
+
+- name: Install the PHP the Nextclouds run on
+  apt:
+    pkg: "{{ [office_lsphp_package] + (office_lsphp_modules | map('regex_replace', '^', office_lsphp_package + '-') | list) }}"
+    state: present
+
+- name: Create the directory PHP reads its modules from
+  file:
+    path: "{{ ols_root }}/{{ office_lsphp_package }}/etc/php/{{ office_lsphp_version }}/mods-available"
+    state: directory
+    owner: root
+    group: root
+    mode: 0755

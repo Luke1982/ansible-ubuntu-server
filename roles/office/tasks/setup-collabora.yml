@@ -1,0 +1,59 @@
+---
+# Collabora Online, from Collabora's own packages: the daemon that opens a
+# document and sends its pages to the browser. It listens on this server only,
+# without encryption, and OpenLiteSpeed stands in front of it with the
+# certificate (officectl endpoint).
+#
+# Its settings are a long file the package replaces when a new version brings new
+# settings, so Ansible doesn't write it: officectl changes the handful of values
+# this server needs and leaves everything else where it is.
+
+- name: Install Collabora's signing key
+  get_url:
+    url: "{{ collabora_key_url }}"
+    dest: "{{ collabora_keyring }}"
+    owner: root
+    group: root
+    mode: 0644
+
+- name: Add Collabora's package repository
+  template:
+    src: collaboraonline.sources.j2
+    dest: /etc/apt/sources.list.d/collaboraonline.sources
+    owner: root
+    group: root
+    mode: 0644
+  register: collabora_repository
+
+- name: Read the package lists again
+  apt:
+    update_cache: yes
+  when: collabora_repository.changed
+
+- name: Install Collabora Online
+  apt:
+    pkg:
+      - coolwsd
+      # The name, logo and colours shown while a document opens. Without it,
+      # Collabora refuses to start.
+      - code-brand
+    state: present
+
+# So the settings can be put back when something goes wrong in them, and so
+# officectl can say where to find them. Only once: a later playbook run must not
+# overwrite this copy with the settings as they have become.
+- name: Keep a copy of Collabora's settings as the package left them
+  copy:
+    src: "{{ collabora_config }}"
+    dest: "{{ collabora_config }}.dist"
+    remote_src: yes
+    force: no
+    owner: root
+    group: root
+    mode: 0640
+
+- name: Have Collabora start with the server
+  service:
+    name: "{{ collabora_service }}"
+    enabled: yes
+    state: started

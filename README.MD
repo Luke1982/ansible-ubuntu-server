@@ -144,7 +144,8 @@ Each server has its own playbook (e.g. `web01.whservice.nl.yml`) in the project 
 | `basic` | Hostname, base packages, unattended-upgrades, Linux users, SSH hardening, iptables firewall (applied at boot), fail2ban |
 | `web` | OpenLiteSpeed with LiteSpeed's PHP 8.3, PHP-FPM and CLI from Ubuntu (8.3 on Ubuntu 24.04, 8.5 on 26.04), Composer (global), wp-cli, nvm (system-wide), Redis with the PHP extension for it (object caching), certbot, fail2ban jails for WordPress password guessing, Let's Encrypt directory, the shared virtual host template, and `domainctl` (below) |
 | `db` | MariaDB, phpMyAdmin on a site of its own at `pma.<hostname>`, and a gzipped dump of every database every night (below) |
-| `mail` | Postfix, Dovecot with full-text IMAP search (fts-xapian) and login tracking, OpenDKIM, SpamAssassin that also learns from the mail people file by hand, SOGo (webmail, calendars, address books and ActiveSync), one folder per kind of mail whatever the mail program calls it, a limit per mailbox with a warning before it is reached, 30 days in Trash and 14 more to undo a deletion, per-user and per-website sending limits (postfwd), a warning mail when the queue gets long, fail2ban jails for SMTP, IMAP and webmail brute force, and `mailctl` (below) |
+| `mail` | Postfix, Dovecot with full-text IMAP search (fts-xapian) and login tracking, OpenDKIM, SpamAssassin that also learns from the mail people file by hand, SOGo (webmail, calendars, address books and ActiveSync), one folder per kind of mail whatever the mail program calls it, a limit per mailbox with a warning before it is reached, 30 days in Trash and 14 more to undo a deletion, per-user and per-website sending limits (postfwd), a warning mail when the queue gets long, no delivery reports (DSN) offered on port 25, so nobody can have this server send one in its own name, fail2ban jails for SMTP, IMAP and webmail brute force, and `mailctl` (below) |
+| `office` | Collabora Online (coolwsd) behind OpenLiteSpeed at `office.<domain>`, LiteSpeed's PHP 8.5 for Nextcloud, and `officectl` (below), which sets up a Nextcloud of its own per customer at `NAME.office.<domain>`. It needs the `web` and `db` roles |
 
 ## Tuning for the machine
 
@@ -415,10 +416,117 @@ OpenLiteSpeed's config is changed by reading it and renaming a new file into pla
 
 ### The code
 
-`domainctl` is in `roles/web/files/domainctl`, with its tests in `roles/web/files/domainctl/tests`. The OpenLiteSpeed, TransIP, DNS and certbot code it shares with `mailctl` is in `shared/serverctl`, with its own tests in `shared/tests`; the playbook copies that directory next to each tool, so a web server needs no mail role and the other way round.
+`domainctl` is in `roles/web/files/domainctl`, with its tests in `roles/web/files/domainctl/tests`. The code it shares with `mailctl` and `officectl` is in `shared/serverctl`, with its own tests in `shared/tests`: OpenLiteSpeed's configuration, TransIP, DNS, certbot, Linux users, MariaDB databases and access control lists. The playbook copies that directory next to each tool, so a web server needs no mail role and the other way round.
 
 ```bash
 pytest shared/tests roles/web/files/domainctl/tests
+```
+
+## Office documents and Nextcloud with officectl
+
+A server with the `office` role runs Collabora Online: the office suite that opens a document in the browser. It
+is one daemon for the whole server, at `office.<domain>`, and every Nextcloud on the server uses that one. Each
+Nextcloud is a customer's own, at a name under it: `acme.office.<domain>`.
+
+`officectl` manages both. Run it as root; `officectl --help` lists everything, and `--help` on a command
+explains it with an example.
+
+| Command | What it does |
+|---------|-------------|
+| `officectl endpoint` | Sets Collabora's own site up: its DNS record, its Let's Encrypt certificate, and the settings that put OpenLiteSpeed in front of it. The playbook runs this |
+| `officectl add NAME` | A Nextcloud at `NAME.office.<domain>`: a Linux user, a database, a PHP pool of its own, a virtual host with a certificate, the background jobs, and Collabora switched on in it. Says the first administrator's password once |
+| `officectl list` | The Nextclouds with their address, version and certificate |
+| `officectl doctor [NAME]` | How Collabora and each Nextcloud are doing: names, certificates, permissions, settings, the editor and the background jobs |
+| `officectl occ NAME ...` | Nextcloud's own `occ` for one of them, as the user its PHP runs as. Everything after the name is handed to `occ` as it is |
+| `officectl update [NAME]` | Puts the newest Nextcloud in place and brings its database up to date. All of them when no name is given |
+| `officectl remove NAME` | Takes it off the server: its virtual host, certificate and jobs. `--purge` also drops its database and deletes its files |
+| `officectl sync` | Writes everything officectl owns again -- Collabora's settings, the sites, the PHP settings, the jobs, the permissions -- and says whether that changed anything. The playbook runs this |
+
+### How it fits together
+
+Collabora itself (`coolwsd`) speaks plain HTTP on `127.0.0.1:9980` and holds no certificate. OpenLiteSpeed stands
+in front of it as the site `office.<domain>`, with the certificate, and hands everything through: the pages, and
+the websocket a document is edited over. That site serves one thing itself, Let's Encrypt's challenge folder.
+
+Collabora only opens documents for the Nextclouds listed in its own settings, and officectl keeps that list: it
+holds the Nextclouds on this server and nothing else, so a host added to it by hand is taken out again on the
+next run. A Nextcloud that officectl didn't make -- an older one, set up by hand at a name of its own -- belongs
+in `office_other_nextclouds` in the inventory file, or it loses Collabora on the first run.
+
+Collabora's settings file is its own long, documented one; officectl changes the handful of values this server
+needs and leaves the rest, comments and all, where the package put it. A copy of it as the package left it is
+kept next to it as `coolwsd.xml.dist`.
+
+A Nextcloud is a virtual host of its own, not a member of the web sites' template: it needs a newer PHP than the
+sites share and settings of its own. So each one gets a pool of LiteSpeed's PHP 8.5 that only its own site can
+reach (`roles/office/defaults/main.yml` says how much of it), with its settings in
+`/usr/local/lsws/lsphp85/etc/php/8.5/ncNAME.d/`. Its Linux user is `nc` and its name; its database and MariaDB
+user have that same name.
+
+Nextcloud's own code belongs to root and it may only read it, so it cannot rewrite the program it is. The three
+places it does write belong to the user PHP runs as: its settings (`public_html/www/config`), the apps it
+installs itself (`public_html/www/apps`) and the files people keep in it. Those files are in
+`/home/ncNAME/data`, **not** under the web root, so nothing the web server serves can reach them. Its background
+jobs run every five minutes from `/etc/cron.d/nextcloud-ncNAME`.
+
+Every Nextcloud shares the server's Redis, which the `web` role installs, for its cache and its file locking.
+That is safe because the keys Nextcloud writes all start with its own instance id.
+
+### What `officectl add NAME` does
+
+1. Stops unless Collabora, its PHP and the certificate of `office.<domain>` are there. A Nextcloud without them
+   is one nobody can open a document in, and that is better said before anything is made than after.
+2. Looks `NAME.office.<domain>` up **in real DNS**, because that is what Let's Encrypt checks -- and so does
+   Collabora, every time it opens a document. A name with no record at all is offered to TransIP; a name that
+   points somewhere else is reported and nothing is made. The TransIP login is the one `domainctl dns
+   credentials` saved.
+3. Makes the Linux user, the directories above, the access control entries that let OpenLiteSpeed in, and the
+   settings of its PHP.
+4. Makes the database and its MariaDB user, with a password only Nextcloud's own settings hold.
+5. Downloads Nextcloud, checks it against the checksum published next to it, and unpacks it into the web root.
+6. Sets it up with `occ`, and tells it where it is reached, that it is served over HTTPS, and what to cache
+   with. Says the first administrator's name and password once: it is written nowhere else.
+7. Adds its virtual host, gets its certificate the way `domainctl add` does -- checking that OpenLiteSpeed
+   really answers for the name on port 80 first, then a certbot test run, then the real one -- and serves it
+   over HTTPS.
+8. Puts it on Collabora's list and restarts Collabora, switches Collabora's editor on inside Nextcloud, and
+   tells Nextcloud where Collabora is.
+9. Writes its cron file.
+
+Run it again for the same name whenever something stopped it, or after changing a setting in this repository: it
+only ever does what isn't there yet, and it is the command that puts a Nextcloud's own settings back the way
+officectl keeps them.
+
+### Updating a Nextcloud
+
+`officectl update NAME` fetches the release the download address points at (the newest, unless
+`office_nextcloud_url` says otherwise) and compares it with the one in place. When it is the same, nothing
+happens. When it is newer, Nextcloud goes into maintenance mode, the release is laid out beside the old files
+with this Nextcloud's own settings and the apps it installed itself in it, the two are swapped, and `occ upgrade`
+brings the database up to date. It is unreachable for a minute or two.
+
+Nextcloud's own updater is not used: it rewrites the files it runs from, and here those are root's. The old files
+are left behind as `/home/ncNAME/previous-VERSION`, so a release that turns out to be wrong can be put back by
+hand; the command says where they are, and they can be deleted once the new one has run for a few days.
+
+### What the playbook does, and what it leaves alone
+
+A playbook run installs Collabora and the PHP, writes everything officectl owns (`officectl sync`), and sets
+Collabora's own site up with its DNS record and certificate (`officectl endpoint --yes`; `office_endpoint: no`
+in the inventory turns that off). If the name has no record yet and TransIP can't be reached, the run says so
+and carries on: everything else works without it.
+
+It never adds, updates or removes a Nextcloud, and it never changes Nextcloud's own settings: those hold
+people's files, and a playbook run is no place for them. `officectl sync` writes the files around them --
+Collabora's settings, the virtual hosts, the PHP settings, the cron files, the permissions.
+
+### The code
+
+`officectl` is in `roles/office/files/officectl`, with its tests in `roles/office/files/officectl/tests`. It
+shares `shared/serverctl` with `domainctl` and `mailctl`.
+
+```bash
+pytest shared/tests roles/office/files/officectl/tests
 ```
 
 ## Managing mail with mailctl
