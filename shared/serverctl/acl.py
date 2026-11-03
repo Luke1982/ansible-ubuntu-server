@@ -1,7 +1,7 @@
-"""The access control lists that let OpenLiteSpeed's user into a site's files.
+"""The access control lists that let OpenLiteSpeed's user into the files of a site or an application.
 
-A site's home directory is the user's own and nothing else may read it, so the web server needs an entry of its
-own. Only the two directories on the way in get one, and it is the least that works: "--x" is enough to walk
+A site's home directory is its own user's and nothing else may read it, so the web server needs an entry of its
+own. Only the directories on the way in get one, and it is the least that works: "--x" is enough to walk
 through a directory without being able to list it.
 
 The web root gets "r-x" and the same as a default entry, so files put there later are readable too. The log
@@ -13,8 +13,8 @@ Entries are read back from getfacl and compared, so running a command twice chan
 import re
 from pathlib import Path
 
-from serverctl import system
-from serverctl.errors import CtlError
+from . import system
+from .errors import CtlError
 
 # A getfacl line: an optional "default:", the kind, the name it applies to, the permissions, and what the mask
 # leaves of them ("r-x\t#effective:r--"), which is not part of the entry itself.
@@ -43,7 +43,7 @@ def apply(path: Path, entries: dict[str, str]) -> bool:
     """Gives the path the entries, leaving its other entries alone. Returns whether anything changed."""
     if not Path(path).exists():
         raise CtlError(f"There is no {path} to set permissions on.",
-                       hint="Add the site again to make its directories: domainctl add DOMAIN")
+                       hint="Add it again, so its directories are made.")
     difference = missing(path, entries)
     if not difference:
         return False

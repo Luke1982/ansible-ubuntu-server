@@ -10,7 +10,8 @@ import pytest
 from typer.testing import CliRunner
 
 from domainctl import cli, session
-from domainctl.core import serving, signage, sites, users
+from domainctl.core import signage, sites
+from serverctl import serving, users
 from domainctl.core.signage import Signage
 from domainctl.core.sites import Site
 from serverctl import certbot, openlitespeed, system

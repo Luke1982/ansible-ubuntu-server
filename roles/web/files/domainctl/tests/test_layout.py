@@ -3,7 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from domainctl.core import acl, layout
+from domainctl.core import layout
+from serverctl import acl
 
 
 @pytest.fixture

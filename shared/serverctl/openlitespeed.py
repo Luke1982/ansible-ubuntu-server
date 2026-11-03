@@ -70,11 +70,17 @@ class Member:
 
 @dataclass(frozen=True)
 class VirtualHost:
-    """A virtual host of its own, for a site that needs settings a template can't give each member."""
+    """A virtual host of its own, for a site that needs settings a template can't give each member.
+
+    The settings below are the safe ones for a site that only serves files; "settings" replaces any of them, and
+    adds others, for a site that needs something else: a PHP application needs enableScript 1, and one served by
+    OpenLiteSpeed's own user needs setUIDMode 0.
+    """
     name: str
     root: str
     config_file: str
     note: str
+    settings: tuple[tuple[str, str], ...] = ()
 
 
 @contextmanager
@@ -315,12 +321,13 @@ def virtual_hosts(lines: list[str]) -> dict[str, str | None]:
 
 
 def with_virtual_host(lines: list[str], host: VirtualHost) -> list[str]:
-    """The config with the virtual host, added or brought up to date. It runs no scripts."""
+    """The config with the virtual host, added or brought up to date."""
     # Links are followed when the link and its target have the same owner (2), and not restrained to vhRoot: Ubuntu's
     # SOGo package links the JavaScript libraries in its web files to /usr/share/javascript, and without them its
-    # pages stay blank. The site runs no scripts.
+    # pages stay blank. The site runs no scripts unless it says it does.
     settings = {"vhRoot": host.root, "configFile": host.config_file, "allowSymbolLink": "2", "enableScript": "0",
                 "restrained": "0", "note": host.note}
+    settings.update(host.settings)
     return _with_block(lines, "virtualhost", host.name, settings)
 
 

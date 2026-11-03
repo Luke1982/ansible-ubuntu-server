@@ -6,7 +6,8 @@ import pytest
 from typer.testing import CliRunner
 
 from domainctl import cli
-from domainctl.core import acl, sites, users, wordpress
+from domainctl.core import sites, wordpress
+from serverctl import acl, users
 from domainctl.core.sites import Site
 from serverctl import system
 from test_cli import run, server  # noqa: F401  (server is a fixture)

@@ -2,11 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from domainctl.core import acl
-from serverctl import system
+from serverctl import acl, system
 from serverctl.errors import CtlError
 
-# What getfacl prints for a web root that is set up the way domainctl wants it.
+# What getfacl prints for a web root set up the way the tools want it.
 WEB_ROOT = """user::rwx
 user:nobody:r-x
 group::rwx

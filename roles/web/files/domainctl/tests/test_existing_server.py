@@ -12,7 +12,8 @@ import pytest
 from test_cli import HERE, _Resolver, run
 
 from domainctl import session
-from domainctl.core import acl, layout, serving, sites, users
+from domainctl.core import layout, sites
+from serverctl import acl, serving, users
 from domainctl.core.sites import Site
 from serverctl import certbot, openlitespeed, system
 

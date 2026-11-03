@@ -25,10 +25,10 @@ from typing import BinaryIO
 from serverctl import certbot, files, openlitespeed, system
 from serverctl.errors import CtlError
 from serverctl.openlitespeed import VirtualHost
+from serverctl.serving import CHALLENGES
 
 from ..config import TOOL, Config
 from . import sites
-from .serving import CHALLENGES
 
 NOTE = "Managed by domainctl: a piSignage server (domainctl signage)"
 FIRST_PORT = 3000

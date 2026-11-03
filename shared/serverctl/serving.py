@@ -15,9 +15,9 @@ import secrets
 import time
 from pathlib import Path
 
-from serverctl import files
-from serverctl.dns import IPAddress
-from serverctl.errors import CtlError
+from . import files
+from .dns import IPAddress
+from .errors import CtlError
 
 CHALLENGES = ".well-known/acme-challenge"
 TIMEOUT = 15  # seconds OpenLiteSpeed gets to serve a new site after a restart
@@ -41,7 +41,7 @@ def wait_until_served(docroot: Path, name: str, addresses: set[IPAddress], timeo
     is removed again either way.
     """
     token = secrets.token_hex(16)
-    probe = challenge_dir(docroot) / f"domainctl-{token}"
+    probe = challenge_dir(docroot) / f"serverctl-{token}"
     files.replace(probe, token)
     answers = {}
     try:

@@ -10,10 +10,10 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 
-from serverctl import transip
-from serverctl.dns import IPAddress, LookupFailed, Resolver
-from serverctl.errors import CtlError
-from serverctl.transip import Entry
+from . import transip
+from .dns import IPAddress, LookupFailed, Resolver
+from .errors import CtlError
+from .transip import Entry
 
 EXPIRE = 3600  # seconds, for a record published here
 PUBLISH_WAIT = 300  # how long to wait for TransIP's nameservers to serve a new record

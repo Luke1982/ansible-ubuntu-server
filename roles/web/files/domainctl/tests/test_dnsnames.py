@@ -3,8 +3,8 @@ from ipaddress import ip_address
 
 import pytest
 
-from domainctl.core import dnsnames
-from domainctl.core.dnsnames import State
+from serverctl import dnsnames
+from serverctl.dnsnames import State
 from serverctl import transip
 from serverctl.dns import LookupFailed
 from serverctl.errors import CtlError

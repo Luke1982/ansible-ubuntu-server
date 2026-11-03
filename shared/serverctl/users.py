@@ -1,18 +1,18 @@
-"""The Linux user a site runs under.
+"""The Linux user a site or an application runs under.
 
-Each site gets a user of its own, so one site's files can never be read or changed by another. The account has
+Each one gets a user of its own, so one site's files can never be read or changed by another. The account has
 no password: nobody logs in as it. Root reaches it with "su - USER", and sshd's AllowUsers decides who may
-connect over SSH, so a site user cannot.
+connect over SSH, so such a user cannot.
 
-The home directory is the virtual host's root, which the OpenLiteSpeed template finds as /home/$VH_NAME.
+The home directory is the virtual host's root: /home/USER.
 """
 
 import grp
 import pwd
 from pathlib import Path
 
-from serverctl import system
-from serverctl.errors import CtlError
+from . import system
+from .errors import CtlError
 
 HOME_MODE = 0o750  # the user's own; OpenLiteSpeed gets in through an ACL entry, nothing else does
 
@@ -44,12 +44,12 @@ def create(name: str, home: Path, shell: str) -> None:
     """
     if exists(name):
         raise CtlError(f"There is already a user {name} on this server.",
-                       hint="Choose another name with --user, or use the site that is already there.")
+                       hint="Choose another name, or use the one that is already there.")
     if group_exists(name):
-        raise CtlError(f"There is already a group {name} on this server.", hint="Choose another name with --user.")
+        raise CtlError(f"There is already a group {name} on this server.", hint="Choose another name.")
     if home.exists():
         raise CtlError(f"{home} already exists.",
-                       hint="Move it aside, or choose another name with --user, so no old files end up on the site.")
+                       hint="Move it aside, or choose another name, so no old files end up in it.")
     system.run("useradd", "--create-home", "--home-dir", str(home), "--user-group", "--shell", shell, name)
     # useradd leaves the account without a usable password; locking it says so plainly in /etc/shadow.
     system.run("usermod", "--lock", name)

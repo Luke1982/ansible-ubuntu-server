@@ -13,12 +13,11 @@ import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from serverctl import certbot, files, openlitespeed, system
+from serverctl import certbot, files, openlitespeed, serving, system
 from serverctl.errors import CtlError
 from serverctl.openlitespeed import VirtualHost
 
 from ..config import TOOL, Config
-from .serving import CHALLENGES
 
 NAME = "Server"
 NOTE = "Managed by domainctl: the site of this server's own name (domainctl hostname)"
@@ -51,7 +50,7 @@ def publish(config: Config, with_certificate: bool) -> bool:
     """Puts the site in OpenLiteSpeed's config, on port 80, and on 443 once the certificate is there. Returns
     whether anything changed; OpenLiteSpeed reads it when it restarts."""
     _check_free(config, openlitespeed.read(config.ols_root))  # before its settings file is written
-    (webroot(config) / CHALLENGES).mkdir(parents=True, exist_ok=True)
+    (webroot(config) / serving.CHALLENGES).mkdir(parents=True, exist_ok=True)
     with system.as_user(config.ols_user):
         changed = files.replace(site_file(config), _settings(config, with_certificate))
     with openlitespeed.locked():
@@ -146,8 +145,8 @@ vhssl {{
     return f"""{_HEADER}# The site of {config.hostname}. It serves nothing but Let's Encrypt's challenges.
 docRoot                 $VH_ROOT/html/
 {ssl}
-context /{CHALLENGES}/ {{
-  location                $VH_ROOT/html/{CHALLENGES}/
+context /{serving.CHALLENGES}/ {{
+  location                $VH_ROOT/html/{serving.CHALLENGES}/
   allowBrowse             1
 }}
 

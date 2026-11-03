@@ -1,5 +1,6 @@
 """External commands and facts about this server."""
 
+import grp
 import json
 import os
 import pwd
@@ -78,6 +79,13 @@ def find_user(name: str) -> pwd.struct_passwd:
         return pwd.getpwnam(name)
     except KeyError:
         raise CtlError(f"There's no user {name} on this server.") from None
+
+
+def find_group(name: str) -> grp.struct_group:
+    try:
+        return grp.getgrnam(name)
+    except KeyError:
+        raise CtlError(f"There's no group {name} on this server.") from None
 
 
 @contextmanager

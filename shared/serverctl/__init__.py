@@ -1,7 +1,8 @@
-"""Code shared by this repository's server tools (mailctl, domainctl).
+"""Code shared by this repository's server tools (mailctl, domainctl, officectl).
 
-The modules here know nothing about mail or web hosting: they edit OpenLiteSpeed's configuration, look up DNS,
-talk to TransIP's API, run certbot and openssl, and print to the terminal. Anything specific to one tool lives in
+The modules here know nothing about mail, web hosting or office documents: they edit OpenLiteSpeed's
+configuration, look up and publish DNS records, talk to TransIP's API, run certbot and openssl, make Linux
+users, databases and access control lists, and print to the terminal. Anything specific to one tool lives in
 that tool's own package.
 
 The source of truth is shared/serverctl in the Ansible repository. Each role's Ansible tasks copy this directory

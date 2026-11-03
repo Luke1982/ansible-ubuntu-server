@@ -7,11 +7,11 @@ from typing import Annotated, Optional
 import typer
 from rich.text import Text
 
-from serverctl import names, ui
+from serverctl import mariadb, names, passwords, ui, users
 from serverctl.dns import Status
 from serverctl.errors import CtlError
 
-from ..core import certificates, layout, sites, users, wordpress
+from ..core import certificates, layout, sites, wordpress
 from ..core.wordpress import Plugin
 from ..session import open_session
 from .shared import User, UserFilter, Yes, ask_user, find_site, group
@@ -81,7 +81,7 @@ def install(user: User = None, title: Title = None, admin_user: AdminUser = None
         if not wordpress.is_configured(config, site.user):
             _make_database(config, site.user)
         if not installed:
-            password = wordpress.new_password()
+            password = passwords.new_password()
             with ui.console.status("Installing WordPress…"):
                 wordpress.install(config, site.user, f"https://{site.domain}", title or site.domain, admin, email,
                                   password)
@@ -125,22 +125,22 @@ def adopt(user: User = None, database: Database = None, dump: Dump = None, repla
         if dump not in (None, "-") and not Path(dump).is_file():
             raise CtlError(f"There is no dump at {dump}.")
         wordpress.check_config(config, owner)  # before the old database goes, not after the dump is in
-        taken = wordpress.database_taken(name)
+        taken = mariadb.database_taken(name)
         if taken and not replace:
             raise CtlError(f"There is already {taken} in MariaDB.",
                            hint="Pick another name with --database, or empty it and use it with --replace.")
         if taken:
             ui.confirm(f"{taken[0].upper()}{taken[1:]} will be emptied and removed, with everything in it. Go on?", yes)
-            wordpress.drop_database(name)
-        password = wordpress.new_password()
-        wordpress.create_database(name, password)
+            mariadb.drop_database(name)
+        password = passwords.new_password()
+        mariadb.create_database(name, password)
         try:
             if dump is not None:
                 with ui.console.status("Reading the dump in…"):
                     _read_dump(name, dump)
             wordpress.adopt_config(config, owner, name, name, password)
         except CtlError as problem:
-            wordpress.drop_database(name)  # nothing knows its password
+            mariadb.drop_database(name)  # nothing knows its password
             if taken:
                 raise CtlError(problem.message, hint=f"The old database {name} is gone. Fix this and run the same "
                                                      f"command again: it reads the dump in again.") from None
@@ -166,10 +166,10 @@ def _adopting_user(config, user: str) -> str:
 
 def _read_dump(database: str, dump: str) -> None:
     if dump == "-":
-        wordpress.import_dump(database, sys.stdin.buffer)
+        mariadb.import_dump(database, sys.stdin.buffer)
         return
     with open(dump, "rb") as file:
-        wordpress.import_dump(database, file)
+        mariadb.import_dump(database, file)
 
 
 @app.command()
@@ -223,18 +223,18 @@ def _cell(status: Status, label: str) -> Text:
 
 def _make_database(config, user: str) -> None:
     """The site's database and MariaDB user, and a wp-config.php that uses them."""
-    taken = wordpress.database_taken(user)
+    taken = mariadb.database_taken(user)
     if taken:
         raise CtlError(f"There is already {taken} in MariaDB, and no wp-config.php in {config.docroot_of(user)} to "
                        f"say it is this site's.",
                        hint="Remove it if it's left over, or put the site's wp-config.php in place, and run this "
                             "again.")
-    password = wordpress.new_password()
-    wordpress.create_database(user, password)
+    password = passwords.new_password()
+    mariadb.create_database(user, password)
     try:
         wordpress.configure(config, user, user, password)
     except CtlError:
-        wordpress.drop_database(user)  # nothing knows its password
+        mariadb.drop_database(user)  # nothing knows its password
         raise
     ui.success(f"Made the database {user}, with a MariaDB user of the same name, and wp-config.php.")
 

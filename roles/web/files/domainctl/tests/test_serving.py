@@ -4,7 +4,7 @@ from ipaddress import ip_address
 
 import pytest
 
-from domainctl.core import serving
+from serverctl import serving
 from serverctl.errors import CtlError
 
 V4, V6 = ip_address("81.4.127.10"), ip_address("2a02:4780:7e:6327::1")

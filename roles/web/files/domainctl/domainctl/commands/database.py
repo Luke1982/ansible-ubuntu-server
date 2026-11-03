@@ -11,10 +11,10 @@ from typing import Annotated, Optional
 
 import typer
 
-from serverctl import names, ui
+from serverctl import mariadb, names, passwords, ui, users
 from serverctl.errors import CtlError
 
-from ..core import layout, sites, users, wordpress
+from ..core import layout, sites
 from ..session import open_session
 from .shared import User, Yes, ask_user, find_site, group
 
@@ -61,23 +61,23 @@ def add(user: User = None, database: Database = None, dump: Dump = None, passwor
         path = _dump_path(dump)
         # Only the database decides whether anything is replaced. A MariaDB user of another name may be the
         # login of this customer's other sites, and that one is never emptied or taken away.
-        taken = wordpress.database_taken(name) if account == name else _database_here(name)
-        shared = account != name and wordpress.user_taken(account)
+        taken = mariadb.database_taken(name) if account == name else _database_here(name)
+        shared = account != name and mariadb.user_taken(account)
         if taken and not replace:
             raise CtlError(f"There is already {taken} in MariaDB.",
                            hint="Pick another name with --database, or empty it and use it with --replace.")
         if taken:
             ui.confirm(f"{taken[0].upper()}{taken[1:]} will be emptied and removed, with everything in it. Go on?",
                        yes)
-            wordpress.drop_database(name, account)
-        secret = password or wordpress.new_password()
-        wordpress.create_database(name, secret, account)
+            mariadb.drop_database(name, account)
+        secret = password or passwords.new_password()
+        mariadb.create_database(name, secret, account)
         if dump is not None:
             try:
                 with ui.console.status("Reading the dump in…"):
                     _read_dump(name, dump)
             except CtlError:
-                wordpress.drop_database(name, account)  # half a database is worse than none
+                mariadb.drop_database(name, account)  # half a database is worse than none
                 raise
         made = "Replaced" if taken else "Made"
         if account == name:
@@ -102,7 +102,7 @@ def add(user: User = None, database: Database = None, dump: Dump = None, passwor
 
 def _database_here(name: str) -> str | None:
     """What has this database name, ignoring a MariaDB user that happens to share it."""
-    found = wordpress.database_taken(name)
+    found = mariadb.database_taken(name)
     return found if found and found.startswith("a database") else None
 
 
@@ -130,10 +130,10 @@ def _dump_path(dump: str | None) -> Path | None:
 
 def _read_dump(database: str, dump: str) -> None:
     if dump == "-":
-        wordpress.import_dump(database, sys.stdin.buffer)
+        mariadb.import_dump(database, sys.stdin.buffer)
         return
     with open(dump, "rb") as file:
-        wordpress.import_dump(database, file)
+        mariadb.import_dump(database, file)
 
 
 def _out_of_the_web_root(config, user: str, path: Path | None) -> Path | None:

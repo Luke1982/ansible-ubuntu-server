@@ -4,8 +4,7 @@ wp-cli always runs as the site's own user, never as root: WordPress's files stay
 site can't do anything its user couldn't. OpenLiteSpeed only reads the site, so the one directory WordPress writes
 in, its uploads, is opened up to it.
 
-Each site gets a database and a MariaDB user named after its Linux user, reached over the local socket. Root
-makes them, logging in to MariaDB through its own socket as the server's root does.
+Each site gets a database and a MariaDB user named after its Linux user, which serverctl.mariadb makes.
 
 WP fail2ban sends failed logins to syslog with the site's name in the tag, so the jails in
 /etc/fail2ban/jail.d/wordpress.conf cover every site that has it active. See roles/web/files/jail-wordpress.conf.
@@ -13,16 +12,13 @@ WP fail2ban sends failed logins to syslog with the site's name in the tag, so th
 
 import json
 import re
-import secrets
 from enum import Enum
 from pathlib import Path
-from typing import IO
 
-from serverctl import system
+from serverctl import acl, system
 from serverctl.errors import CtlError
 
 from ..config import Config
-from . import acl
 
 WP = "/usr/local/bin/wp"
 PLUGIN = "wp-fail2ban"
@@ -116,11 +112,6 @@ def adopt_config(config: Config, user: str, database: str, db_user: str, passwor
     path.write_text(changed)
 
 
-def import_dump(database: str, dump: IO[bytes]) -> None:
-    """Reads a dump into the database as bytes, so a big one isn't held in memory and nothing in it is re-encoded."""
-    system.run_fed("mariadb", database, source=dump)
-
-
 def is_installed(config: Config, user: str) -> bool:
     try:
         wp(config, user, "core", "is-installed")
@@ -160,62 +151,3 @@ def open_uploads(config: Config, user: str) -> bool:
     if not uploads.is_dir():
         system.run("runuser", "-u", user, "--", "mkdir", "-p", str(uploads))
     return acl.apply(uploads, acl.shared_with(config.web_user, user))
-
-
-def new_password() -> str:
-    return secrets.token_urlsafe(24)
-
-
-# --- The database -------------------------------------------------------------------------------------------------
-
-def _sql(statements: str) -> str:
-    return system.run("mariadb", "--batch", "--skip-column-names", stdin=statements)
-
-
-def _string(value: str) -> str:
-    return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
-
-
-def _name(value: str) -> str:
-    return "`" + value.replace("`", "``") + "`"
-
-
-def database_taken(name: str) -> str | None:
-    """What already has the name in MariaDB, a database or a user, or None when both are free."""
-    counts = _sql(f"SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = {_string(name)};\n"
-                  f"SELECT COUNT(*) FROM mysql.user WHERE User = {_string(name)};\n").split()
-    if counts and counts[0] != "0":
-        return f"a database {name}"
-    if len(counts) > 1 and counts[1] != "0":
-        return f"a MariaDB user {name}"
-    return None
-
-
-def user_taken(name: str) -> bool:
-    """Whether MariaDB already has this user."""
-    found = _sql(f"SELECT COUNT(*) FROM mysql.user WHERE User = {_string(name)};\n").split()
-    return bool(found) and found[0] != "0"
-
-
-def create_database(name: str, password: str, db_user: str | None = None) -> None:
-    """A database with a user that may only use it, only over the local socket. The user has the database's own
-    name unless another is given: a site that came from another server keeps the user name its settings hold,
-    so its own configuration still fits.
-
-    A user that is already there keeps its password and whatever else it may use: one customer with two sites
-    logs into both with one name, and taking that name away from the first to give it to the second would stop
-    the first working.
-    """
-    user = f"{_string(db_user or name)}@'localhost'"
-    _sql(f"CREATE DATABASE {_name(name)} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\n"
-         f"CREATE USER IF NOT EXISTS {user} IDENTIFIED BY {_string(password)};\n"
-         f"GRANT ALL PRIVILEGES ON {_name(name)}.* TO {user};\n")
-
-
-def drop_database(name: str, db_user: str | None = None) -> None:
-    """The database and the user of the same name. A user of another name is only taken off this database:
-    it may be the login of other sites of the same customer, and nothing here may break those."""
-    # Only the database and the user that shares its name. A user of another name is left alone altogether:
-    # it may be the login of other sites of this customer, and the grant it has on this database is the one
-    # that is handed out again the moment the database is made anew.
-    _sql(f"DROP DATABASE IF EXISTS {_name(name)};\nDROP USER IF EXISTS {_string(name)}@'localhost';\n")

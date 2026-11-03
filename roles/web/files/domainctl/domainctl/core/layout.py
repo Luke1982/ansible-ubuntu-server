@@ -3,11 +3,9 @@
 import os
 from pathlib import Path
 
-from serverctl import system
+from serverctl import acl, serving, system
 
 from ..config import Config
-from . import acl
-from .serving import challenge_dir
 
 # Shown until the site's own files are uploaded, so a new domain answers with something rather than an error.
 # The marker says it is ours, so it can be taken away again once the site's own files are there: index.html comes
@@ -33,7 +31,7 @@ def create(config: Config, user: str, domain: str) -> None:
     OpenLiteSpeed complains about a context whose directory isn't there. It inherits the web root's permissions,
     so it needs no entries of its own.
     """
-    for path in (config.docroot_of(user), challenge_dir(config.docroot_of(user)), config.logs_of(user)):
+    for path in (config.docroot_of(user), serving.challenge_dir(config.docroot_of(user)), config.logs_of(user)):
         path.mkdir(parents=True, exist_ok=True)
         _own(path, user)
     if remove_placeholder(config, user):

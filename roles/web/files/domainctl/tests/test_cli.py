@@ -9,7 +9,8 @@ import pytest
 from typer.testing import CliRunner
 
 from domainctl import cli, session
-from domainctl.core import acl, certificates, dnsnames, layout, serving, sites, users
+from domainctl.core import certificates, layout, sites
+from serverctl import acl, dnsnames, serving, users
 from domainctl.core.sites import Site
 from serverctl import certbot, openlitespeed, system, ui
 
