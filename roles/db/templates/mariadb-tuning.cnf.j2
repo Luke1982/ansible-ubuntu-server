@@ -2,9 +2,12 @@
 # machine -- memory: {{ server_memory_mb }} MB. Anything changed here is overwritten by the next playbook run:
 # change the values in roles/db/defaults/main.yml, or per server in its inventory file.
 #
-# MariaDB reads this file after /etc/my.cnf, so what is here wins.
+# MariaDB reads this directory last, so what is here wins. On Ubuntu it never reads /etc/my.cnf at all:
+# AppArmor's profile for mariadbd lets it read /etc/mysql only, and denies the rest (apparmor="DENIED"
+# ... name="/etc/my.cnf" in the kernel log), so settings only belong in a file under /etc/mysql.
 [mysqld]
 innodb_buffer_pool_size = {{ db_buffer_pool_mb }}M
 innodb_log_file_size    = {{ db_log_file_mb }}M
 tmp_table_size          = {{ db_tmp_table_mb }}M
 max_heap_table_size     = {{ db_tmp_table_mb }}M
+max_connections         = {{ db_max_connections }}

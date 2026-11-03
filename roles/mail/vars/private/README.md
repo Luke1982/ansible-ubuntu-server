@@ -41,7 +41,7 @@ Defaults in `roles/mail/defaults/main.yml`; override them in `mailvars.yml` or t
 |----------|---------|-------------|
 | `sogo_language` | `Dutch` | Language new webmail users start with |
 | `sogo_timezone` | `Europe/Amsterdam` | Time zone new webmail users start with |
-| `sogo_workers` | `10` | SOGo processes. Every phone using ActiveSync keeps one busy while it waits for changes: raise it when many phones do. Dovecot allows twice as many IMAP connections per user and address, since SOGo connects from 127.0.0.1 for everyone |
+| `sogo_workers` | `10` | SOGo processes. Every phone using ActiveSync keeps one busy for up to 280 seconds while it waits for changes, so webmail waits behind the phones when there are too few: count on one per phone plus five, and on about 30 MB of memory each. Dovecot allows twice as many IMAP connections per user and address, since SOGo connects from 127.0.0.1 for everyone, and `db_max_connections` (db role, 300) has to hold the connections the workers keep |
 | `letsencrypt_email` | none | Email address for the Let's Encrypt account of the webmail certificates, used when certbot has no account on the server yet |
 
 ## Sending limits (optional)

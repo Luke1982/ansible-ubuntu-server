@@ -14,6 +14,10 @@
 # nobody's to throw away from here. What is in the file below is a starting point for a new server; on one that
 # already has a my.cnf, change it there, or in a file of its own under /etc/mysql/mariadb.conf.d/, which is read
 # after it.
+#
+# Mind that MariaDB on Ubuntu doesn't actually read /etc/my.cnf: AppArmor's profile for mariadbd allows
+# /etc/mysql only (apparmor="DENIED" ... name="/etc/my.cnf" in the kernel log). A setting that has to take
+# effect belongs in the tuning file below, not here.
 - name: Put a starting my.cnf in place, if the server has none
   copy:
     src: roles/db/files/my.cnf

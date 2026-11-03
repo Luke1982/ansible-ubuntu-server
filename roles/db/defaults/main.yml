@@ -40,6 +40,11 @@ db_log_file_mb: "{{ [(db_buffer_pool_mb | int) // 4, 96] | max }}"
 # How big a temporary table a query that sorts or groups may build in memory before it is written to disk
 # instead. MariaDB uses whichever of the two settings is smaller, so they are one number here.
 db_tmp_table_mb: 64
+# How many clients may be connected at once. MariaDB's own limit is 151, which SOGo alone can reach: each of
+# its workers (sogo_workers in the mail role, raised on a server with many phones on ActiveSync) keeps
+# connections of its own, and the websites, the mail server and phpMyAdmin connect as well. A connection that
+# sits idle still costs a little memory, so this is not a number to raise for its own sake.
+db_max_connections: 300
 # A dump of every database, every night, by a user MariaDB knows by its Linux
 # name (unix_socket): no password anywhere, and read rights only. The dumps are
 # gzipped in its home directory, and the ones older than this many days go.

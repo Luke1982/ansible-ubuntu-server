@@ -100,8 +100,11 @@ sogo_release: "{{ sogo_releases[ansible_distribution_version] }}"
 # Where SOGo listens. OpenLiteSpeed passes webmail.<domain> on to it.
 sogo_address: 127.0.0.1:20000
 
-# SOGo processes. A phone using ActiveSync keeps one busy while it waits for
-# changes; the web interface and calendar apps need the others.
+# SOGo processes. A phone using ActiveSync keeps one busy for as long as it
+# waits for changes, which is SOGoMaximumPingInterval, 280 seconds: with fewer
+# workers than phones, webmail and the calendar apps wait behind them. Count on
+# one per phone plus five, and on about 30 MB of memory each. Every worker also
+# keeps database connections of its own, which db_max_connections has to hold.
 sogo_workers: 10
 
 # What new webmail users start with. They can change both.
