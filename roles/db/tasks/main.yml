@@ -34,10 +34,3 @@
     owner: root
     group: root
   notify: restart mysql
-
-- name: Take away MariaDB tuning that was put there by hand
-  file:
-    path: "/etc/mysql/mariadb.conf.d/{{ item }}"
-    state: absent
-  loop: "{{ db_tuning_by_hand }}"
-  notify: restart mysql

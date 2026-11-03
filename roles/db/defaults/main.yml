@@ -40,11 +40,6 @@ db_log_file_mb: "{{ [(db_buffer_pool_mb | int) // 4, 96] | max }}"
 # How big a temporary table a query that sorts or groups may build in memory before it is written to disk
 # instead. MariaDB uses whichever of the two settings is smaller, so they are one number here.
 db_tmp_table_mb: 64
-# Tuning put in /etc/mysql/mariadb.conf.d by hand, before Ansible wrote its own. It is taken away, so the
-# settings have one place they are changed. These names can go once every server has had a playbook run.
-db_tuning_by_hand:
-  - 90-majorlabel-tuning.cnf
-
 # A dump of every database, every night, by a user MariaDB knows by its Linux
 # name (unix_socket): no password anywhere, and read rights only. The dumps are
 # gzipped in its home directory, and the ones older than this many days go.

@@ -34,13 +34,6 @@
     mode: 0644
   notify: the sites' PHP changed
 
-- name: Take away settings for the sites' PHP that were put there by hand
-  file:
-    path: "{{ lsphp_tuning_dir }}/{{ item }}"
-    state: absent
-  loop: "{{ lsphp_tuning_by_hand }}"
-  notify: the sites' PHP changed
-
 # The three tasks below are the only ones that write in httpd_config.conf; the rest of it is left the way
 # WebAdmin wrote it. Their lines go inside the lsphp block, and without that block there is nowhere to put
 # them: lineinfile would leave them at the end of the config, where they belong to nothing at all. So the

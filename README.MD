@@ -176,10 +176,10 @@ server lasts until the next run. The values are in
 be set for one server in its inventory file -- `lsphp_children` and
 `db_buffer_pool_mb`, for instance.
 
-The first run also takes away the files that held this tuning before Ansible
-did (`99-majorlabel-tuning.ini` and `90-majorlabel-tuning.cnf`), so the settings
-have one place they are changed. Those names are in the two defaults files as
-well, and can go once every server has had a run.
+A server that was tuned by hand before may still have a file of its own in
+those two directories. Ansible leaves it alone and doesn't know about it, and
+PHP and MariaDB read both: delete it once, so the settings have one place they
+are changed.
 
 Of `httpd_config.conf`, only the lines in the four rows above are Ansible's; the
 rest is left the way WebAdmin wrote it. They go in the `extProcessor lsphp`

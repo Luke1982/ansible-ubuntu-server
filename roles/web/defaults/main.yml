@@ -25,10 +25,6 @@ lsphp_package: "lsphp{{ lsphp_version | replace('.', '') }}"
 lsphp_ini_dir: "{{ ols_root }}/{{ lsphp_package }}/etc/php/{{ lsphp_version }}"
 # Where Ansible puts the settings for it. PHP reads every .ini in here, after the ones in mods-available.
 lsphp_tuning_dir: "{{ lsphp_ini_dir }}/main-pool.d"
-# Settings files put in that directory by hand, before Ansible wrote its own. They are taken away, so the
-# settings have one place they are changed. These names can go once every server has had a playbook run.
-lsphp_tuning_by_hand:
-  - 99-majorlabel-tuning.ini
 # Not a setting: the line that opens the block in httpd_config.conf Ansible writes a few lines of. Older
 # versions of OpenLiteSpeed write it as "extprocessor".
 lsphp_block: 'ext[pP]rocessor[ \t]+lsphp[ \t]*\{'
