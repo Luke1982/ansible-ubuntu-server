@@ -106,6 +106,25 @@
        -o smtpd_recipient_restrictions=reject_non_fqdn_recipient,reject_unknown_recipient_domain,permit_sasl_authenticated,reject
   notify: restart postfix
 
+# A delivery report is a mail this server sends about a message it has just taken in: "Successful Mail Delivery
+# Report", to whoever the message said to report to. Spammers ask for one, so that this server sends their text
+# to an address they chose, in our own name and from our own address. Nothing on the internet has any business
+# asking us for one, so port 25 no longer offers it (smtpd_discard_ehlo_keywords on that service alone). The
+# submission ports, 587 and 465, still offer it: there the sender has logged in, and the mail is one of ours.
+#
+# postconf -P changes the "smtp inet" line itself, which is above the marker and not in the block Ansible
+# writes, so this is how that line is changed rather than by rewriting it here.
+- name: Look at what port 25 offers now
+  command: postconf -Ph smtp/inet/smtpd_discard_ehlo_keywords
+  register: postfix_ehlo
+  changed_when: false
+  failed_when: false
+
+- name: Don't offer delivery reports (DSN) to the internet on port 25
+  command: postconf -P smtp/inet/smtpd_discard_ehlo_keywords=dsn
+  when: postfix_ehlo.stdout | default('') | trim != 'dsn'
+  notify: restart postfix
+
 - name: Rebuild postfix alias tables
   shell:
     cmd: newaliases
