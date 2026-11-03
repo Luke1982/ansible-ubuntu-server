@@ -167,7 +167,7 @@ amount of memory, which Ansible reads from the server itself.
 | `LSAPI_AVOID_FORK` | Keeps the PHP processes that are there instead of stopping and starting them around every busy moment | the same block |
 | `memSoftLimit`, `memHardLimit` | Off. The opcache is memory every PHP process shares, but each is counted for the whole of it, so a limit here stops processes using nothing of their own | the same block |
 | `memory_limit`, `opcache.*` | The most memory one page may use, and how much compiled PHP is kept in memory for all the sites together | `/usr/local/lsws/lsphp83/etc/php/8.3/main-pool.d/99-tuning.ini` |
-| `innodb_buffer_pool_size`, `tmp_table_size`, `max_heap_table_size` | How much of the databases MariaDB keeps in memory, and how big a temporary table may get before a query writes it to disk | `/etc/mysql/mariadb.conf.d/90-tuning.cnf` |
+| `innodb_buffer_pool_size`, `innodb_log_file_size`, `tmp_table_size`, `max_heap_table_size` | How much of the databases MariaDB keeps in memory, how much it may write before flushing, and how big a temporary table may get before a query writes it to disk | `/etc/mysql/mariadb.conf.d/90-tuning.cnf` |
 
 The two files say at the top that Ansible wrote them, so changing them on the
 server lasts until the next run. The values are in

@@ -33,6 +33,10 @@ server_memory_mb: "{{ ansible_memtotal_mb }}"
 # come to a gigabyte or two, so the usual advice of half the machine would be memory nothing reads. MariaDB
 # is installed with 128 MB, little enough that it reads the disk for pages it had a moment ago.
 db_buffer_pool_mb: "{{ ((server_memory_mb | int) / 16 / 256) | round(0, 'ceil') | int * 256 }}"
+# The redo log InnoDB writes every change to before it reaches the data files: a quarter of the buffer pool,
+# and never less than MariaDB's own 96 MB. A log too small for what a busy minute writes makes InnoDB stop
+# and flush over and over; a big one costs disk and a slower start after a crash.
+db_log_file_mb: "{{ [(db_buffer_pool_mb | int) // 4, 96] | max }}"
 # How big a temporary table a query that sorts or groups may build in memory before it is written to disk
 # instead. MariaDB uses whichever of the two settings is smaller, so they are one number here.
 db_tmp_table_mb: 64

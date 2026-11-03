@@ -5,5 +5,6 @@
 # MariaDB reads this file after /etc/my.cnf, so what is here wins.
 [mysqld]
 innodb_buffer_pool_size = {{ db_buffer_pool_mb }}M
+innodb_log_file_size    = {{ db_log_file_mb }}M
 tmp_table_size          = {{ db_tmp_table_mb }}M
 max_heap_table_size     = {{ db_tmp_table_mb }}M
