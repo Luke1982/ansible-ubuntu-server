@@ -7,6 +7,17 @@
 declare(strict_types=1);
 require __DIR__ . '/mailsettings.php';
 
+// Outlook's third step is a GET over plain HTTP that expects a redirect to the
+// HTTPS address, where it then posts its request with the email address in it.
+// Answering it here instead gives Outlook settings without a login name, and it
+// then guesses the part before the @, fails to log in, and is banned by
+// fail2ban for guessing.
+if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST' && ($_SERVER['HTTPS'] ?? '') !== 'on') {
+    $host = strtolower(explode(':', $_SERVER['HTTP_HOST'] ?? '')[0]);
+    header('Location: https://' . $host . '/autodiscover/autodiscover.xml', true, 302);
+    exit;
+}
+
 const OUTLOOK = 'http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2006a';
 const MOBILE = 'http://schemas.microsoft.com/exchange/autodiscover/mobilesync/responseschema/2006';
 

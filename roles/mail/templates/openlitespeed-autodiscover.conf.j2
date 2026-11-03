@@ -31,23 +31,37 @@ virtualHostConfig  {
     indexFiles            index.html
   }
 
-  # PHP answers the mail programs: the scripts only read the request.
-  # OpenLiteSpeed runs one of these for all the members.
+  # PHP answers the mail programs: the scripts only read the request. They all
+  # share one set of PHP processes, on the socket below.
+  #
+  # The block is part of the template, so every member -- a domain each -- has a
+  # copy of it, and each copy opens the same socket. Connections are therefore
+  # not kept open (persistConn 0): with persistent connections the first copy
+  # held both processes for itself, and every request for another domain waited
+  # for them until it timed out ("Reached max children process limit: 2" in
+  # OpenLiteSpeed's error.log). Defining the processor once in
+  # httpd_config.conf instead would make a copy per member unnecessary.
+  #
+  # The memory limits have to leave room for the opcache: it is 128 MB of
+  # shared memory that every process is counted for in full, so under a limit
+  # of 320M lsphp died on every start ("Unable to allocate shared memory
+  # segment of 134217728 bytes: mmap: Cannot allocate memory" in stderr.log),
+  # requests hung with "possible dead lock", and Outlook gave up waiting.
   extprocessor mailautodiscover-php {
     type                  lsapi
     address               uds://tmp/lshttpd/mailautodiscover.sock
-    maxConns              2
-    env                   PHP_LSAPI_CHILDREN=2
+    maxConns              4
+    env                   PHP_LSAPI_CHILDREN=8
     initTimeout           60
     retryTimeout          0
-    persistConn           1
+    persistConn           0
     respBuffer            0
     autoStart             1
     path                  {{ autodiscover_lsphp }}
     backlog               100
     instances             1
-    memSoftLimit          256M
-    memHardLimit          320M
+    memSoftLimit          1024M
+    memHardLimit          1200M
   }
 
   scripthandler  {

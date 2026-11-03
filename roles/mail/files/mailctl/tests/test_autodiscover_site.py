@@ -1,5 +1,6 @@
 """The PHP that autoconfig.DOMAIN and autodiscover.DOMAIN serve, run the way a mail program asks it."""
 
+import http.client
 import shutil
 import socket
 import subprocess
@@ -58,6 +59,19 @@ def ask(site: str, schema: str, domain: str = DOMAIN) -> tuple[int, str]:
         return answer.code, answer.read().decode()
 
 
+def fetch(site: str, path: str, domain: str = DOMAIN) -> tuple[int, str]:
+    """Asks for a page without following a redirect, and gives back where it was sent."""
+    host, port = site.removeprefix("http://").split(":")
+    connection = http.client.HTTPConnection(host, int(port), timeout=10)
+    try:
+        connection.request("GET", path, headers={"Host": f"autodiscover.{domain}"})
+        answer = connection.getresponse()
+        answer.read()
+        return answer.status, answer.getheader("Location") or ""
+    finally:
+        connection.close()
+
+
 def test_outlook_gets_the_imap_and_sending_servers(site):
     status, body = ask(site, OUTLOOK)
 
@@ -88,3 +102,13 @@ def test_a_schema_we_dont_know_is_left_alone(site):
     status, _ = ask(site, "http://schemas.microsoft.com/exchange/autodiscover/outlook/responseschema/2020z")
 
     assert status == 404
+
+
+def test_a_plain_http_request_is_sent_to_the_https_address(site):
+    """Outlook asks over plain HTTP first, with nothing in the request. Answered with the settings, it has no
+    login name to go on and tries the part before the @, which fails and gets the customer banned; sent to the
+    HTTPS address, it posts the address there and gets the login name back."""
+    status, location = fetch(site, "/autodiscover.php")
+
+    assert status == 302
+    assert location == f"https://autodiscover.{DOMAIN}/autodiscover/autodiscover.xml"
