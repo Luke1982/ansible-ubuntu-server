@@ -63,3 +63,14 @@ do
 		. "$rules"
 	fi
 done
+
+# POP3 (110, and 995 for POP3 over TLS) is not offered: mail programs use IMAP, on 143 and 993. Refused
+# instead of dropped, so a program that tries it hears "no" straight away. A dropped packet says nothing, and
+# a program that automatically looks for the right settings -- Outlook, for one -- then waits for its POP3
+# connection to time out before it goes on, which makes setting up an account look like it has hung.
+#
+# Last, after the rules above and after the roles' own, so a server that does offer POP3 can open those ports
+# in a rule of its own and be served by it first.
+$IPT -A INPUT -p tcp -m multiport --dports 110,995 \
+	-m comment --comment "POP3 not offered: refuse fast so mail setup does not hang" \
+	-j REJECT --reject-with tcp-reset

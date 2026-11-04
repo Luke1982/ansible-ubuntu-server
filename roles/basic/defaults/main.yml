@@ -8,3 +8,10 @@
 # sudo rule are not installed at all. The private key belongs on the NAS.
 nas_backup_user: nasbackup
 nas_backup_key: ""
+
+# --- Addresses fail2ban never bans -------------------------------------------
+# An office's own address, say: one person there mistyping a password would
+# otherwise lock the whole building out of its mail. Set it in the server's
+# inventory file in private/; localhost is always let off, with or without this.
+# Everything here is let off by every jail, so keep it to addresses you own.
+fail2ban_ignore_ips: []

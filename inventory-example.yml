@@ -39,6 +39,14 @@ all:
       # Check /etc/resolv.conf on the server; 127.0.0.53 is systemd-resolved.
       dns_servers: 127.0.0.53
 
+      # --- Addresses fail2ban never bans --------------------------------------
+      # An office or a branch with its own fixed address, where everybody shares
+      # it: one person there with an old password saved would otherwise get the
+      # whole building banned from the mail. Every jail lets these off, so keep
+      # the list to addresses you own. Localhost is always let off.
+      # fail2ban_ignore_ips:
+      #   - 203.0.113.10
+
       # --- Backups to the NAS (only if a NAS copies this server) --------------
       # The public key the NAS (Synology Active Backup for Business) logs in
       # with, as one line. With it, the playbook makes the nasbackup user, which

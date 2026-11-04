@@ -1,0 +1,10 @@
+# Addresses fail2ban never bans, whatever a jail sees coming from them.
+#
+# [DEFAULT] holds for every jail, the ones the web and mail roles add included.
+# Localhost is always on the list: this server's own services talk to each other
+# over it, and a jail that banned it would take the server off the air.
+#
+# Managed by Ansible: roles/basic/templates/fail2ban-ignoreip.conf.j2. The
+# addresses are fail2ban_ignore_ips in the server's inventory file in private/.
+[DEFAULT]
+ignoreip = {{ (['127.0.0.1/8', '::1'] + fail2ban_ignore_ips) | join(' ') }}

@@ -306,6 +306,19 @@ site, out of reach of every other name that site answers to. Its settings are
 kept, with a passphrase added for cookie login, so a restart doesn't sign
 everybody out; the file it replaces is kept as `config.inc.php.previous`.
 
+## The firewall
+
+iptables, written by the playbook as one shell script, `/usr/local/bin/start_firewall.sh`, from [`roles/basic/templates/start_firewall.sh.j2`](roles/basic/templates/start_firewall.sh.j2). There is nothing else: no saved rule set, no `iptables-save`, no ufw. `firewall.service` runs the script at boot, and the playbook runs it again whenever it changes, so **a rule added by hand with `iptables` is gone at the next boot**. Rules belong in that template.
+
+```bash
+systemctl restart firewall     # apply the script again
+iptables -L INPUT -n -v        # the rules as they are now, with what they have caught
+```
+
+Everything coming in is dropped unless a rule lets it through: HTTP and HTTPS, the OpenLiteSpeed admin panel on 7080, SSH, FTP, and the mail ports (25, 587, 465, 143, 993). POP3 is the one exception to "dropped": 110 and 995 are *refused*, with a TCP reset, as the last rule. A mail program that looks for the right settings by itself -- Outlook does -- tries POP3 first, and a dropped packet leaves it waiting for that connection to time out before it goes on, which makes setting up an account look like it has hung. A refusal answers it at once.
+
+A role that needs a port of its own writes a small shell file into `/etc/firewall.d/`, which the script reads near the end; the mail role does that to close other mail servers' port 25 to the websites' PHP.
+
 ## Blocking password guessing
 
 Postfix, Dovecot and SOGo each have a fail2ban jail. Banning on failed logins
@@ -341,6 +354,14 @@ f2b-mail-ignore`. To check the rules themselves:
 ```bash
 bash roles/mail/tests/f2b-mail-ignore/run-tests.sh
 ```
+
+### Addresses that are never banned
+
+Localhost, and whatever is in `fail2ban_ignore_ips` in the server's inventory file in `private/`. Every jail
+lets those off, so it is for addresses you own: an office where everybody shares one fixed address, say, where
+one person with last week's password still saved in their mail program would otherwise get the whole building
+banned. The playbook writes them to `/etc/fail2ban/jail.d/ignoreip.conf`; `fail2ban-client get dovecot ignoreip`
+shows what fail2ban is really using.
 
 ### WordPress
 

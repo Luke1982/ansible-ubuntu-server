@@ -29,3 +29,13 @@
     pkg:
       - fail2ban
     state: present
+
+# The jails themselves are the web and mail roles'; this is the one setting that holds for all of them.
+- name: Set the addresses fail2ban never bans
+  template:
+    src: fail2ban-ignoreip.conf.j2
+    dest: /etc/fail2ban/jail.d/ignoreip.conf
+    mode: 0644
+    owner: root
+    group: root
+  notify: restart fail2ban
