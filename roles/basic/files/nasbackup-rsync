@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Forced command for the NAS backup key (Synology Active Backup) of the nasbackup user.
+# Only allows "rsync --server --sender" (reading). The root helper runs it in a sandbox
+# that only contains /home and /var/vmail, read-only. Refusals are logged with the tag nasbackup-rsync.
+#
+# Installed by Ansible (roles/basic/tasks/setup-nasbackup.yml). Changes made here are overwritten.
+set -u
+read -r -a args <<< "${SSH_ORIGINAL_COMMAND:-}"
+if [[ ${#args[@]} -lt 3 || ${args[0]} != rsync || ${args[1]} != --server || ${args[2]} != --sender ]]; then
+    logger -t nasbackup-rsync -p auth.warning "refused: ${SSH_ORIGINAL_COMMAND:-<none>}"
+    echo "nasbackup: only rsync reads are allowed" >&2
+    exit 1
+fi
+exec sudo -n /usr/local/sbin/nasbackup-rsync-root "${args[@]:1}"

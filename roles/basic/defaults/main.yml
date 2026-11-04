@@ -1,0 +1,10 @@
+---
+
+# --- The NAS that copies this server's files ---------------------------------
+# Our Synology NAS (Active Backup for Business) logs in over SSH as this user and
+# reads /home and /var/vmail with rsync; it can do nothing else (see
+# tasks/setup-nasbackup.yml). Put the NAS's public key in the server's inventory
+# file in private/ as nas_backup_key; without it, the user, the scripts and the
+# sudo rule are not installed at all. The private key belongs on the NAS.
+nas_backup_user: nasbackup
+nas_backup_key: ""

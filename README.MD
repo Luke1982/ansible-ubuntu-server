@@ -141,7 +141,7 @@ Each server has its own playbook (e.g. `web01.whservice.nl.yml`) in the project 
 
 | Role | What it does |
 |------|-------------|
-| `basic` | Hostname, base packages, unattended-upgrades, Linux users, SSH hardening, iptables firewall (applied at boot), fail2ban |
+| `basic` | Hostname, base packages, unattended-upgrades, Linux users, SSH hardening, iptables firewall (applied at boot), fail2ban, and a read-only user for the NAS to copy `/home` and `/var/vmail` with (below) |
 | `web` | OpenLiteSpeed with LiteSpeed's PHP 8.3, PHP-FPM and CLI from Ubuntu (8.3 on Ubuntu 24.04, 8.5 on 26.04), Composer (global), wp-cli, nvm (system-wide), Redis with the PHP extension for it (object caching), certbot, fail2ban jails for WordPress password guessing, Let's Encrypt directory, the shared virtual host template, and `domainctl` (below) |
 | `db` | MariaDB, phpMyAdmin on a site of its own at `pma.<hostname>`, and a gzipped dump of every database every night (below) |
 | `mail` | Postfix, Dovecot with full-text IMAP search (fts-xapian) and login tracking, OpenDKIM, SpamAssassin that also learns from the mail people file by hand, SOGo (webmail, calendars, address books and ActiveSync), one folder per kind of mail whatever the mail program calls it, a limit per mailbox with a warning before it is reached, 30 days in Trash and 14 more to undo a deletion, per-user and per-website sending limits (postfwd), a warning mail when the queue gets long, no delivery reports (DSN) offered on port 25, so nobody can have this server send one in its own name, fail2ban jails for SMTP, IMAP and webmail brute force, and `mailctl` (below) |
@@ -210,7 +210,7 @@ inside them alone.
 
 ## Database backups
 
-Every night at three, a dump of every database on the server, gzipped, in `/home/dbbackups`. The ones older than 14 days go, but only after a run in which every database was dumped: failing backups shouldn't quietly eat the last good ones. A dump is written under a temporary name and renamed once it is whole, so nothing that looks like a backup is half a backup.
+Every night at two, a dump of every database on the server, gzipped, in `/home/dbbackups`. The ones older than 14 days go, but only after a run in which every database was dumped: failing backups shouldn't quietly eat the last good ones. A dump is written under a temporary name and renamed once it is whole, so nothing that looks like a backup is half a backup.
 
 They are made by `dbbackups`, a user with no password at all: MariaDB knows it by its Linux name (`unix_socket`), so only that Linux user can be it, and there is nothing to read out of a file, a process list or one of the backups. It may read every database and nothing else -- `SELECT`, and what a dump needs besides: views, triggers, events and a lock on a table that isn't InnoDB.
 
@@ -218,10 +218,54 @@ They are made by `dbbackups`, a user with no password at all: MariaDB knows it b
 systemctl list-timers mariadb-backup.timer     # when it last ran, and when it runs next
 systemctl start mariadb-backup                 # now, rather than tonight
 journalctl -u mariadb-backup -n 20             # what it did, with the size of each dump
-zcat /home/dbbackups/sogo-20260930-030001.sql.gz | mariadb sogo   # putting one back
+zcat /home/dbbackups/sogo-20260930-020001.sql.gz | mariadb sogo   # putting one back
 ```
 
-The hour, where they go, how long they are kept and the user's name are `db_backup_time`, `db_backup_home`, `db_backup_keep_days` and `db_backup_user` in [`roles/db/defaults/main.yml`](roles/db/defaults/main.yml). The dumps hold everything the databases hold, including the accounts in `mysql` and the password hashes in `mailserver`: they are readable by root and by `dbbackups`, and by nobody else. This server keeps them on its own disk, which is a copy, not a backup; copy them off it as well.
+The hour, where they go, how long they are kept and the user's name are `db_backup_time`, `db_backup_home`, `db_backup_keep_days` and `db_backup_user` in [`roles/db/defaults/main.yml`](roles/db/defaults/main.yml). The dumps hold everything the databases hold, including the accounts in `mysql` and the password hashes in `mailserver`: they are readable by root and by `dbbackups`, and by nobody else. This server keeps them on its own disk, which is a copy, not a backup; the NAS takes them off it an hour later, with the rest of `/home` (below).
+
+## Backups to the NAS
+
+Our Synology NAS (Active Backup for Business) logs in over SSH every night at three and copies `/home` -- the sites, and the database dumps the hour before -- and `/var/vmail`, the mail. It logs in as `nasbackup`, and that user can do exactly one thing: read those two folders.
+
+- It reads every file in them, including files only their owner can read.
+- It sees nothing else on the server: no `/etc`, no `/root`.
+- It writes, changes and deletes nothing.
+- It opens no shell, so nobody can log in with its key normally.
+
+Four pieces hold it to that, all of them written by the playbook ([`roles/basic/tasks/setup-nasbackup.yml`](roles/basic/tasks/setup-nasbackup.yml)):
+
+1. **The user.** `nasbackup` has a home directory and a shell, and a locked password, so the key is the only way in. It is on the `AllowUsers` line of `/etc/ssh/sshd_config.d/custom.conf`; without that, sshd turns the nightly login away.
+2. **The key is tied to a script.** Its line in `authorized_keys` starts with `restrict,command="/usr/local/bin/nasbackup-rsync"`. Whatever the NAS asks to run, SSH ignores and runs that script instead, handing it the NAS's own request in `SSH_ORIGINAL_COMMAND`; `restrict` turns off everything else a key can do, such as a terminal and port forwarding. The script passes on a request that starts with `rsync --server --sender` -- that is how rsync is started when someone *reads* files from this server -- and refuses and logs anything else.
+3. **One sudo rule.** `/etc/sudoers.d/nasbackup` lets the user run one script as root, and only with `--server --sender` in front. Root is needed because many mail and site files can only be read by their owner.
+4. **The sandbox.** That root script starts rsync in a filesystem view of its own: an empty directory with only `/usr`, `/home` and `/var/vmail` in it, all read-only, plus copies of `/etc/passwd` and `/etc/group` so owner names come through. `chroot` makes that directory the whole disk for rsync, and `setpriv` takes away every root power except reading any file (`CAP_DAC_READ_SEARCH`), so it can neither undo the read-only mounts nor get out. The view disappears when rsync stops.
+
+The folder names in the request are deliberately *not* checked: Active Backup sends rsync's `-s`, so they aren't in the request at all -- they arrive once the copying has started. Hence the sandbox, which doesn't need to know them.
+
+```bash
+journalctl -t nasbackup-rsync                  # requests that were refused
+journalctl -u ssh | grep nasbackup             # the logins themselves
+systemctl list-timers mariadb-backup.timer     # the dumps are an hour earlier, at two
+```
+
+From another machine that has the private key, reading should work and `/etc` should not exist:
+
+```bash
+rsync -a -s -e "ssh -i nas_ed25519" --list-only nasbackup@web03.majorlabel.nl:/var/vmail/
+rsync -a -s -e "ssh -i nas_ed25519" --list-only nasbackup@web03.majorlabel.nl:/etc/
+```
+
+### Setting it up for another server
+
+```bash
+ssh-keygen -t ed25519 -f nas_ed25519 -C nasbackup@web01.example.com   # on the server, no passphrase
+```
+
+Load the private key into the NAS, put the `.pub` line in the server's inventory file in `private/` as `nas_backup_key`, and delete the private key from the server -- it only needs the public one. Then run the playbook. Without `nas_backup_key`, none of this is installed, which is how every other server stays as it was.
+
+Two things the playbook cannot do on a server it has already set up:
+
+- **`AllowUsers`.** `/etc/ssh/sshd_config.d/custom.conf` is written once and never again, because who may log in is decided on the server and not in a playbook. Add `nasbackup` to the line there by hand, then `systemctl reload ssh`.
+- **The NAS's own schedule**, which is set on the NAS. Keep it after the database dumps (`db_backup_time`, two o'clock) so it copies tonight's and not last night's.
 
 ## phpMyAdmin
 

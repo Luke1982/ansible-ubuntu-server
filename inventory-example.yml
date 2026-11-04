@@ -39,6 +39,16 @@ all:
       # Check /etc/resolv.conf on the server; 127.0.0.53 is systemd-resolved.
       dns_servers: 127.0.0.53
 
+      # --- Backups to the NAS (only if a NAS copies this server) --------------
+      # The public key the NAS (Synology Active Backup for Business) logs in
+      # with, as one line. With it, the playbook makes the nasbackup user, which
+      # may read /home and /var/vmail over rsync and do nothing else; without it,
+      # none of that is set up. Make the key pair on the server with
+      # "ssh-keygen -t ed25519 -f nas_ed25519 -C nasbackup@<hostname>", load the
+      # private key into the NAS, paste the .pub line here, and delete the
+      # private key from the server. See "Backups to the NAS" in the README.
+      # nas_backup_key: "ssh-ed25519 AAAA... nasbackup@web01.example.com"
+
       # --- How big this machine is (only when it reports it wrong) ------------
       # The number of cores and the amount of memory decide how many PHP
       # processes serve the sites, how much compiled PHP is held in memory and

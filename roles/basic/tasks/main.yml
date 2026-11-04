@@ -21,5 +21,8 @@
 
 - include_tasks: manage-users.yml
 - include_tasks: setup-ssh.yml
+# Only on a server whose inventory file holds the NAS's public key (nas_backup_key).
+- include_tasks: setup-nasbackup.yml
+  when: nas_backup_key | length > 0
 - include_tasks: setup-firewall.yml
 - include_tasks: setup-migratectl.yml

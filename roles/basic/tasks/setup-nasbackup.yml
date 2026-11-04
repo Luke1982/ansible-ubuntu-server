@@ -1,0 +1,71 @@
+---
+# The NAS copies this server's files every night: /home (the sites, and the database dumps in
+# /home/dbbackups) and /var/vmail (the mail). Synology's Active Backup for Business logs in over
+# SSH as nasbackup and runs rsync, and that is the only thing it can do.
+#
+# What its key can do, and what it can't:
+#   - it reads every file under /home and /var/vmail, including files only their owner can read
+#   - it sees nothing else: no /etc, no /root
+#   - it writes, changes and deletes nothing
+#   - it opens no shell, so nobody can log in with it normally
+#
+# How that is held to, in the four tasks below:
+#   1. a user with a locked password, so the key is the only way in
+#   2. the key is tied to a script (command= in authorized_keys): whatever the NAS asks to run,
+#      SSH runs that script instead, with the NAS's own request in SSH_ORIGINAL_COMMAND. The
+#      script passes on an "rsync --server --sender" (reading) and refuses everything else
+#   3. sudo lets the user start one script as root, and only with --server --sender in front.
+#      Root is needed because many mail and site files can only be read by their owner
+#   4. that root script locks rsync into a view of the filesystem holding only the folders
+#      above, read-only, with every root power taken away except reading any file
+#
+# Nothing here is done until nas_backup_key holds the NAS's public key -- put it in the server's
+# inventory file in private/. The private key belongs on the NAS and nowhere else; once it is
+# loaded there, it can be deleted from this server.
+
+- name: Create the user the NAS logs in as
+  user:
+    name: "{{ nas_backup_user }}"
+    comment: NAS backup (Synology Active Backup)
+    shell: /bin/bash
+    create_home: yes
+    # Locked: there is no password to guess, and the key below is the only way in.
+    password: "!"
+
+# Started by SSH in place of whatever the NAS asks for, and the only thing the key may do.
+- name: Install the script the NAS's key is tied to
+  copy:
+    src: nasbackup-rsync
+    dest: /usr/local/bin/nasbackup-rsync
+    owner: root
+    group: root
+    mode: 0755
+
+# Where rsync really runs: a filesystem view holding only /usr, /home and /var/vmail, read-only,
+# and no root power except reading any file.
+- name: Install the script that reads the files in a sandbox
+  copy:
+    src: nasbackup-rsync-root
+    dest: /usr/local/sbin/nasbackup-rsync-root
+    owner: root
+    group: root
+    mode: 0755
+
+- name: Let the user start that one script as root, and nothing else
+  copy:
+    dest: "/etc/sudoers.d/{{ nas_backup_user }}"
+    content: "{{ nas_backup_user }} ALL=(root) NOPASSWD: /usr/local/sbin/nasbackup-rsync-root --server --sender *\n"
+    owner: root
+    group: root
+    mode: 0440
+    validate: visudo -cf %s
+
+# "restrict" turns off everything else this key could do -- a terminal, port forwarding, agent
+# forwarding -- and "exclusive" means this is the only key that may be the NAS.
+- name: Give the NAS its key, tied to the rsync script
+  authorized_key:
+    user: "{{ nas_backup_user }}"
+    key: "{{ nas_backup_key }}"
+    key_options: 'restrict,command="/usr/local/bin/nasbackup-rsync"'
+    exclusive: yes
+    state: present

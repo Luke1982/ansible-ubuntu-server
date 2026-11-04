@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Runs as root via sudo for nasbackup. Starts "rsync --server --sender ..." in a private, read-only
+# filesystem view with only /usr, /home and /var/vmail, and without any root powers except
+# CAP_DAC_READ_SEARCH (read every file). Nothing outside those folders exists, nothing can be changed.
+# (bwrap can't be used: Ubuntu's AppArmor profile unpriv_bwrap takes all capabilities away.)
+#
+# Installed by Ansible (roles/basic/tasks/setup-nasbackup.yml). Changes made here are overwritten.
+# The folders the NAS may read are the ones in the "for d in" line below; a server that doesn't have
+# one of them (no mail, so no /var/vmail) leaves it out instead of failing the whole run.
+set -u
+if [[ ${1:-} != --server || ${2:-} != --sender ]]; then
+    logger -t nasbackup-rsync -p auth.warning "root helper refused: $*"
+    exit 1
+fi
+exec /usr/bin/unshare --mount --propagation private --pid --fork --ipc --uts --net -- /bin/bash -c '
+set -e
+R=/run/nasbackup-root
+mkdir -p $R
+mount -t tmpfs -o mode=755 nasbackup-root $R
+mkdir -p $R/usr $R/home $R/var/vmail $R/etc $R/dev $R/tmp
+ln -s usr/bin $R/bin; ln -s usr/lib $R/lib; ln -s usr/lib64 $R/lib64; ln -s usr/sbin $R/sbin
+cp /etc/passwd /etc/group /etc/nsswitch.conf $R/etc/
+touch $R/dev/null; mount --bind /dev/null $R/dev/null
+for d in /usr /home /var/vmail; do
+    [ -d "$d" ] || continue
+    mount --rbind "$d" "$R$d"
+    mount -o remount,bind,ro "$R$d"
+done
+mount -o remount,ro $R
+cd $R/home
+exec /usr/bin/chroot $R /usr/bin/setpriv --no-new-privs --bounding-set -all,+dac_read_search \
+    --inh-caps -all --reuid 0 -- /usr/bin/rsync "$@"
+' nasbackup-rsync "$@"

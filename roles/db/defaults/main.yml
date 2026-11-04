@@ -51,7 +51,10 @@ db_max_connections: 300
 db_backup_user: dbbackups
 db_backup_home: /home/dbbackups
 db_backup_keep_days: 14
-db_backup_time: "03:00:00"
+# At two, because the NAS starts copying /home at three: the dumps it finds there are then
+# tonight's, and not last night's half-written. Both hours are kept apart on purpose; the NAS's
+# own schedule is set on the NAS.
+db_backup_time: "02:00:00"
 
 # Email address for the Let's Encrypt account, used when certbot has no account
 # yet. Without it, the account has no address.

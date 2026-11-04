@@ -5,6 +5,11 @@ linux_groups:
 
 # Beside Ansible's own user, who is allowed over SSH on a server that has no custom.conf yet. The backup user is
 # here so the dumps it makes can be fetched from another machine; it can read every database, so treat its key
-# with the same care as the databases themselves.
-ssh_always_allowed:
-  - "{{ db_backup_user | default('dbbackups') }}"
+# with the same care as the databases themselves. The NAS's user is here too, on a server that has the NAS's key
+# (nas_backup_key): without a name on that line, sshd turns its nightly login away.
+#
+# The file is written once and never again, so on a server that already has one, a name added here changes
+# nothing: put it on the AllowUsers line there by hand, and "systemctl reload ssh".
+ssh_always_allowed: >-
+  {{ [db_backup_user | default('dbbackups')]
+     + ([nas_backup_user] if nas_backup_key | default('') else []) }}
