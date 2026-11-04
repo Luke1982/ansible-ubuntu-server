@@ -62,7 +62,7 @@ def install(user: User = None, title: Title = None, admin_user: AdminUser = None
     with open_session() as session:
         config = session.config
         site = find_site(config, ask_user(user))
-        docroot = config.docroot_of(site.user)
+        docroot = sites.docroot(config, site.user)
         foreign = wordpress.foreign_files(config, site.user)
         if foreign:
             shown = ", ".join(foreign[:5]) + (", …" if len(foreign) > 5 else "")
@@ -120,7 +120,7 @@ def adopt(user: User = None, database: Database = None, dump: Dump = None, repla
         owner = _adopting_user(config, ask_user(user))
         name = names.user_name(database or owner)
         if not wordpress.is_configured(config, owner):
-            raise CtlError(f"There is no wp-config.php in {config.docroot_of(owner)}.",
+            raise CtlError(f"There is no wp-config.php in {sites.docroot(config, owner)}.",
                            hint="Copy the site's files there first, wp-config.php included, and run this again.")
         if dump not in (None, "-") and not Path(dump).is_file():
             raise CtlError(f"There is no dump at {dump}.")
@@ -148,7 +148,7 @@ def adopt(user: User = None, database: Database = None, dump: Dump = None, repla
         ui.success(f"{'Replaced' if taken else 'Made'} the database {name}, with a MariaDB user of the same name.")
         if dump is not None:
             ui.success("Read the dump into it.")
-        ui.success(f"{config.docroot_of(owner) / 'wp-config.php'} now points at it.")
+        ui.success(f"{sites.docroot(config, owner) / 'wp-config.php'} now points at it.")
 
 
 def _adopting_user(config, user: str) -> str:
@@ -225,7 +225,7 @@ def _make_database(config, user: str) -> None:
     """The site's database and MariaDB user, and a wp-config.php that uses them."""
     taken = mariadb.database_taken(user)
     if taken:
-        raise CtlError(f"There is already {taken} in MariaDB, and no wp-config.php in {config.docroot_of(user)} to "
+        raise CtlError(f"There is already {taken} in MariaDB, and no wp-config.php in {sites.docroot(config, user)} to "
                        f"say it is this site's.",
                        hint="Remove it if it's left over, or put the site's wp-config.php in place, and run this "
                             "again.")
@@ -249,5 +249,5 @@ def _secure(config, user: str) -> None:
         wordpress.add_plugin(config, user, status)
     if wordpress.plugin_status(config, user) is not Plugin.ACTIVE:
         raise CtlError(f"WP fail2ban still isn't active on {user}.",
-                       hint=f"Look with: su - {user} -c 'wp --path={config.docroot_of(user)} plugin list'")
+                       hint=f"Look with: su - {user} -c 'wp --path={sites.docroot(config, user)} plugin list'")
     ui.success(f"WP fail2ban is active on {user}: fail2ban bans whoever guesses its passwords.")

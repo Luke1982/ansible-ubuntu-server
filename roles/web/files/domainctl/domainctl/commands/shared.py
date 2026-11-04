@@ -30,6 +30,13 @@ ExistingUser = Annotated[bool, typer.Option(
     "--existing-user", help="Use a Linux user that is already there instead of making one.")]
 Purge = Annotated[bool, typer.Option(
     "--purge", help="Also delete the Linux user and its home directory, with the site's files.")]
+Webroot = Annotated[Optional[str], typer.Option(
+    "--webroot", metavar="FOLDER", show_default=False,
+    help="The folder inside the home directory the site is served from, for an application whose pages are "
+         "deeper, like public_html/www/public. The site then gets a virtual host of its own. Leave it out to "
+         "keep what the site has; give the usual public_html/www to put it back in the shared template.")]
+NoWww = Annotated[bool, typer.Option(
+    "--no-www", help="Leave www.DOMAIN out: it isn't looked up, served, or put in the certificate.")]
 
 
 def group(description: str) -> typer.Typer:

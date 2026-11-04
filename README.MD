@@ -319,7 +319,7 @@ Web servers get `domainctl`, a command-line tool for the sites on the server. Ru
 
 | Command | What it does |
 |---------|-------------|
-| `domainctl add DOMAIN` | Sets a site up: its Linux user, directories, permissions, virtual host and certificate |
+| `domainctl add DOMAIN` | Sets a site up: its Linux user, directories, permissions, virtual host and certificate. `--webroot FOLDER` serves it from a folder of its own (below), `--no-www` leaves `www.DOMAIN` out |
 | `domainctl list` | The sites with their domain, user and certificate |
 | `domainctl state USER` | One word for a program to read: `served`, `made` (its user and directories are there, waiting for the domain to point here) or `absent` |
 | `domainctl check [USER]` | Whether a site's names, permissions and certificate are in order |
@@ -339,7 +339,7 @@ user: `su - USER -c 'wp --path=public_html/www plugin update --all'`.
 
 ### How a site is put together
 
-Every site is one member of a single OpenLiteSpeed template, `conf/templates/webhosting.conf`, which the playbook writes from `roles/web/templates/webhosting.conf.j2`. The member's name is the site's Linux user, and the template finds everything by it: the home directory it serves (`/home/$VH_NAME/public_html/www`), the logs it writes (`/home/$VH_NAME/logs/`) and the certificate it presents (`/etc/letsencrypt/live/$VH_NAME/`). So a site's certificate is named after its user, not its domain.
+Every site is one member of a single OpenLiteSpeed template, `conf/templates/webhosting.conf`, which the playbook writes from `roles/web/templates/webhosting.conf.j2` -- except a site served from a folder of its own, which has a virtual host to itself ([below](#a-site-served-from-a-folder-of-its-own)). The member's name is the site's Linux user, and the template finds everything by it: the home directory it serves (`/home/$VH_NAME/public_html/www`), the logs it writes (`/home/$VH_NAME/logs/`) and the certificate it presents (`/etc/letsencrypt/live/$VH_NAME/`). So a site's certificate is named after its user, not its domain.
 
 The block in `httpd_config.conf` is the one named in `web_template` (`webhosting`), or one already there whose name differs from it only in case: OpenLiteSpeed's own is called `Webhosting`, and a server whose sites were set up in WebAdmin has its members in that. `domainctl` manages the block that holds the sites, rather than adding a second one beside it, and says so when a server has both. A site that was made by hand therefore shows up in `domainctl list` as it is, with its user, its home directory and its certificate; `domainctl add DOMAIN --existing-user` gives a site to a Linux user that is already there.
 
@@ -358,6 +358,38 @@ setfacl -m u:nobody:rwx -m d:u:nobody:rwx /home/USER/public_html/www/wp-content/
 ```
 
 `domainctl check` and `domainctl sync` compare the ACL entries above and put back any that went missing; entries you added yourself are left alone.
+
+### A site served from a folder of its own
+
+A Laravel or Symfony application keeps its pages in a folder of its own, `public`, with the rest of the
+application beside it where nobody may fetch it. Every member of the template is served from the same place
+inside its home directory, and OpenLiteSpeed lets a member set only its domain, its aliases and its root
+directory -- never its own document root. So such a site cannot be a member:
+
+```bash
+domainctl add app.example.nl --webroot public_html/www/public
+```
+
+gives it a virtual host of its own instead, named after its Linux user, with its settings in
+`conf/vhosts/USER/vhconf.conf`. WebAdmin calls this instantiating a member, and shows the site under Virtual
+Hosts rather than under the template. domainctl writes the same settings the template gives every other site --
+the same logs, the same `.htaccess`, the same redirect to HTTPS, Let's Encrypt's challenges from a context of
+their own -- with that document root. Everything else about the site is unchanged: the same Linux user, the
+same home directory, the same certificate named after the user, and `list`, `doctor`, `delete` and `sync` treat
+it like any other site. The note on the virtual host says where it is served from, which is where domainctl
+reads it back from.
+
+The folder it serves is readable by `nobody` and the folders above it are only walked through, as always, so
+`.env`, `vendor` and the rest of the application are not served. What the application has to write -- Laravel's
+`storage` and `bootstrap/cache` -- is opened up by hand, the same way as a CMS's uploads folder above.
+
+`--webroot public_html/www`, the usual place, puts a site back in the shared template and takes its own virtual
+host away again. Leaving `--webroot` out keeps whatever the site has.
+
+`--no-www` is for a site that has no `www` name: it isn't looked up, isn't served, and isn't put in the
+certificate. A `www` already in the certificate is taken out of it, because certbot proves every name in a
+certificate when it renews it, and a name this server doesn't answer for any more would fail that renewal two
+months on. Take its DNS record away as well, or the next run without `--no-www` offers to serve it again.
 
 ### What `domainctl add` does
 

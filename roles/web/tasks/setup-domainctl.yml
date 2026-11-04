@@ -129,6 +129,8 @@
       ols_root: "{{ ols_root }}"
       ols_user: "{{ ols_config_user }}"
       web_user: "{{ web_ols_user }}"
+      admin_email: "{{ web_admin_email }}"
+      log_level: "{{ web_log_level }}"
       template: "{{ web_template }}"
       template_file: "{{ web_template_file }}"
       letsencrypt_dir: "{{ letsencrypt_dir }}"

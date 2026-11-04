@@ -14,18 +14,21 @@ def server(monkeypatch):
     class Server:
         restarts = 0
         runs = []
+        forced = []
         fails = None
 
         def restart(self, root):
             self.restarts += 1
 
-        def obtain(self, letsencrypt_dir, email, cert_name, webroot, names, dry_run=False):
+        def obtain(self, letsencrypt_dir, email, cert_name, webroot, names, dry_run=False, force=False):
             self.runs.append((cert_name, tuple(names), dry_run, str(webroot)))
+            self.forced.append(force)
             if self.fails and (self.fails == "both" or (self.fails == "dry") == dry_run):
                 raise CtlError("Let's Encrypt refused it.")
 
     server = Server()
     server.runs = []
+    server.forced = []
     monkeypatch.setattr(openlitespeed, "restart", server.restart)
     monkeypatch.setattr(certbot, "obtain", server.obtain)
     return server

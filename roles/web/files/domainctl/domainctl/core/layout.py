@@ -24,19 +24,23 @@ PLACEHOLDER = f"""<!doctype html>
 OWN_INDEX = ("index.php", "index.htm", "index.xhtml", "default.php")
 
 
-def create(config: Config, user: str, domain: str) -> None:
+def create(config: Config, user: str, domain: str, webroot: str = "") -> None:
     """Creates the web root, its challenge folder and the log directory, with a placeholder page.
 
-    The challenge folder is made straight away because the template serves it from a context of its own, and
+    The challenge folder is made straight away because the site serves it from a context of its own, and
     OpenLiteSpeed complains about a context whose directory isn't there. It inherits the web root's permissions,
     so it needs no entries of its own.
+
+    The web root is the one the template serves unless the site has one of its own, like the public folder of
+    an application: that one is made instead, and the directories above it on the way are made with it.
     """
-    for path in (config.docroot_of(user), serving.challenge_dir(config.docroot_of(user)), config.logs_of(user)):
+    docroot = config.docroot_of(user, webroot)
+    for path in (docroot, serving.challenge_dir(docroot), config.logs_of(user)):
         path.mkdir(parents=True, exist_ok=True)
         _own(path, user)
-    if remove_placeholder(config, user):
+    if remove_placeholder(config, user, webroot):
         return
-    index = config.docroot_of(user) / "index.html"
+    index = docroot / "index.html"
     if not index.exists():
         index.write_text(PLACEHOLDER.format(domain=domain))
         _own(index, user)
@@ -48,13 +52,13 @@ def made_by_domainctl(config: Config, user: str) -> bool:
     return config.docroot_of(user).is_dir() and config.logs_of(user).is_dir()
 
 
-def remove_placeholder(config: Config, user: str) -> bool:
+def remove_placeholder(config: Config, user: str, webroot: str = "") -> bool:
     """Takes the placeholder away once the site has an index of its own, and says whether the site has one.
 
     OpenLiteSpeed serves index.html before index.php, so a placeholder left in place would answer for a
     WordPress site that has just been uploaded.
     """
-    docroot = config.docroot_of(user)
+    docroot = config.docroot_of(user, webroot)
     if not any((docroot / name).exists() for name in OWN_INDEX):
         return False
     index = docroot / "index.html"
@@ -68,35 +72,37 @@ def remove_placeholder(config: Config, user: str) -> bool:
     return True
 
 
-def permissions(config: Config, user: str) -> dict[Path, dict[str, str]]:
+def permissions(config: Config, user: str, webroot: str = "") -> dict[Path, dict[str, str]]:
     """The ACL entries each of the site's paths should have, in the order they are applied.
 
     The two directories on the way in only get the right to be walked through; the web root is readable and the
     log directory writable.
     """
     home = config.home(user)
+    docroot = config.docroot_of(user, webroot)
     return {
         home: acl.traversable_by(config.web_user),
-        **{parent: acl.traversable_by(config.web_user) for parent in _between(home, config.docroot_of(user))},
-        config.docroot_of(user): acl.readable_by(config.web_user),
+        **{parent: acl.traversable_by(config.web_user) for parent in _between(home, docroot)},
+        docroot: acl.readable_by(config.web_user),
         config.logs_of(user): acl.writable_by(config.web_user),
     }
 
 
-def apply_permissions(config: Config, user: str) -> bool:
+def apply_permissions(config: Config, user: str, webroot: str = "") -> bool:
     """Sets the ACL entries that aren't right yet. Returns whether anything changed."""
-    return any([acl.apply(path, entries) for path, entries in permissions(config, user).items()])
+    return any([acl.apply(path, entries) for path, entries in permissions(config, user, webroot).items()])
 
 
-def missing_permissions(config: Config, user: str) -> dict[Path, dict[str, str]]:
+def missing_permissions(config: Config, user: str, webroot: str = "") -> dict[Path, dict[str, str]]:
     """The entries that aren't right, per path, for the check command."""
-    found = {path: acl.missing(path, entries) for path, entries in permissions(config, user).items()}
+    found = {path: acl.missing(path, entries) for path, entries in permissions(config, user, webroot).items()}
     return {path: entries for path, entries in found.items() if entries}
 
 
 def _between(home: Path, docroot: Path) -> list[Path]:
     """The directories under the home directory on the way to the web root, nearest first: public_html for the
-    usual public_html/www. The web root itself gets its own entries, so it isn't one of them."""
+    usual public_html/www, and public_html and public_html/www for a site served from a folder deeper. The web
+    root itself gets its own entries, so it isn't one of them."""
     return list(reversed(docroot.parents))[len(home.parts):]
 
 

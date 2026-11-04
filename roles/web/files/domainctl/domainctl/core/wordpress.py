@@ -19,6 +19,7 @@ from serverctl import acl, system
 from serverctl.errors import CtlError
 
 from ..config import Config
+from . import sites
 
 WP = "/usr/local/bin/wp"
 PLUGIN = "wp-fail2ban"
@@ -35,16 +36,16 @@ class Plugin(Enum):
 
 
 def is_wordpress(config: Config, user: str) -> bool:
-    return (config.docroot_of(user) / "wp-includes" / "version.php").is_file()
+    return (sites.docroot(config, user) / "wp-includes" / "version.php").is_file()
 
 
 def is_configured(config: Config, user: str) -> bool:
-    return (config.docroot_of(user) / "wp-config.php").is_file()
+    return (sites.docroot(config, user) / "wp-config.php").is_file()
 
 
 def foreign_files(config: Config, user: str) -> list[str]:
     """What is in the web root besides domainctl's own placeholder and challenge folder, when it isn't WordPress."""
-    docroot = config.docroot_of(user)
+    docroot = sites.docroot(config, user)
     if is_wordpress(config, user) or not docroot.is_dir():
         return []
     return sorted(path.name for path in docroot.iterdir() if path.name not in PLACEHOLDER_FILES)
@@ -56,7 +57,7 @@ def wp(config: Config, user: str, *args: str, stdin: str | None = None) -> str:
     on the command line."""
     return system.run("runuser", "-u", user, "--", "env", f"--chdir={config.home(user)}",
                       f"HOME={config.home(user)}", WP,
-                      f"--path={config.docroot_of(user)}", *args, stdin=stdin)
+                      f"--path={sites.docroot(config, user)}", *args, stdin=stdin)
 
 
 def download(config: Config, user: str, locale: str) -> None:
@@ -79,7 +80,7 @@ def _php_string(value: str) -> str:
 
 
 def _rewritten_config(config: Config, user: str, database: str, db_user: str, password: str) -> tuple[Path, str]:
-    path = config.docroot_of(user) / "wp-config.php"
+    path = sites.docroot(config, user) / "wp-config.php"
     try:
         text = path.read_text()
     except OSError as problem:
@@ -147,7 +148,7 @@ def add_plugin(config: Config, user: str, status: Plugin) -> None:
 
 def open_uploads(config: Config, user: str) -> bool:
     """Lets OpenLiteSpeed write WordPress's uploads, as the site's user. Returns whether anything changed."""
-    uploads = config.docroot_of(user) / "wp-content" / "uploads"
+    uploads = sites.docroot(config, user) / "wp-content" / "uploads"
     if not uploads.is_dir():
         system.run("runuser", "-u", user, "--", "mkdir", "-p", str(uploads))
     return acl.apply(uploads, acl.shared_with(config.web_user, user))

@@ -146,6 +146,23 @@ def test_the_lock_is_taken_once_and_given_back_once(tmp_path):
         os.close(other)
 
 
+def test_a_listener_can_give_one_virtual_host_several_names():
+    """A site with www as well as its own name is one virtual host answering for both."""
+    lines = openlitespeed.with_map(CONFIG.splitlines(), "http", "app", "app.example.nl", "www.app.example.nl")
+
+    assert openlitespeed.maps(lines, "http")["app"] == ["app.example.nl", "www.app.example.nl"]
+    assert openlitespeed.with_map(lines, "http", "app", "app.example.nl", "www.app.example.nl") == lines
+
+
+def test_the_names_a_listener_gives_a_virtual_host_are_replaced_whole():
+    lines = openlitespeed.with_map(CONFIG.splitlines(), "http", "app", "app.example.nl", "www.app.example.nl")
+
+    lines = openlitespeed.with_map(lines, "http", "app", "app.example.nl")
+
+    assert openlitespeed.maps(lines, "http") == {"webmail.example.nl": ["webmail.example.nl"],
+                                                 "app": ["app.example.nl"]}
+
+
 MAILCTL_COPY = Path(__file__).resolve().parents[2] / "roles/mail/files/mailctl/mailctl/core/openlitespeed.py"
 
 

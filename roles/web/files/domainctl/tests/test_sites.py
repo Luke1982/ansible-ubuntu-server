@@ -100,3 +100,87 @@ def test_listing_sites_works_without_any_listener(config):
     path = config.ols_root / "conf" / "httpd_config.conf"
     path.write_text(path.read_text().replace("*:80", "*:8080").replace("*:443", "*:8443"))
     assert [site.user for site in sites.list_sites(config)] == ["example"]
+
+
+def test_a_site_with_a_web_root_of_its_own_gets_a_virtual_host_of_its_own(config):
+    site = Site("app", "app.example.nl", (), "public_html/www/public")
+
+    assert sites.save(config, site) is True
+
+    assert sites.list_sites(config) == [site]
+    lines = sites.read(config)
+    assert openlitespeed.virtual_hosts(lines)["app"] == f"{sites.OWN_NOTE}public_html/www/public"
+    assert openlitespeed.members(lines, "webhosting") == []
+    assert openlitespeed.maps(lines, "http") == {"app": ["app.example.nl"]}
+    assert openlitespeed.maps(lines, "https") == {"app": ["app.example.nl"]}
+    settings = (config.ols_root / "conf" / "vhosts" / "app" / "vhconf.conf").read_text()
+    assert "docRoot                 $VH_ROOT/public_html/www/public" in settings
+    assert "/.well-known/acme-challenge/" in settings
+
+
+def test_saving_a_site_with_its_own_web_root_again_changes_nothing(config):
+    site = Site("app", "app.example.nl", ("www.app.example.nl",), "public_html/www/public")
+    sites.save(config, site)
+
+    assert sites.save(config, site) is False
+
+
+def test_the_listeners_give_a_site_with_its_own_web_root_all_its_names(config):
+    sites.save(config, Site("app", "app.example.nl", ("www.app.example.nl",), "public_html/www/public"))
+
+    assert openlitespeed.maps(sites.read(config), "http") == {"app": ["app.example.nl", "www.app.example.nl"]}
+    assert sites.find(config, "app").aliases == ("www.app.example.nl",)
+
+
+def test_giving_a_site_a_web_root_takes_it_out_of_the_template(config):
+    sites.save(config, Site("app", "app.example.nl"))
+
+    assert sites.save(config, Site("app", "app.example.nl", (), "public_html/www/public")) is True
+
+    lines = sites.read(config)
+    assert openlitespeed.members(lines, "webhosting") == []
+    assert "app" in openlitespeed.virtual_hosts(lines)
+
+
+def test_taking_the_web_root_away_again_puts_the_site_back_in_the_template(config):
+    sites.save(config, Site("app", "app.example.nl", (), "public_html/www/public"))
+
+    assert sites.save(config, Site("app", "app.example.nl")) is True
+
+    lines = sites.read(config)
+    assert openlitespeed.members(lines, "webhosting") == ["app"]
+    assert "app" not in openlitespeed.virtual_hosts(lines)
+    assert openlitespeed.maps(lines, "http") == {}
+    assert not (config.ols_root / "conf" / "vhosts" / "app" / "vhconf.conf").exists()
+
+
+def test_removing_a_site_with_its_own_web_root_takes_the_virtual_host_and_its_settings(config):
+    sites.save(config, Site("app", "app.example.nl", (), "public_html/www/public"))
+
+    assert sites.remove(config, "app") is True
+
+    lines = sites.read(config)
+    assert sites.list_sites(config) == []
+    assert openlitespeed.virtual_hosts(lines) == {}
+    assert openlitespeed.maps(lines, "https") == {}
+    assert not (config.ols_root / "conf" / "vhosts" / "app").exists()
+    assert sites.remove(config, "app") is False
+
+
+def test_a_virtual_host_someone_else_made_under_the_site_s_name_is_left_alone(config):
+    path = config.ols_root / "conf" / "httpd_config.conf"
+    path.write_text(path.read_text() + "\nvirtualHost app {\n  vhRoot /var/www/app/\n}\n")
+    lines = sites.read(config)
+
+    problem = sites.taken_by_another(config, ("app.example.nl",), "app", lines)
+
+    assert "didn't make" in problem
+
+
+def test_the_web_root_says_where_a_site_s_pages_are(config):
+    sites.save(config, Site("example", "example.nl"))
+    sites.save(config, Site("app", "app.example.nl", (), "public_html/www/public"))
+
+    assert sites.docroot(config, "example") == config.home("example") / "public_html/www"
+    assert sites.docroot(config, "app") == config.home("app") / "public_html/www/public"
+    assert sites.docroot(config, "nobody") == config.home("nobody") / "public_html/www"

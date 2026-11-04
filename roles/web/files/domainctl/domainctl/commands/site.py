@@ -1,6 +1,7 @@
 """domainctl's commands for the sites themselves: add, list, delete, check and sync."""
 
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 
 from serverctl import certbot, dnsnames, names, openlitespeed, serving, ui, users
 from serverctl.dns import Check, Status
@@ -13,26 +14,32 @@ from ..core.sites import Site
 from ..session import Session, open_session
 from . import dns
 from .shared import (
-    Domain, ExistingUser, NoDns, Purge, SiteName, User, UserFilter, UserOption, Yes, ask_domain, ask_site, ask_user,
-    no_site, www,
+    Domain, ExistingUser, NoDns, NoWww, Purge, SiteName, User, UserFilter, UserOption, Webroot, Yes, ask_domain,
+    ask_site, ask_user, no_site, www,
 )
 
 
-def add(domain: Domain = None, user: UserOption = None, no_dns: NoDns = False,
-        existing_user: ExistingUser = False, yes: Yes = False) -> None:
+def add(domain: Domain = None, user: UserOption = None, webroot: Webroot = None, no_www: NoWww = False,
+        no_dns: NoDns = False, existing_user: ExistingUser = False, yes: Yes = False) -> None:
     """Set up a site for a domain: a Linux user, its directories, a virtual host and a certificate.
 
     The user and its directories are made whatever the DNS says, so the site's files can be put there before the
     domain is moved. The virtual host and the certificate need the domain to point here, since Let's Encrypt
     checks that; www is included when it points here too, and left out when it doesn't, because one name that
     doesn't resolve here would fail the whole request. A name with no record at all is offered to TransIP, if the
-    domain is in that account.
+    domain is in that account. --no-www leaves www out altogether.
+
+    A site is served from public_html/www in its home directory. An application whose pages are in a folder of
+    its own, like Laravel's public, is given that folder with --webroot, and gets a virtual host of its own
+    instead of a place in the template every other site shares.
 
     Run it again for the same domain to pick up where it stopped: after the DNS is moved, or after fixing a
     record. It takes over the user and directories it made itself.
 
     [dim]Example:[/] domainctl add example.nl
     [dim]Another user name:[/] domainctl add example.nl --user examplesite
+    [dim]An application in a folder of its own:[/] domainctl add app.example.nl --webroot public_html/www/public
+    [dim]Without www:[/] domainctl add app.example.nl --no-www
     """
     with open_session() as session:
         config = session.config
@@ -42,36 +49,61 @@ def add(domain: Domain = None, user: UserOption = None, no_dns: NoDns = False,
         if existing and existing.domain != domain:
             raise CtlError(f"The site {name} already serves {existing.domain}.",
                            hint=f"Choose another user name with --user, or remove it with: domainctl delete {name}")
-        _reserve(config, Site(name, domain), existing is not None, existing_user)
-        _make_home(config, Site(name, domain), existing_user)
-        checked = _check_names(session, domain, no_dns, yes)
+        root = _webroot(config, name, webroot, existing)
+        _reserve(config, Site(name, domain, webroot=root), existing is not None, existing_user)
+        _make_home(config, Site(name, domain, webroot=root), existing_user)
+        checked = _check_names(session, domain, no_dns, yes, no_www)
         if not checked[0].ready:
             # The domain still points somewhere else, so Let's Encrypt cannot check it and there is no real
             # certificate yet. The site is made all the same, with one signed here: nothing can reach it over
             # that name until the DNS moves, and this way it is a whole site on this server rather than a
             # Linux user and some directories that nothing knows about.
-            site = Site(name, domain)
+            site = Site(name, domain, webroot=root)
             if not certificates.exists(config, name) or certbot.made_here(config.letsencrypt_dir, name):
                 certbot.sign_here(config.letsencrypt_dir, name, [domain])
             if sites.save(config, site):
                 openlitespeed.restart(config.ols_root)
             ui.warn(f"{checked[0].detail} Let's Encrypt checks the same thing, so there is no certificate from "
                     f"it yet.")
-            ui.success(f"{domain} is set up and served from {config.docroot_of(name)}, with a certificate "
+            ui.success(f"{domain} is set up and {_served_from(config, site)}, with a certificate "
                        f"signed here that no browser trusts.")
-            ui.note(f"Put the site's files in {config.docroot_of(name)}. Point {domain} at "
+            ui.note(f"Put the site's files in {config.docroot_of(name, root)}. Point {domain} at "
                     f"{_addresses(session)} and run the same command again: it then gets its real "
-                    f"certificate and takes www along.")
+                    f"certificate{'' if no_www else ' and takes www along'}.")
             return
-        site = Site(name, domain, tuple(found.name for found in checked[1:] if found.ready))
+        site = Site(name, domain, tuple(found.name for found in checked[1:] if found.ready), root)
         if sites.save(config, site):
             openlitespeed.restart(config.ols_root)
-            ui.success(f"{domain} is served from {config.docroot_of(name)}.")
+            ui.success(f"{domain} is {_served_from(config, site)}.")
         _certify(config, site, checked[0])
 
 
-def repair(domain: Domain = None, user: UserOption = None, no_dns: NoDns = False,
-           existing_user: ExistingUser = False, yes: Yes = False) -> None:
+def _webroot(config, user: str, given: str | None, existing: Site | None) -> str:
+    """The folder inside the home directory the site is served from, as the site keeps it: empty for the one
+    the template serves, which is what a site has unless it was given a web root of its own."""
+    if given is None:
+        return existing.webroot if existing else ""
+    wanted = given.strip()
+    home = f"{config.home(user)}/"
+    if wanted.startswith(home):  # the whole path, as it is printed everywhere
+        wanted = wanted[len(home):]
+    wanted = wanted.strip("/")
+    if wanted in ("", config.docroot):
+        return ""
+    if wanted.startswith("/") or ".." in PurePosixPath(wanted).parts:
+        raise CtlError(f"--webroot takes a folder inside {config.home(user)}, not {given}.",
+                       hint=f"Like this: --webroot {config.docroot}/public")
+    return wanted
+
+
+def _served_from(config, site: Site) -> str:
+    """How to say where a site is served from, and by what."""
+    where = f"served from {config.docroot_of(site.user, site.webroot)}"
+    return f"{where}, by a virtual host of its own" if site.own_host else where
+
+
+def repair(domain: Domain = None, user: UserOption = None, webroot: Webroot = None, no_www: NoWww = False,
+           no_dns: NoDns = False, existing_user: ExistingUser = False, yes: Yes = False) -> None:
     """Finish or repair a site: whatever it is missing.
 
     The same work as "domainctl add", which only ever does what isn't there yet: the Linux user and its
@@ -82,8 +114,9 @@ def repair(domain: Domain = None, user: UserOption = None, no_dns: NoDns = False
 
     [dim]Example:[/] domainctl repair example.nl
     [dim]By the site's name:[/] domainctl repair example
+    [dim]Serve it from another folder:[/] domainctl repair app.example.nl --webroot public_html/www/public
     """
-    add(_domain_of(domain), user, no_dns, existing_user, yes)
+    add(_domain_of(domain), user, webroot, no_www, no_dns, existing_user, yes)
 
 
 def _domain_of(given: str | None) -> str | None:
@@ -301,13 +334,13 @@ def sync() -> None:
                 ui.note(problem.hint)
         _warn_about_twins(config)
         for site in sites.list_sites(config):
-            if layout.apply_permissions(config, site.user):
+            if layout.apply_permissions(config, site.user, site.webroot):
                 ui.success(f"Corrected the file permissions of {site.user}.")
                 changed = True
             # A site whose own files have arrived since keeps its placeholder in front of them otherwise.
-            if (config.docroot_of(site.user) / "index.html").exists() and \
-                    layout.remove_placeholder(config, site.user) and \
-                    not (config.docroot_of(site.user) / "index.html").exists():
+            if (config.docroot_of(site.user, site.webroot) / "index.html").exists() and \
+                    layout.remove_placeholder(config, site.user, site.webroot) and \
+                    not (config.docroot_of(site.user, site.webroot) / "index.html").exists():
                 ui.success(f"Took the placeholder page away from {site.user}: its own index is there now.")
                 changed = True
         if changed:
@@ -349,16 +382,20 @@ def _free_name(config, domain: str, existing_user: bool) -> str:
     return names.user_name(name)
 
 
-def _check_names(session: Session, domain: str, no_dns: bool, yes: bool) -> list[NameCheck]:
-    """Where the domain and its www name point. The domain has to point here; www may be left out."""
-    found = [_resolve(session, name, no_dns, yes) for name in (domain, www(domain))]
+def _check_names(session: Session, domain: str, no_dns: bool, yes: bool, no_www: bool = False) -> list[NameCheck]:
+    """Where the domain and its www name point. The domain has to point here; www may be left out, and is left
+    out altogether for a site that doesn't want it."""
+    wanted = (domain,) if no_www else (domain, www(domain))
+    found = [_resolve(session, name, no_dns, yes) for name in wanted]
     if found[0].state is State.UNKNOWN:
         raise CtlError(f"Can't tell where {domain} points: {found[0].detail}",
                        hint="Try again when DNS answers.")
     if not found[0].ready:
         return found  # the caller sets up what doesn't depend on the DNS and says what is left to do
     ui.success(f"{domain} points to this server.")
-    if found[1].ready:
+    if no_www:
+        ui.note(f"{www(domain)} is left out, as asked.")
+    elif found[1].ready:
         ui.success(f"{www(domain)} points here too, so it is included.")
     else:
         ui.warn(f"{found[1].detail} It is left out; run the command again once it points here.")
@@ -437,31 +474,40 @@ def _make_home(config, site: Site, existing_user: bool) -> None:
     if not users.exists(site.user):
         users.create(site.user, config.home(site.user), config.user_shell)
         ui.success(f"Made the user {site.user} with {config.home(site.user)}, without a password.")
-    had_placeholder = (config.docroot_of(site.user) / "index.html").exists()
-    layout.create(config, site.user, site.domain)
-    if had_placeholder and not (config.docroot_of(site.user) / "index.html").exists():
+    docroot = config.docroot_of(site.user, site.webroot)
+    had_placeholder = (docroot / "index.html").exists()
+    layout.create(config, site.user, site.domain, site.webroot)
+    if had_placeholder and not (docroot / "index.html").exists():
         ui.success(f"Took the placeholder page away: {site.domain} has an index of its own now.")
-    if layout.apply_permissions(config, site.user):
-        ui.success(f"{config.web_user} may read {config.docroot_of(site.user)} and write in "
-                   f"{config.logs_of(site.user)}.")
+    if layout.apply_permissions(config, site.user, site.webroot):
+        ui.success(f"{config.web_user} may read {docroot} and write in {config.logs_of(site.user)}.")
 
 
 def _certify(config, site: Site, domain_check: NameCheck) -> None:
     """Gets the site's certificate, once OpenLiteSpeed really answers for it on port 80."""
+    dropped = []
     if certificates.exists(config, site.user):
-        missing = [name for name in site.names
-                   if not certbot.covers(certbot.read(certificates.path(config, site.user)), name)]
-        if not missing:
+        found = certbot.read(certificates.path(config, site.user))
+        missing = [name for name in site.names if not certbot.covers(found, name)]
+        # A name the site doesn't serve any more has to come off the certificate: certbot proves every name in
+        # it when it renews, and nothing here answers for that one, so every renewal from now on would fail.
+        dropped = [name for name in found.names if name not in site.names]
+        if not missing and not dropped:
             ui.success(f"The certificate already covers {', '.join(site.names)}.")
             return
-        ui.note(f"The certificate doesn't cover {', '.join(missing)} yet, so it is extended.")
+        if missing:
+            ui.note(f"The certificate doesn't cover {', '.join(missing)} yet, so it is extended.")
+        if dropped:
+            ui.note(f"The certificate still covers {', '.join(dropped)}, which the site doesn't serve any "
+                    f"more, so a new one is asked for without it.")
     with ui.console.status("Checking that OpenLiteSpeed serves the site…"):
-        unanswered = serving.wait_until_served(config.docroot_of(site.user), site.domain, set(domain_check.addresses))
+        unanswered = serving.wait_until_served(config.docroot_of(site.user, site.webroot), site.domain,
+                                               set(domain_check.addresses))
     for line in unanswered:
         ui.note(line)
     try:
         with ui.console.status("Asking Let's Encrypt for a certificate…"):
-            certificates.obtain(config, site)
+            certificates.obtain(config, site, force=bool(dropped))
     except CtlError as problem:
         ui.warn(problem.message)
         ui.note(f"The site is up over HTTP. Fix the reason above and run: domainctl repair {site.domain}")
@@ -485,7 +531,10 @@ def _checks(session: Session, site: Site, now: datetime):
         found = dnsnames.check(session.resolver, name, session.server_ips)
         status = Status.OK if found.ready else (Status.WARN if found.state is State.UNKNOWN else Status.FAIL)
         yield Check(name, status, f"{name} points to this server." if found.ready else found.detail)
-    wrong = layout.missing_permissions(config, site.user)
+    if site.own_host:
+        yield Check("Web root", Status.OK,
+                    f"Served from {config.docroot_of(site.user, site.webroot)}, by a virtual host of its own.")
+    wrong = layout.missing_permissions(config, site.user, site.webroot)
     if wrong:
         paths = ", ".join(str(path) for path in wrong)
         yield Check("Permissions", Status.FAIL,

@@ -161,13 +161,17 @@ def run(letsencrypt_dir: Path, email: str, *args: str) -> None:
 
 
 def obtain(letsencrypt_dir: Path, email: str, cert_name: str, webroot: Path, names: Sequence[str],
-           dry_run: bool = False) -> None:
+           dry_run: bool = False, force: bool = False) -> None:
     """Gets or extends a certificate, proving each name with a file under the web root. Raises CtlError with what
-    Let's Encrypt said when it refuses."""
+    Let's Encrypt said when it refuses.
+
+    force asks for a certificate for exactly these names, even when the one there already covers them: that is
+    how a name that has to come off is taken off, since keeping it would fail every renewal from now on.
+    """
     domains = [argument for name in names for argument in ("--domains", name)]
     # --cert-name fixes the directory under live/, so it stays the same when the first name changes.
     arguments = ["certonly", "--webroot", "--webroot-path", str(webroot), "--cert-name", cert_name, *domains,
-                 "--keep-until-expiring", "--expand"]
+                 *(["--force-renewal"] if force else ["--keep-until-expiring"]), "--expand"]
     try:
         run(letsencrypt_dir, email, *arguments, *(["--dry-run"] if dry_run else []))
     except CtlError as failure:

@@ -481,3 +481,105 @@ def test_the_transip_login_is_asked_for_before_the_spinner_starts(server, monkey
 
     # Once per name that has no record yet, which is what matters: not one of them underneath a spinner.
     assert asked_while and not any(asked_while), "the login was asked for underneath a spinner"
+
+
+def test_add_with_a_web_root_of_its_own_serves_the_site_from_there(server, monkeypatch):
+    monkeypatch.setattr(certbot, "obtain", lambda *args, **kwargs: None)
+
+    result = run("add", "example.nl", "--webroot", "public_html/www/public")
+
+    assert result.exit_code == 0, result.output
+    assert sites.list_sites(server) == [Site("example", "example.nl", ("www.example.nl",), "public_html/www/public")]
+    assert (server.home("example") / "public_html" / "www" / "public").is_dir()
+    assert "by a virtual host of its own" in result.output
+    assert openlitespeed.maps(sites.read(server), "http") == {"example": ["example.nl", "www.example.nl"]}
+
+
+def test_the_whole_path_may_be_given_as_the_web_root(server, monkeypatch):
+    monkeypatch.setattr(certbot, "obtain", lambda *args, **kwargs: None)
+
+    run("add", "example.nl", "--webroot", str(server.home("example") / "public_html/www/public"))
+
+    assert sites.find(server, "example").webroot == "public_html/www/public"
+
+
+def test_a_web_root_outside_the_home_directory_is_refused(server):
+    result = run("add", "example.nl", "--webroot", "../../etc")
+
+    assert result.exit_code == 1
+    assert "inside" in result.output
+
+
+def test_repair_keeps_the_web_root_the_site_has(server, monkeypatch):
+    monkeypatch.setattr(certbot, "obtain", lambda *args, **kwargs: None)
+    run("add", "example.nl", "--webroot", "public_html/www/public")
+
+    result = run("repair", "example.nl")
+
+    assert result.exit_code == 0, result.output
+    assert sites.find(server, "example").webroot == "public_html/www/public"
+
+
+def test_repair_puts_a_site_back_in_the_template_when_it_is_given_the_usual_web_root(server, monkeypatch):
+    monkeypatch.setattr(certbot, "obtain", lambda *args, **kwargs: None)
+    run("add", "example.nl", "--webroot", "public_html/www/public")
+
+    result = run("repair", "example.nl", "--webroot", "public_html/www")
+
+    assert result.exit_code == 0, result.output
+    assert sites.find(server, "example").webroot == ""
+    assert openlitespeed.members(sites.read(server), "webhosting") == ["example"]
+
+
+def test_add_with_no_www_leaves_www_out_of_the_site_and_the_certificate(server, monkeypatch):
+    obtained = []
+    monkeypatch.setattr(certbot, "obtain",
+                        lambda *args, **kwargs: obtained.append((tuple(args[4]), kwargs.get("force"))))
+
+    result = run("add", "example.nl", "--no-www")
+
+    assert result.exit_code == 0, result.output
+    assert sites.find(server, "example").aliases == ()
+    assert obtained == [(("example.nl",), False)] * 2
+    assert "www.example.nl is left out, as asked" in result.output
+
+
+def test_repair_with_no_www_asks_for_a_certificate_without_it(server, monkeypatch):
+    """The name stays in the certificate otherwise, and certbot proves every name in it: the next renewal, two
+    months on, would fail for a site nobody is watching."""
+    monkeypatch.setattr(certbot, "obtain", lambda *args, **kwargs: None)
+    run("add", "example.nl")
+    found = certificate(server, "example", ("example.nl", "www.example.nl"))
+    monkeypatch.setattr(certbot, "read", lambda path: found)
+    obtained = []
+    monkeypatch.setattr(certbot, "obtain",
+                        lambda *args, **kwargs: obtained.append((tuple(args[4]), kwargs.get("force"))))
+
+    result = run("repair", "example.nl", "--no-www")
+
+    assert result.exit_code == 0, result.output
+    assert sites.find(server, "example").aliases == ()
+    assert obtained == [(("example.nl",), True)] * 2
+    assert "doesn't serve any more" in result.output
+
+
+def test_doctor_says_where_a_site_with_its_own_web_root_is_served_from(server, monkeypatch):
+    sites.save(server, Site("app", "app.example.nl", (), "public_html/www/public"))
+    found = certificate(server, "app", ("app.example.nl",))
+    monkeypatch.setattr(certbot, "read", lambda path: found)
+
+    result = run("doctor", "app")
+
+    assert result.exit_code == 0, result.output
+    assert "public_html/www/public" in result.output and "virtual host of its own" in result.output
+
+
+def test_delete_takes_the_virtual_host_of_a_site_that_has_one(server, monkeypatch):
+    monkeypatch.setattr(certbot, "delete", lambda directory, name: True)
+    sites.save(server, Site("app", "app.example.nl", (), "public_html/www/public"))
+
+    result = run("delete", "app", "--yes")
+
+    assert result.exit_code == 0, result.output
+    assert sites.list_sites(server) == []
+    assert openlitespeed.virtual_hosts(sites.read(server)) == {}

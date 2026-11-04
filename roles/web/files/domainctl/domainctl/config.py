@@ -20,13 +20,17 @@ class Config:
     home_root: Path = Path("/home")
     user_shell: str = "/bin/bash"  # so "su - USER" works; sshd's AllowUsers decides who may log in
     # The directories made inside a home directory, relative to it. The template serves the first one and
-    # writes its logs in the second, through $VH_ROOT.
+    # writes its logs in the second, through $VH_ROOT. A site whose pages live deeper -- the public folder of
+    # a Laravel or Symfony application -- has a web root of its own instead, and a virtual host to serve it.
     docroot: str = "public_html/www"
     logs: str = "logs"
     # OpenLiteSpeed
     ols_root: Path = Path("/usr/local/lsws")
     ols_user: str = "lsadm"  # owns OpenLiteSpeed's config directory, and WebAdmin runs as it
     web_user: str = "nobody"  # the user OpenLiteSpeed serves and runs PHP as; the one the ACLs let in
+    # What the template gives every site, and what a site with a virtual host of its own is given to match.
+    admin_email: str = ""  # shown on OpenLiteSpeed's own error pages
+    log_level: str = "ERROR"
     template: str = "webhosting"  # the vhTemplate in httpd_config.conf that the sites are members of
     template_file: str = "conf/templates/webhosting.conf"  # its settings, relative to ols_root
     # Let's Encrypt. A site's certificate is named after its user, because the template looks it up as $VH_NAME.
@@ -44,8 +48,9 @@ class Config:
     def home(self, user: str) -> Path:
         return self.home_root / user
 
-    def docroot_of(self, user: str) -> Path:
-        return self.home(user) / self.docroot
+    def docroot_of(self, user: str, webroot: str = "") -> Path:
+        """Where a site's pages are: its own web root inside the home directory, or the one the template serves."""
+        return self.home(user) / (webroot or self.docroot)
 
     def logs_of(self, user: str) -> Path:
         return self.home(user) / self.logs

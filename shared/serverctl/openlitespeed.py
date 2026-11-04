@@ -348,13 +348,13 @@ def maps(lines: list[str], listener: str) -> dict[str, list[str]]:
     return mapped
 
 
-def with_map(lines: list[str], listener: str, host: str, name: str) -> list[str]:
-    """The config with the listener mapping the name, and nothing else, to the virtual host."""
-    if maps(lines, listener).get(host) == [name]:
+def with_map(lines: list[str], listener: str, host: str, *names: str) -> list[str]:
+    """The config with the listener mapping these names, and no others, to the virtual host."""
+    if maps(lines, listener).get(host) == list(names):
         return lines
     lines = without_map(lines, listener, host)
     end = _top_block(lines, "listener", listener).end
-    return [*lines[:end], _setting(2, "map", f"{host} {name}"), *lines[end:]]
+    return [*lines[:end], _setting(2, "map", f"{host} {', '.join(names)}"), *lines[end:]]
 
 
 def without_map(lines: list[str], listener: str, host: str) -> list[str]:

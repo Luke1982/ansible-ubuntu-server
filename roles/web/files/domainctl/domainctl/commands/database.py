@@ -141,7 +141,7 @@ def _out_of_the_web_root(config, user: str, path: Path | None) -> Path | None:
     where it went, or None when it was never in the web root."""
     if path is None:
         return None
-    docroot = config.docroot_of(user)
+    docroot = sites.docroot(config, user)
     try:
         path.relative_to(docroot)
     except ValueError:

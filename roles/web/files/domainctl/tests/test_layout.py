@@ -127,3 +127,23 @@ def test_a_placeholder_from_before_the_marker_is_ours_too(config, no_chown):
 
     assert layout.remove_placeholder(config, "example") is True
     assert not (docroot / "index.html").exists()
+
+
+def test_a_site_served_from_a_folder_deeper_gets_the_rights_there(config):
+    """A Laravel application's public folder: the application itself is only walked through, so what it keeps
+    beside its pages -- .env, vendor -- is not served, and the pages themselves are readable."""
+    wanted = layout.permissions(config, "app", "public_html/www/public")
+    home = config.home("app")
+    assert list(wanted) == [home, home / "public_html", home / "public_html" / "www",
+                            home / "public_html" / "www" / "public", config.logs_of("app")]
+    assert wanted[home / "public_html" / "www"] == acl.traversable_by("nobody")
+    assert wanted[home / "public_html" / "www" / "public"] == acl.readable_by("nobody")
+
+
+def test_create_makes_the_folder_the_site_is_served_from_with_its_challenge_folder(config, no_chown):
+    layout.create(config, "app", "app.example.nl", "public_html/www/public")
+    docroot = config.docroot_of("app", "public_html/www/public")
+    assert docroot.is_dir()
+    assert (docroot / ".well-known" / "acme-challenge").is_dir()
+    assert "app.example.nl" in (docroot / "index.html").read_text()
+    assert not (config.docroot_of("app") / "index.html").exists()
