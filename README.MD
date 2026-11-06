@@ -752,6 +752,16 @@ The limit is kept in the database (`virtual_users.quota`), which Dovecot reads w
 
 A full mailbox refuses new mail with "552 Mailbox full", which the sender hears about at once; the message that crosses the limit is still let in, so nothing is lost on the way. `mailctl export` and `mailctl import` carry the limits, so moving a server keeps them.
 
+### How big a message may be
+
+25 MB, sent and received alike: Postfix has one limit for both (`mail_message_size_mb` in [`roles/mail/defaults/main.yml`](roles/mail/defaults/main.yml)). It counts the whole message, and a file is about a third bigger once it is encoded to travel, so the biggest attachment that really goes through is roughly 18 MB.
+
+```bash
+postconf message_size_limit                    # what it is now, in bytes
+```
+
+Postfix's own default is 10 MB, which is below what people send each other now. The big providers take 25 MB, and a message larger than the *receiving* server allows bounces however much this one permits, so there is little to gain above that. A message that is too big is refused on the spot with "552 Message size exceeds fixed limit", so the sender hears about it at once and nothing waits in a queue for a message that will never fit. Nothing else gets in the way first: webmail accepts far larger uploads, and how much an account may *hold* is the quota above.
+
 ### Deleted mail, and emptying Trash and Junk
 
 Mail in `Trash` and `Junk` goes after 30 days, counted from when it was put there (`dovecot_trash_days`). Everything that is expunged -- by emptying the trash, by deleting for good, or by that clearing out -- waits 14 more days in a hidden folder called `EXPUNGED` (`dovecot_expunged_days`) before it is really gone. Mail programs and webmail don't show that folder, it doesn't count towards the quota, and a message that was only moved isn't kept there twice. To put something back:

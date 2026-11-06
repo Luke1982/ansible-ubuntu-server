@@ -125,6 +125,21 @@
   when: postfix_ehlo.stdout | default('') | trim != 'dsn'
   notify: restart postfix
 
+# One limit for both directions: a message this server takes in from the internet and one a customer sends are
+# held to the same size. Postfix refuses a bigger one with "552 Message size exceeds fixed limit", which the
+# sender hears about at once, so nothing waits in a queue for a message that will never fit.
+- name: Look at how big a message may be now
+  command: postconf -h message_size_limit
+  register: postfix_message_size
+  changed_when: false
+
+- name: Set how big a message may be, sent and received
+  command: postconf message_size_limit={{ mail_message_size_bytes }}
+  vars:
+    mail_message_size_bytes: "{{ mail_message_size_mb | int * 1024 * 1024 }}"
+  when: postfix_message_size.stdout | trim != mail_message_size_bytes
+  notify: restart postfix
+
 - name: Rebuild postfix alias tables
   shell:
     cmd: newaliases
