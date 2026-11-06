@@ -754,13 +754,15 @@ A full mailbox refuses new mail with "552 Mailbox full", which the sender hears 
 
 ### How big a message may be
 
-25 MB, sent and received alike: Postfix has one limit for both (`mail_message_size_mb` in [`roles/mail/defaults/main.yml`](roles/mail/defaults/main.yml)). It counts the whole message, and a file is about a third bigger once it is encoded to travel, so the biggest attachment that really goes through is roughly 18 MB.
+40 MB, sent and received alike: Postfix has one limit for both (`mail_message_size_mb` in [`roles/mail/defaults/main.yml`](roles/mail/defaults/main.yml)). It counts the whole message, and a file is about a third bigger once it is encoded to travel, so the biggest attachment that really goes through is roughly 30 MB.
 
 ```bash
 postconf message_size_limit                    # what it is now, in bytes
 ```
 
-Postfix's own default is 10 MB, which is below what people send each other now. The big providers take 25 MB, and a message larger than the *receiving* server allows bounces however much this one permits, so there is little to gain above that. A message that is too big is refused on the spot with "552 Message size exceeds fixed limit", so the sender hears about it at once and nothing waits in a queue for a message that will never fit. Nothing else gets in the way first: webmail accepts far larger uploads, and how much an account may *hold* is the quota above.
+Postfix's own default is 10 MB, which is below what people send each other now: it was turning away mail from Microsoft and Google senders. The big providers accept 25 MB themselves, so a message above that may still be refused by whoever receives it -- but that is their decision, and this server no longer makes it for them.
+
+A message that arrives from another server too big is refused on the spot with "552 Message size exceeds fixed limit", so the sender hears about it at once. A message *sent* from here is different: webmail and ActiveSync hand it to Postfix without saying how big it is first, so Postfix takes it in and stops partway, with `warning: <id>: queue file size limit exceeded` in the mail log. The mail program is only told that it failed -- Outlook says "one or more attachments are too large" -- so that warning line is the thing to grep for when somebody cannot send. Nothing else gets in the way first: webmail accepts far larger uploads, and how much an account may *hold* is the quota above.
 
 ### Deleted mail, and emptying Trash and Junk
 

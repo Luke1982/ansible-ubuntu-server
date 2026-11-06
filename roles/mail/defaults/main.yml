@@ -137,13 +137,22 @@ letsencrypt_email: ""
 
 # How big a whole message may be, in megabytes: sending and receiving alike, since
 # Postfix has one limit for both. It counts the message and not the file attached to
-# it, and a file is about a third bigger once it is encoded to travel, so 25 here
-# carries an attachment of roughly 18 MB. Postfix's own default is 10 MB, which is
-# smaller than what people send each other now; the big providers take 25 MB, and a
-# message bigger than the receiving server allows bounces, so going far above that
-# buys little. Nothing else gets in the way first: webmail accepts far larger
-# uploads, and a mailbox's own limit is dovecot_quota_default.
-mail_message_size_mb: 25
+# it, and a file is about a third bigger once it is encoded to travel, so 40 here
+# carries an attachment of roughly 30 MB.
+#
+# Postfix's own default is 10 MB, which is below what people send each other now --
+# it was turning away mail from Microsoft and Google senders. The big providers take
+# 25 MB themselves, so a message over that may still be refused by whoever receives
+# it; that is their decision to make, and this server no longer makes it for them.
+# Measured on the server: a message over the limit is not refused up front, because
+# SOGo's webmail and ActiveSync don't announce the size before sending. Postfix takes
+# the message in and stops partway ("queue file size limit exceeded" in the mail
+# log), and a phone or Outlook then only says the attachment is too large.
+#
+# Nothing else gets in the way first: webmail accepts far larger uploads, a mailbox's
+# own limit is dovecot_quota_default, and virtual_mailbox_limit (Postfix's own 50 MB)
+# is above this.
+mail_message_size_mb: 40
 
 # Brute-force protection for the mail jails (tasks/configure-fail2ban.yml).
 # Before banning an address, fail2ban asks /usr/local/sbin/f2b-mail-ignore.sh
